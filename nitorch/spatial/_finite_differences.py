@@ -29,6 +29,23 @@ _bound_converter = {
     }
 
 
+def _singleton_weights(order, bound, dim, x):
+    """Values of the `2*order+1` neighbours of a voxel along a dimension of
+    size one, relative to the voxel itself, implied by the boundary
+    condition (shaped for broadcasting along `dim`)."""
+    k = torch.arange(-order, order + 1, device=x.device).abs()
+    if bound in ('dct2', 'dct1', 'dft', 'replicate'):
+        w = torch.ones_like(k)
+    elif bound == 'zero':
+        w = (k == 0).long()
+    elif bound == 'dst2':   # antisymmetric about the edges
+        w = 1 - 2 * (k % 2)
+    else:                   # dst1: antisymmetric about virtual zeros
+        w = (1 - k % 2) * (1 - 2 * ((k // 2) % 2))
+    return w.to(x.dtype).reshape([-1 if d == dim else 1
+                                  for d in range(x.dim())])
+
+
 def diff1d(x, order=1, dim=-1, voxel_size=1, side='c', bound='dct2', out=None):
     """Finite differences along a dimension.
 
@@ -90,10 +107,17 @@ def diff1d(x, order=1, dim=-1, voxel_size=1, side='c', bound='dct2', out=None):
     x = torch.as_tensor(x)
 
     if x.shape[dim] == 1:
+        # The generic implementation needs at least two voxels: build the
+        # neighbours implied by the boundary condition explicitly, and
+        # differentiate the padded line (whose borders are cropped).
+        # (This used to return `x` itself, which is not a derivative.)
+        dim = dim % x.dim()
+        w = _singleton_weights(order, bound, dim, x)
+        d = diff1d(x * w, order, dim, voxel_size, side, bound='zero')
+        d = d.narrow(dim, order, 1)
         if out is not None:
-            return out.view(x.shape).copy_(x)
-        else:
-            return x.clone()
+            return out.view(x.shape).copy_(d)
+        return d
 
     shape0 = x.shape
     x = x.transpose(0, dim)
@@ -360,10 +384,21 @@ def div1d(x, order=1, dim=-1, voxel_size=1, side='c', bound='dct2', out=None):
     x = torch.as_tensor(x)
 
     if x.shape[dim] == 1:
+        # Adjoint of the singleton case of `diff1d`: embed in a line of
+        # zeros, apply the generic operator, and gather the neighbours
+        # implied by the boundary condition.
+        # (This used to return `x` itself.)
+        dim = dim % x.dim()
+        w = _singleton_weights(order, bound, dim, x)
+        shape = list(x.shape)
+        shape[dim] = 2 * order + 1
+        xp = x.new_zeros(shape)
+        xp.narrow(dim, order, 1).copy_(x)
+        d = div1d(xp, order, dim, voxel_size, side, bound='zero')
+        d = d.mul_(w).sum(dim, keepdim=True)
         if out is not None:
-            return out.view(x.shape).copy_(x)
-        else:
-            return x.clone()
+            return out.view(x.shape).copy_(d)
+        return d
 
     shape0 = x.shape
     x = x.transpose(0, dim)
