@@ -33,7 +33,7 @@ def sumspatial(x: Tensor, ndim: int) -> Tensor:
 
     """
     dims = [d for d in range(-ndim - 1, -1)]
-    return x.sum(dims, keepdim=True, dtype=torch.double).to(x.dtype)
+    return x.sum(dims, keepdim=True)
 
 
 # cannot use TorchScript because of `quantile`.

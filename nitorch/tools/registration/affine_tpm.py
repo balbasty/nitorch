@@ -659,11 +659,11 @@ def em_prior(moving, fixed, prior=None, weights=None, fwhm=None,
             z.mul_(moving)
             norm = z.sum(-2, keepdim=True).add_(tiny)
             z.div_(norm)
-            ll = norm.log_().mul_(weights).sum([-1, -2], dtype=torch.double)
+            ll = norm.log_().mul_(weights).sum([-1, -2]).double()
             return ll, z
         else:
             norm = torch.matmul(prior, moving).add_(tiny)   # [B, J, N]
-            ll = (fixed * norm.log()).sum([-1, -2], dtype=torch.double)
+            ll = (fixed * norm.log()).sum([-1, -2]).double()
             return ll, fixed / norm
 
     # ------------------------------------------------------------------

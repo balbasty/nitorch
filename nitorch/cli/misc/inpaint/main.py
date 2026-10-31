@@ -167,9 +167,9 @@ def do_inpaint(dat, voxel_size=1, max_iter_rls=50, max_iter_cg=32,
         channel[torch.isnan(channel)] = channel[~torch.isnan(channel)].median()
     weights = dat.new_ones([1, *dat.shape[1:]])
 
-    ll_w = weights.sum(dtype=torch.double)
+    ll_w = weights.sum().double()
     ll_x = spatial.membrane(dat, dim=3, voxel_size=voxel_size, weights=weights)
-    ll_x = (ll_x * dat).sum(dtype=torch.double)
+    ll_x = (ll_x * dat).sum().double()
     if verbose > 0:
         print(f'{0:3d} | {ll_x} + {ll_w} = {ll_x + ll_w}')
 
@@ -208,7 +208,7 @@ def do_inpaint(dat, voxel_size=1, max_iter_rls=50, max_iter_cg=32,
 
         weights, ll_w = spatial.membrane_weights(dat, dim=3, voxel_size=voxel_size, return_sum=True)
         ll_x = spatial.membrane(dat, dim=3, voxel_size=voxel_size, weights=weights)
-        ll_x = (ll_x * dat).sum(dtype=torch.double)
+        ll_x = (ll_x * dat).sum().double()
         if verbose > 0:
             print(f'{n_iter_rls:3d} | {ll_x} + {ll_w} = {ll_x + ll_w}')
 

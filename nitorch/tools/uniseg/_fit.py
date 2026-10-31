@@ -32,7 +32,7 @@ def _softmax_lse(x, dim=-1, W=None):
             lse = lse.sum() * W.sum()
             return x, lse
         lse *= W
-    lse = lse.sum(dtype=torch.float64)
+    lse = lse.sum().double()
     return x, lse
 
 
@@ -1455,7 +1455,7 @@ class UniSeg(SpatialMixture):
             M = X.new_ones([1]*X.ndim)
         while M.ndim < X.ndim:
             M = M[None]
-        Nw = X[0].numel() if W is None else W.sum(dtype=torch.double).item()
+        Nw = X[0].numel() if W is None else W.sum().item()
 
         # 2) Estimate the (diagonal) variance of the data, assuming
         #    a single Gaussian.
@@ -1673,7 +1673,7 @@ class UniSeg(SpatialMixture):
         Z = Z.reshape([K, -1])
         if W is not None:
             W = W.reshape([-1])
-            Nw = W.sum(dtype=torch.double)
+            Nw = W.sum().double()
         else:
             Nw = len(X)
 
@@ -1798,7 +1798,7 @@ def multimul(*x, out=None):
 
 def reduce(*x, buffer=None):
     """Chained element-wise multiplication, followed by a stable sum"""
-    return multimul(*x, out=buffer).sum(dtype=torch.double)
+    return multimul(*x, out=buffer).sum().double()
 
 
 # ---

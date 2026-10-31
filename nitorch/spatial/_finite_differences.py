@@ -1646,6 +1646,6 @@ def _check_adjoint_grad_div(which='central', vx=None, dtype=torch.float64,
             v = torch.rand(3, dim[0], dim[1], dim[2], dtype=dtype, device=device)
         gradu = im_gradient(u, vx=vx, which=which, bound=bound)
         divv = im_divergence(v, vx=vx, which=which, bound=bound)
-        val = torch.sum(gradu*v, dtype=torch.float64) - torch.sum(divv*u, dtype=torch.float64)
+        val = torch.sum(gradu*v).double() - torch.sum(divv*u).double()
     # Print okay? (close to zero)
     print('val={}'.format(val))

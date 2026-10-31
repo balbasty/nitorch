@@ -178,7 +178,7 @@ def nonlin(data, dist=None, opt=None):
 
     # --- prepare everything -------------------------------------------
     data, maps, dist, opt, rls = _prepare(data, dist, opt)
-    sumrls = 0.5 * rls.sum(dtype=torch.double) if rls is not None else 0
+    sumrls = 0.5 * rls.sum().double() if rls is not None else 0
     backend = dict(dtype=opt.backend.dtype, device=opt.backend.device)
 
     # --- initialize tracking of the objective function ----------------
@@ -205,7 +205,7 @@ def nonlin(data, dist=None, opt=None):
             lam = [float(l*scl) for l in lam0]
             maps, rls = _resize(maps, rls, aff, shape)
             if opt.regularization.norm in ('tv', 'jtv'):
-                sumrls = 0.5 * scl * rls.reciprocal().sum(dtype=torch.double)
+                sumrls = 0.5 * scl * rls.reciprocal().sum().double()
 
         grad = torch.empty((len(data) + 1, *shape), **backend)
         hess = torch.empty((len(data) * 2 + 1, *shape), **backend)
@@ -374,7 +374,7 @@ def meetup(data, dist=None, opt=None):
     """
     # --- prepare everything -------------------------------------------
     data, maps, dist, opt, rls = _prepare(data, dist, opt)
-    sumrls = 0.5 * rls.sum(dtype=torch.double) if rls is not None else 0
+    sumrls = 0.5 * rls.sum().double() if rls is not None else 0
     backend = dict(dtype=opt.backend.dtype, device=opt.backend.device)
 
     # --- initialize tracking of the objective function ----------------
@@ -400,7 +400,7 @@ def meetup(data, dist=None, opt=None):
             lam = [float(l * scl) for l in lam0]
             maps, rls = _resize(maps, rls, aff, shape)
             if opt.regularization.norm in ('tv', 'jtv'):
-                sumrls = 0.5 * scl * rls.reciprocal().sum(dtype=torch.double)
+                sumrls = 0.5 * scl * rls.reciprocal().sum().double()
 
         grad = torch.empty((len(data) + 1, *shape), **backend)
         hess = torch.empty((len(data) * 2 + 1, *shape), **backend)
