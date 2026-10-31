@@ -24,6 +24,31 @@ Along with helpers
 - IterateOptim
 - IterateOptimInterleaved
 """
+import math
+import torch
+
+
+def _all_finite(x):
+    """True if a (list of) tensor/number only contains finite values"""
+    if isinstance(x, (list, tuple)):
+        return all(_all_finite(x1) for x1 in x)
+    if torch.is_tensor(x):
+        return bool(torch.isfinite(x).all())
+    return math.isfinite(x)
+
+
+def _clone(x):
+    if isinstance(x, (list, tuple)):
+        return [x1.clone() for x1 in x]
+    return x.clone()
+
+
+def _copy_(x, y):
+    if isinstance(x, (list, tuple)):
+        for x1, y1 in zip(x, y):
+            x1.copy_(y1)
+        return x
+    return x.copy_(y)
 
 
 def _make_search(search, second_order=False, **opt):
@@ -146,8 +171,17 @@ class Optim:
             closure = self.closure
         loss, *derivatives = self._get_loss(param, closure, **kwargs)
         delta = self.search_direction(*derivatives)
+        if not _all_finite(delta):
+            # reject non-finite steps: keep the current parameters
+            return (param, loss, *derivatives)
+        param0 = _clone(param)
         param = self.update(delta, param)
-        loss = closure(param, **self.requires)
+        new = closure(param, **self.requires)
+        new_loss = new[0] if any(self.requires.values()) else new
+        if _all_finite(loss) and not _all_finite(new_loss):
+            # reject non-finite losses: restore the previous parameters
+            return (_copy_(param, param0), loss, *derivatives)
+        loss = new
         if any(self.requires.values()):
             loss, *derivatives = loss
         return (param, loss, *derivatives)

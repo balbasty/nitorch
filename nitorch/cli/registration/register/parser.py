@@ -649,7 +649,8 @@ pyr.add_option('max_size', '--max-size', nargs=1, convert=int)
 pyr.add_option('min_vx', '--min-vx', nargs=1, convert=float)
 pyr.add_option('max_vx', '--max-vx', nargs=1, convert=float)
 pyr.add_option('levels', ('-l', '--levels'), nargs='1*', convert=parse_range, default=[range(3)])
-pyr.add_option('concurrent', ('-c-', '--concurrent'), nargs=1, convert=bool_or_str, default=False)
+pyr.add_option('concurrent', ('-c', '--concurrent'), nargs='?', convert=bool_or_str,
+               default=False, action=cli.Actions.store_true)
 
 # register groups
 parser.add_group(loss)

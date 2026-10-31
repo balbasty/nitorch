@@ -169,7 +169,8 @@ def _expm(X, basis=None, grad_X=False, grad_basis=False, hess_X=False,
         E = smart_incr(E, En)
         # Compute sum-of-squares
         sos = torch.sum(En ** 2)
-        if sos <= torch.numel(En) * tol:
+        if not torch.isfinite(sos) or sos <= torch.numel(En) * tol:
+            # (a non-finite term never meets the tolerance)
             break
 
     E = E[..., 0, :, :]

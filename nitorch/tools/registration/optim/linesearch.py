@@ -130,10 +130,8 @@ class BacktrackingLineSearch(LineSearch):
             param = param0.copy_(param)
             if optim0 is self.optim:
                 self.optim = optim
-            print('success')
             loss, *derivatives = closure(param, **self.requires)
         else:
-            print('failure')
             param, loss = param0, loss0
         return (param, loss, *derivatives)
 
@@ -166,12 +164,12 @@ class StepSizeLineSearch(BacktrackingLineSearch):
 
         # line search step size
         success = False
-        loss0, param0, lr0 = loss, param, optim.lr
+        loss0, param0, lr0 = loss, param, getattr(optim, self.key)
         lr = lr0
         for n_iter in range(self.max_iter):
 
             param = param0.add(delta, alpha=lr)
-            loss = closure_line_search(param.add(delta, alpha=lr))
+            loss = closure_line_search(param)
 
             if loss < loss0:
                 success = True
@@ -181,7 +179,9 @@ class StepSizeLineSearch(BacktrackingLineSearch):
 
         if success:
             if self.store_value:
-                self.lr = lr * self.store_value
+                # same semantics as BacktrackingLineSearch: store the
+                # successful step size (modulated) in the optimizer
+                setattr(optim, self.key, lr * self.store_value)
             param = param0.copy_(param)
             loss, *derivatives = closure(param, **self.requires)
         else:

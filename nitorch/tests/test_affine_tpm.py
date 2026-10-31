@@ -288,3 +288,42 @@ def test_get_data_trailing_singleton():
     x = torch.rand([2, 5, 6, 7, 1])
     x, w, _ = at.get_data(x, None, None, 3)
     assert x.shape == (2, 5, 6, 7)
+
+
+def test_gn_tolerance_is_honoured(monkeypatch):
+    # A looser tolerance on the gain in 𝓛/N stops Gauss-Newton earlier
+    dat, logtpm, affine, _ = make_problem(n=12, shift=(1., -0.5, 0.5))
+    derivatives = at.derivatives_intensity
+    ncalls = [0]
+
+    def counted(*args, **kwargs):
+        ncalls[0] += 1
+        return derivatives(*args, **kwargs)
+
+    monkeypatch.setattr(at, 'derivatives_intensity', counted)
+    iters = {}
+    for tol in (1e-1, 1e-7):
+        ncalls[0] = 0
+        at.fit_affine_tpm(dat, logtpm, affine, affine, basis='translation',
+                          tolerance=tol, verbose=0)
+        iters[tol] = ncalls[0]
+    assert iters[1e-1] == 1, iters
+    assert iters[1e-7] > iters[1e-1], iters
+
+
+def test_align_tpm_passes_tolerance(monkeypatch):
+    n = 12
+    tpm = make_tpm(n)
+    affine = spatial.affine_default([n] * 3, dtype=dt)
+    seen = []
+
+    def spy(*args, tolerance=None, basis='affine', **kwargs):
+        seen.append(tolerance)
+        F = len(at.make_basis(basis, 3))
+        return torch.zeros([1], dtype=dt), torch.eye(4, dtype=dt), \
+            torch.zeros([F], dtype=dt)
+
+    monkeypatch.setattr(at, 'fit_affine_tpm', spy)
+    at.align_tpm((tpm[0] * 100, affine), (tpm, affine), spacing=4,
+                 tolerance=1e-3, verbose=0)
+    assert seen == [1e-3]

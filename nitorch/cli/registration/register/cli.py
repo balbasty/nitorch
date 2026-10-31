@@ -164,7 +164,8 @@ def _main(options):
     # ------------------------------------------------------------------
     #                           BUILD OPTIM
     # ------------------------------------------------------------------
-    order = min(loss.loss.order for loss in losses[0])
+    first_level = losses if options.pyramid.concurrent else losses[0]
+    order = min(loss.order for loss in first_level.losses())
     interleaved = options.optim.name[0] == 'i'
 
     affine_optim = None
@@ -315,7 +316,9 @@ def build_losses(options, pyramids, device):
         if loss.name == 'emmi':
             loss.mov.rescale = (0, 0)
             loss.fix.discretize = loss.fix.discretize or 256
-            loss.mov.soft_quantize = loss.mov.discretize or 16
+            # moving image: soft-quantized into (default) 16 bins
+            loss.mov.discretize = loss.mov.discretize or 16
+            loss.mov.soft = True
             loss.mov.missing = []
         loss.fix.pyramid = pyramid['fix']
         loss.mov.pyramid = pyramid['mov']
@@ -346,7 +349,7 @@ def build_losses(options, pyramids, device):
                 for key in ('rescale', 'missing', 'discretize'):
                     setattr(optfix, key, getattr(loss.fix, key))
                     setattr(optmov, key, getattr(loss.mov, key))
-                optmov.soft_quantize = loss.mov.soft_quantize
+                optfix.soft, optmov.soft = False, True
                 bwd_fix = make_image(*preproc_image(optfix.files, **include(optfix, loadkeys), dim=dim, device=device),
                                      **include(optfix, imagekeys))
                 bwd_mov = make_image(*preproc_image(optmov.files, **include(optmov, loadkeys), dim=dim, device=device),
@@ -367,8 +370,9 @@ def build_losses(options, pyramids, device):
         nb_losses = len(owners)
         for i in range(nb_levels):
             for j in range(nb_losses):
+                ii = min(i, len(options.loss[owners[j]].factor) - 1)
                 rel_factor = (
-                    options.loss[owners[j]].factor[i] /
+                    options.loss[owners[j]].factor[ii] /
                     options.loss[owners[j]].factor[-1]
                 )
                 new_list.append(loss_list[i*nb_losses+j] * rel_factor)

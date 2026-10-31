@@ -96,7 +96,7 @@ tiny = 1e-16
 def align_tpm(dat, tpm=None, weights=None, spacing=(8, 4), device=None,
               basis='affine', progressive=False, bins=256,
               fwhm=None, max_iter_gn=100, max_iter_em=32, max_line_search=6,
-              flexi=False, verbose=1):
+              tolerance=1e-6, flexi=False, verbose=1):
     r"""Align a Tissue Probability Map to an image
 
     Input Parameters
@@ -141,6 +141,9 @@ def align_tpm(dat, tpm=None, weights=None, spacing=(8, 4), device=None,
         Maximum number of EM iterations
     max_line_search : int, default=6
         Maximum number of line search steps (step halvings).
+    tolerance : float, default=1e-6
+        Stop Gauss-Newton when the gain in 𝓛/N (average
+        log-likelihood per voxel) is less than `tolerance`.
 
     Returns
     -------
@@ -214,6 +217,7 @@ def align_tpm(dat, tpm=None, weights=None, spacing=(8, 4), device=None,
         max_iter_gn=max_iter_gn,
         max_iter_em=max_iter_em,
         max_line_search=max_line_search,
+        tolerance=tolerance,
         verbose=verbose,
     )
 
@@ -308,7 +312,7 @@ def align_tpm(dat, tpm=None, weights=None, spacing=(8, 4), device=None,
 def fit_affine_tpm(dat, tpm, affine=None, affine_tpm=None, weights=None,
                    basis='affine', fwhm=None, prm=None,
                    max_iter_gn=100, max_iter_em=32, max_line_search=6,
-                   progressive=False, verbose=1):
+                   tolerance=1e-6, progressive=False, verbose=1):
     """Fit an affine transform between a log-TPM and an image
 
     Parameters
@@ -333,6 +337,10 @@ def fit_affine_tpm(dat, tpm, affine=None, affine_tpm=None, weights=None,
     max_line_search : int, default=6
         Maximum number of step halvings. Each Gauss-Newton iteration
         starts with a full step.
+    tolerance : float, default=1e-6
+        Stop when the gain in 𝓛/N (average log-likelihood per voxel)
+        between two Gauss-Newton iterations is less than `tolerance`,
+        i.e., when the gain in 𝓛 is less than `tolerance * N`.
     progressive : bool, default=False
 
     Returns
@@ -365,8 +373,8 @@ def fit_affine_tpm(dat, tpm, affine=None, affine_tpm=None, weights=None,
                 dat, tpm, affine, affine_tpm, weights,
                 basis=next_basis, fwhm=fwhm, prm=prm,
                 max_iter_gn=max_iter_gn, max_iter_em=max_iter_em,
-                max_line_search=max_line_search, progressive=True,
-                verbose=verbose)
+                max_line_search=max_line_search, tolerance=tolerance,
+                progressive=True, verbose=verbose)
             F = basis_nb_feat[basis]
             prm0 = prm
             prm = prm0.new_zeros([F])
@@ -476,8 +484,8 @@ def fit_affine_tpm(dat, tpm, affine=None, affine_tpm=None, weights=None,
             end = '\n' if verbose >= 2 else '\r'
             print(f'({basis_name[:6]}){space} | {n_iter:02d} | {mi.mean():12.6g}', end=end)
 
-        if mi.mean() - mi0.mean() < 1e-4:
-            # print('converged', mi.mean() - mi0.mean())
+        # `mi` is 𝓛/N, so this is a test on the gain in 𝓛 relative to N
+        if mi.mean() - mi0.mean() < tolerance:
             break
 
         # --------------------------------------------------------------
