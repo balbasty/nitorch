@@ -151,10 +151,29 @@ def test_robust_joint_passed_to_loss(images, name, flag):
     assert loss.joint is flag
 
 
-@pytest.mark.parametrize('name', ['lcc', 'lgmm'])
+@pytest.mark.parametrize('name', ['lcc', 'lgmmi'])
 def test_local_stride_passed_to_loss(images, name):
     _, loss = built_loss(images, name, '--stride', '2')
     assert list(loss.stride) == [2]
+
+
+@pytest.mark.parametrize('name', ['gmmi', 'lgmmi', 'gmm', 'lgmm'])
+def test_gmm_cli_is_mutual_information(images, name):
+    """The command line only exposes the mutual-information version of the
+    GMM losses (`gmm`/`lgmm` are aliases of `gmmi`/`lgmmi`)."""
+    options, loss = built_loss(images, name)
+    assert options.loss[0].name == (name if name.endswith('i') else name + 'i')
+    assert loss.measure == 'mi'
+    local = name.startswith('l')
+    assert loss.bins == (3 if local else 6)  # documented defaults
+
+
+@pytest.mark.parametrize('name', ['gmmi', 'lgmmi'])
+def test_gmm_cli_rejects_measure_option(name):
+    files = ['@@fix', 'f.nii', '@@mov', 'm.nii']
+    parser.parse(['@loss', name] + files)  # OK
+    with pytest.raises(Exception):
+        parser.parse(['@loss', name, '-m', 'joint'] + files)
 
 
 # ----------------------------------------------------------------------

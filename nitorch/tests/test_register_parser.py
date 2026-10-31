@@ -20,7 +20,7 @@ def test_register_nonlin_hessian_option(args, expected):
 IMAGES = ['@@fix', 'fix.nii', '@@mov', 'mov.nii']
 
 
-@pytest.mark.parametrize('name', ['lcc', 'lgmm'])
+@pytest.mark.parametrize('name', ['lcc', 'lgmmi', 'lgmm'])
 def test_register_loss_patch_option(name):
     options = parser.parse(['@loss', name, '-p', '5'] + IMAGES)
     assert options.loss[0].patch == [5.0]

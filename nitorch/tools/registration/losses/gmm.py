@@ -4,7 +4,7 @@ from nitorch.core import utils, py
 import math as pymath
 import torch
 from nitorch.tools.registration.losses import OptimizationLoss
-from nitorch.tools.registration.losses.utils_gmm2 import fit_gmm2, fit_lgmm2, sumspatial, Fwd, Bwd
+from nitorch.tools.registration.losses.utils_gmm2 import fit_gmm2, fit_lgmm2, Bwd
 Tensor = torch.Tensor
 pyutils = py
 
@@ -120,88 +120,149 @@ def _plot_gmm(moving, fixed, prm, bins=64):
     plt.show()
 
 
-def lgmmh(moving, fixed, dim=None, bins=3, patch=7, stride=1,
-          grad=True, hess=True, kernel='g', max_iter=128,
-          theta=None, return_theta=False):
+_measures = ('mi', 'joint')
+_theta_keys = ('xmean', 'ymean', 'xvar', 'yvar', 'corr', 'prior')
 
+
+def _check_measure(measure):
+    measure = (measure or 'mi').lower()
+    if measure not in _measures:
+        raise ValueError(f'Unknown measure {measure}. '
+                         f'Expected one of {_measures}.')
+    return measure
+
+
+def lgmmh(moving, fixed, dim=None, bins=3, patch=20, stride=1,
+          grad=True, hess=True, kernel='g', max_iter=128, measure='mi',
+          theta=None, return_theta=False):
+    """Entropy estimated by a Local Gaussian Mixture Model
+
+    The parameters of the joint mixture vary smoothly in space: they are
+    fitted within (Gaussian or square) patches, and the responsibility of
+    each voxel combines the Gaussians of all patches it belongs to.
+
+    Parameters
+    ----------
+    moving : (..., *spatial) tensor
+        Moving image
+    fixed : (..., *spatial) tensor
+        Fixed image
+    dim : int, default=`fixed.dim() - 1`
+        Number of spatial dimensions
+    bins : int, default=3
+        Number of clusters in the mixture (in each patch)
+    patch : [list of] float, default=20
+        Patch size (FWHM if gaussian, full width if square), in voxels
+    stride : [list of] int, default=1
+        Stride between patches
+    kernel : {'g', 'c'}, default='g'
+        Patch kernel: gaussian or constant (square)
+    max_iter : int, default=128
+        Number of EM iterations
+    measure : {'mi', 'joint'}, default='mi'
+        See `gmmh`.
+    grad : bool, default=True
+    hess : bool, default=True
+
+    Returns
+    -------
+    l : () tensor
+        Loss (average across voxels)
+    g : (..., *spatial) tensor, if `grad`
+        Gradient
+    h : (..., *spatial) tensor, if `hess`
+        Hessian
+    theta : dict, if `return_theta`
+        GMM parameters
+    """
+    measure = _check_measure(measure)
     fixed, moving = utils.to_max_backend(fixed, moving)
     dim = dim or (fixed.dim() - 1)
     shape = fixed.shape[-dim:]
 
     if not isinstance(patch, (list, tuple)):
         patch = [patch]
-    patch = list(patch)
+    patch = list(map(float, patch))
     if not isinstance(stride, (list, tuple)):
         stride = [stride]
     stride = [s or 0 for s in stride]
 
-    fwd = Fwd(patch, stride, dim, kernel)
-    bwd = Bwd(patch, stride, dim, kernel, shape)
+    cache = {}  # normalization map, shared by all local means
+    bwd = Bwd(patch, stride, dim, kernel, shape, cache)
 
     gmmfit = fit_lgmm2(moving, fixed, bins, max_iter, dim,
-                       patch=patch, stride=stride, mode=kernel, theta=theta)
+                       patch=patch, stride=stride, mode=kernel, theta=theta,
+                       cache=cache)
 
     # drop unused variables
     get = gmmfit.get if return_theta else gmmfit.pop
     pop = gmmfit.pop
 
-    z = pop('resp')
-    moving_mean = get('xmean')
-    fixed_mean = get('ymean')
-    moving_var = get('xvar')
-    fixed_var = get('yvar')
+    z = pop('resp')                     # (..., K, *spatial)
+    xmean = get('xmean')                # (..., K, *patches)
+    ymean = get('ymean')
+    xvar = get('xvar')
+    yvar = get('yvar')
     corr = get('corr')
     prior = get('prior')
-    out = [pop('nll')]
-    nvox = py.prod(z.shape[-dim:])
+    ll = pop('nll')
+    # the value is averaged across (batch and spatial) voxels
+    nvox = z.numel() // z.shape[-dim-1]
 
     moving = moving.unsqueeze(-dim-1)
     fixed = fixed.unsqueeze(-dim-1)
 
+    # The responsibilities of a voxel combine (geometric average) the
+    # Gaussians of all patches it belongs to, i.e., quantities that
+    # depend on the Gaussian parameters are "pushed" (adjoint of the
+    # local mean) from patches to voxels. All the quantities needed for
+    # the value, gradient and Hessian are pushed in a single call.
+    stats = []
+    if measure != 'joint':
+        # moving marginal
+        ixvar = xvar.reciprocal()
+        stats += [ixvar, xmean * ixvar,
+                  xmean * xmean * ixvar + xvar.log() - 2 * prior.log()]
     if grad:
-        z0 = fwd(z, None).clamp_min_(1e-10)
+        # joint precision
+        cov = corr * (xvar * yvar).sqrt()
+        idet = (xvar * yvar - cov * cov).reciprocal()
+        xprec = yvar * idet
+        icov = -cov * idet
+        stats += [xprec, icov, xprec * xmean + icov * ymean]
+        if hess and measure != 'joint':
+            # Gauss-Newton: precision of each Gaussian, combined by the
+            # responsibilities. The marginal term removes the part of
+            # the precision that does not depend on the fixed image:
+            #   [Sigma^{-1}]_xx - 1/xvar = corr^2 / (xvar * (1 - corr^2))
+            stats += [cov * cov * idet / xvar]
+    if stats:
+        stats = list(bwd(torch.stack(stats), None, None).unbind(0))
 
-        # gradient of the GMM entropy
-        # L = 0.5 * \sum_k pi_k log|\Sigma_k| + cte
-        @torch.jit.script
-        def make_grad(bwd: Bwd, z, z0, moving, fixed, moving_mean, fixed_mean,
-                      moving_var, fixed_var, corr, prior) -> Tensor:
-            cov = corr * (moving_var * fixed_var).sqrt()
-            idet = moving_var * fixed_var * (1 - corr * corr)
-            idet = prior / idet
-            # gradient of determinant + chain rule of log
-            g = moving * bwd(fixed_var * idet, z, z0) - fixed * bwd(cov * idet, z, z0)
-            g -= bwd((moving_mean * fixed_var - fixed_mean * cov) * idet, z, z0)
-            g = g.sum(-bwd.dim-1)
-            return g
+    if measure != 'joint':
+        ixvar, ixmean, lx = stats[:3]
+        stats = stats[3:]
+        lx.addcmul_(ixvar, moving * moving).addcmul_(ixmean, moving, value=-2)
+        lx.mul_(-0.5)
+        ll = ll + torch.logsumexp(lx, -dim-1).mean()
+    out = [ll]
 
-        g = make_grad(bwd, z, z0, moving, fixed, moving_mean, fixed_mean,
-                      moving_var, fixed_var, corr, prior)
-        g.div_(nvox)
+    if grad:
+        # gradient of the joint negative log-likelihood (at fixed parameters)
+        xprec, icov, g = stats[:3]
+        g = g.neg_().addcmul_(xprec, moving).addcmul_(icov, fixed)
+        g = g.mul_(z).sum(-dim-1)
+        if measure != 'joint':
+            # minus the gradient of the marginal negative log-likelihood
+            w = torch.softmax(lx, -dim-1)
+            g -= w.mul_(ixmean.neg_().addcmul_(ixvar, moving)).sum(-dim-1)
+        g /= nvox
         out.append(g)
 
         if hess:
-            # # hessian of (1 - corr^2)
-            # imoving_var = moving_var.reciprocal()
-            # corr2 = corr * corr
-            # h = corr2 * imoving_var
-            # # chain rule (with Fisher's scoring)
-            # h /= 1 - corr2
-            # # hessian of log(moving_var)
-            # h += imoving_var
-            # # weight by proportion and sum
-            # h = h * (z * prior)
-            # h = h.sum(-1)
-
-            @torch.jit.script
-            def make_hess(bwd: Bwd, z, z0, moving_var, corr, prior) -> Tensor:
-                h = (1 - z0) * prior / (moving_var * (1 - corr * corr))
-                h = bwd(h, z, z0)
-                h = h.sum(-bwd.dim-1)
-                return h
-
-            h = make_hess(bwd, z, z0, moving_var, corr, prior)
-            h.div_(nvox)
+            h = xprec if measure == 'joint' else stats[3]
+            h = h.mul_(z).sum(-dim-1)
+            h /= nvox
             out.append(h)
 
     if return_theta:
@@ -211,8 +272,29 @@ def lgmmh(moving, fixed, dim=None, bins=3, patch=7, stride=1,
 
 
 def gmmh(moving, fixed, dim=None, bins=6, max_iter=128, mask=None,
-         grad=True, hess=True, theta=None, return_theta=False):
+         measure='mi', grad=True, hess=True, theta=None,
+         return_theta=False):
     """Entropy estimated by Gaussian Mixture Modeling
+
+    A 2D Gaussian mixture is fitted (by EM) to the joint intensity
+    distribution of the moving and fixed images, and used to estimate
+    an (upper bound of an) entropy.
+
+    The joint entropy H[moving, fixed] (`measure='joint'`) is *not* a good
+    registration objective on its own: it can also be decreased by
+    making the warped moving image more uniform (e.g., by shrinking it
+    or expanding homogeneous regions), irrespective of the fixed image.
+
+    The negative mutual information (`measure='mi'`, default) is
+    H[moving, fixed] - H[moving] - H[fixed]. Since the fixed image is
+    never warped, its entropy is a constant and is dropped, i.e., the
+    returned value is the conditional entropy
+    H[fixed | moving] = H[moving, fixed] - H[moving]. With one cluster,
+    it reduces to 0.5 * log(1 - corr^2) (+ cte), i.e., it is equivalent
+    to the (global) correlation coefficient.
+
+    The marginal entropy H[moving] is estimated with the marginal of the
+    fitted joint mixture. Constant terms (log 2*pi) are omitted.
 
     Parameters
     ----------
@@ -224,16 +306,20 @@ def gmmh(moving, fixed, dim=None, bins=6, max_iter=128, mask=None,
         Number of spatial dimensions
     bins : int, default=6
         Number of clusters in the mixture
-    max_iter : int, default=25
+    max_iter : int, default=128
         Number of EM iterations
     mask : tensor, optional
+    measure : {'mi', 'joint'}, default='mi'
+        - 'mi':    Negative mutual information, without the constant
+                   fixed entropy: H[moving, fixed] - H[moving]
+        - 'joint': Joint entropy H[moving, fixed]
     grad : bool, default=True
     hess : bool, default=True
 
     Returns
     -------
     l : () tensor
-        Negative log likelihood
+        Loss (average across voxels)
     g : (..., *spatial) tensor, if `grad`
         Gradient
     h : (..., *spatial) tensor, if `hess`
@@ -244,6 +330,7 @@ def gmmh(moving, fixed, dim=None, bins=6, max_iter=128, mask=None,
     # TODO: multivariate GMM?
     #   -> must differentiate ln|C| where C is the correlation matrix
 
+    measure = _check_measure(measure)
     dim = dim or (fixed.dim() - 1)
     gmmfit = fit_gmm2(moving, fixed, bins, max_iter,
                       dim=dim, mask=mask, theta=theta)
@@ -253,62 +340,66 @@ def gmmh(moving, fixed, dim=None, bins=6, max_iter=128, mask=None,
     pop = gmmfit.pop
 
     z = pop('resp')
-    if mask is not None:
-        z *= mask.unsqueeze(-1)
-    z = z.div_(sumspatial(z, dim))
     prior = get('prior')
     moving_mean = get('xmean')
     fixed_mean = get('ymean')
     moving_var = get('xvar')
     fixed_var = get('yvar')
     corr = get('corr')
-    out = [pop('nll')]
+    ll = pop('nll')
+    nvox = pop('nvox')  # normalisation used for the value
 
     moving = moving[..., None]
     fixed = fixed[..., None]
+    if mask is not None:
+        mask = mask[..., None]
+
+    def marginal(x, mean, var):
+        # log-likelihood of a 1D marginal, averaged over voxels
+        lx = prior.log() - 0.5 * var.log() - 0.5 * (x - mean).square() / var
+        lpx = torch.logsumexp(lx, -1, keepdim=True)
+        if mask is not None:
+            lpx = lpx * mask
+        return lx, lpx.sum() / nvox
+
+    if measure != 'joint':
+        lx, lpx = marginal(moving, moving_mean, moving_var)
+        ll = ll + lpx
+    out = [ll]
 
     if grad:
+        if mask is not None:
+            z = z * mask
 
-        @torch.jit.script
-        def make_grad(moving, fixed, moving_mean, fixed_mean, moving_var, fixed_var, corr, prior, z):
-            # compute normalized values
-            moving_std = moving_var.sqrt()
-            fixed_std = fixed_var.sqrt()
-            moving = (moving - moving_mean) / moving_std
-            fixed = (fixed - fixed_mean) / fixed_std
-            # gradient of (1 - corr^2)
-            g = corr * (moving * corr - fixed) / moving_std
-            # gradient of log (chain rule)
-            g /= 1 - corr * corr
-            # gradient of log(moving_var)
-            g += moving / moving_std
-            # weight by proportion and sum
-            g *= (z * prior)
-            g = g.sum(-1)
-            return g
-
-        g = make_grad(moving, fixed, moving_mean, fixed_mean,
-                      moving_var, fixed_var, corr, prior, z)
+        # gradient of the joint negative log-likelihood (at fixed parameters):
+        # [Sigma^{-1} (v - mu)]_moving
+        #   = (moving - corr * fixed) / (moving_std * (1 - corr^2)),
+        # with normalized values (v - mu) / std
+        moving_std = moving_var.sqrt()
+        nmoving = (moving - moving_mean).div_(moving_std)
+        scl = (moving_std * (1 - corr * corr)).reciprocal_()
+        g = (fixed - fixed_mean).mul_(-corr * scl / fixed_var.sqrt())
+        g = g.addcmul_(nmoving, scl).mul_(z).sum(-1)
+        if measure != 'joint':
+            # minus the gradient of the marginal negative log-likelihood
+            w = torch.softmax(lx, -1)
+            if mask is not None:
+                w = w.mul_(mask)
+            g -= w.mul_(nmoving.div_(moving_std)).sum(-1)
+        g /= nvox
         out.append(g)
 
         if hess:
-
-            @torch.jit.script
-            def make_hess(moving_var, corr, prior, z):
-                # hessian of (1 - corr^2)
-                imoving_var = moving_var.reciprocal()
-                corr2 = corr * corr
-                h = corr2 * imoving_var
-                # chain rule (with Fisher's scoring)
-                h /= 1 - corr2
-                # hessian of log(moving_var)
-                h += imoving_var
-                # weight by proportion and sum
-                h = h * (z * prior)
-                h = h.sum(-1)
-                return h
-
-            h = make_hess(moving_var, corr, prior, z)
+            # Gauss-Newton: precision of each Gaussian, weighted by the
+            # responsibilities. The marginal term removes the part of the
+            # precision that does not depend on the fixed image:
+            #   [Sigma^{-1}]_xx - 1/xvar = corr^2 / (xvar * (1 - corr^2))
+            corr2 = corr * corr
+            h = (1 - corr2) * moving_var
+            h = (corr2 if measure != 'joint' else 1) / h
+            # (..., *1, K) -> (..., *1[:-1], K, 1): matrix-vector product
+            h = torch.matmul(z, h.squeeze(-2).unsqueeze(-1)).squeeze(-1)
+            h /= nvox
             out.append(h)
 
     if return_theta:
@@ -318,27 +409,54 @@ def gmmh(moving, fixed, dim=None, bins=6, max_iter=128, mask=None,
 
 
 class GMMH(OptimizationLoss):
-    """Gaussian Mixture Entropy"""
+    """Entropy estimated by Gaussian Mixture Modeling"""
 
     order = 2
 
-    def __init__(self, dim=None, bins=3, max_iter=128, cache=True):
+    def __init__(self, dim=None, bins=6, max_iter=128, measure='mi',
+                 cache=True):
         """
 
         Parameters
         ----------
-        dim : int, default=1fixed.dim() - 1`
+        dim : int, default=`fixed.dim() - 1`
             Number of spatial dimensions
+        bins : int, default=6
+            Number of clusters in the mixture
+        max_iter : int, default=128
+            Maximum number of EM iterations
+        measure : {'mi', 'joint'}, default='mi'
+            Negative mutual information (without the constant fixed
+            entropy), or joint entropy H[moving, fixed]. See `gmmh`.
+        cache : bool, default=True
+            Warm-start EM with the parameters of the previous call
         """
         super().__init__()
         self.dim = dim
         self.bins = bins
         self.max_iter = max_iter
+        self.measure = _check_measure(measure)
         self.cache = cache
         self.theta = None
 
+    def _call(self, moving, fixed, grad, hess, **kwargs):
+        kwargs.setdefault('dim', self.dim)
+        kwargs.setdefault('bins', self.bins)
+        kwargs.setdefault('max_iter', self.max_iter)
+        kwargs.setdefault('measure', self.measure)
+        if self.theta is not None:
+            # pass a copy: the fit consumes (pops) the parameters, and
+            # `get_state` may hold a reference to the cached dict
+            kwargs.setdefault('theta', {k: self.theta[k] for k in _theta_keys})
+        kwargs['return_theta'] = self.cache
+        out = gmmh(moving, fixed, **kwargs, grad=grad, hess=hess)
+        if self.cache:
+            *out, self.theta = out
+            out = out[0] if len(out) == 1 else tuple(out)
+        return out
+
     def loss(self, moving, fixed, **kwargs):
-        """Compute the squared LCC loss
+        """Compute the GMM entropy
 
         Parameters
         ----------
@@ -353,18 +471,10 @@ class GMMH(OptimizationLoss):
             Loss
 
         """
-        kwargs.setdefault('dim', self.dim)
-        kwargs.setdefault('bins', self.bins)
-        kwargs.setdefault('max_iter', self.max_iter)
-        kwargs.setdefault('theta', self.theta)
-        kwargs['return_theta'] = self.cache
-        ll = gmmh(moving, fixed, **kwargs, grad=False, hess=False)
-        if self.cache:
-            ll, self.theta = ll
-        return ll
+        return self._call(moving, fixed, False, False, **kwargs)
 
     def loss_grad(self, moving, fixed, **kwargs):
-        """Compute the squared LCC loss
+        """Compute the GMM entropy and its gradient
 
         Parameters
         ----------
@@ -381,18 +491,10 @@ class GMMH(OptimizationLoss):
             Gradient with respect to the moving image
 
         """
-        kwargs.setdefault('dim', self.dim)
-        kwargs.setdefault('bins', self.bins)
-        kwargs.setdefault('max_iter', self.max_iter)
-        kwargs.setdefault('theta', self.theta)
-        kwargs['return_theta'] = self.cache
-        ll, g, *theta = gmmh(moving, fixed, **kwargs, grad=True, hess=False)
-        if self.cache:
-            self.theta = theta[0]
-        return ll, g
+        return self._call(moving, fixed, True, False, **kwargs)
 
     def loss_grad_hess(self, moving, fixed, **kwargs):
-        """Compute the squared LCC loss
+        """Compute the GMM entropy, its gradient and Hessian
 
         Parameters
         ----------
@@ -407,20 +509,11 @@ class GMMH(OptimizationLoss):
             Loss
         g : (..., K, *spatial) tensor, optional
             Gradient with respect to the moving image
-        h : (..., K*(K+1)//2, *spatial) tensor, optional
-            Hessian with respect to the moving image.
-            Its spatial dimensions are singleton when `acceleration == 0`.
+        h : (..., K, *spatial) tensor, optional
+            (Diagonal) Hessian with respect to the moving image.
 
         """
-        kwargs.setdefault('dim', self.dim)
-        kwargs.setdefault('bins', self.bins)
-        kwargs.setdefault('max_iter', self.max_iter)
-        kwargs.setdefault('theta', self.theta)
-        kwargs['return_theta'] = self.cache
-        ll, g, h, *theta = gmmh(moving, fixed, **kwargs, grad=True, hess=True)
-        if self.cache:
-            self.theta = theta[0]
-        return ll, g, h
+        return self._call(moving, fixed, True, True, **kwargs)
 
     def clear_state(self):
         self.theta = None
@@ -433,18 +526,33 @@ class GMMH(OptimizationLoss):
 
 
 class LGMMH(OptimizationLoss):
-    """Gaussian Mixture Entropy"""
+    """Entropy estimated by a Local Gaussian Mixture Model"""
 
     order = 2
 
     def __init__(self, dim=None, bins=3, patch=20, stride=1, kernel='g',
-                 max_iter=128, cache=True):
+                 max_iter=128, measure='mi', cache=True):
         """
 
         Parameters
         ----------
-        dim : int, default=1fixed.dim() - 1`
+        dim : int, default=`fixed.dim() - 1`
             Number of spatial dimensions
+        bins : int, default=3
+            Number of clusters in the mixture (in each patch)
+        patch : [list of] float, default=20
+            Patch size, in voxels
+        stride : [list of] int, default=1
+            Stride between patches
+        kernel : {'g', 'c'}, default='g'
+            Patch kernel: gaussian or constant (square)
+        max_iter : int, default=128
+            Maximum number of EM iterations
+        measure : {'mi', 'joint'}, default='mi'
+            Negative mutual information (without the constant fixed
+            entropy), or joint entropy H[moving, fixed]. See `gmmh`.
+        cache : bool, default=True
+            Warm-start EM with the parameters of the previous call
         """
         super().__init__()
         self.dim = dim
@@ -453,11 +561,38 @@ class LGMMH(OptimizationLoss):
         self.stride = stride
         self.kernel = kernel
         self.max_iter = max_iter
+        self.measure = _check_measure(measure)
         self.cache = cache
         self.theta = None
+        self._theta_key = None
+
+    def _call(self, moving, fixed, grad, hess, **kwargs):
+        kwargs.setdefault('dim', self.dim)
+        kwargs.setdefault('bins', self.bins)
+        kwargs.setdefault('patch', self.patch)
+        kwargs.setdefault('stride', self.stride)
+        kwargs.setdefault('kernel', self.kernel)
+        kwargs.setdefault('max_iter', self.max_iter)
+        kwargs.setdefault('measure', self.measure)
+        kwargs['return_theta'] = self.cache
+        kwargs.pop('mask', None)  # TODO: masked local fit
+        # Warm-start EM from the previous fit. Local parameters live on
+        # the grid of patches, so they can only be reused if the images
+        # and patches have not changed.
+        key = (tuple(moving.shape), tuple(fixed.shape), moving.dtype,
+               moving.device, str(kwargs['patch']), str(kwargs['stride']),
+               kwargs['kernel'], kwargs['bins'])
+        if self.theta is not None and key == self._theta_key:
+            kwargs.setdefault('theta', {k: self.theta[k] for k in _theta_keys})
+        out = lgmmh(moving, fixed, **kwargs, grad=grad, hess=hess)
+        if self.cache:
+            *out, self.theta = out
+            self._theta_key = key
+            out = out[0] if len(out) == 1 else tuple(out)
+        return out
 
     def loss(self, moving, fixed, **kwargs):
-        """Compute the squared LCC loss
+        """Compute the local GMM entropy
 
         Parameters
         ----------
@@ -472,21 +607,10 @@ class LGMMH(OptimizationLoss):
             Loss
 
         """
-        kwargs.setdefault('dim', self.dim)
-        kwargs.setdefault('bins', self.bins)
-        kwargs.setdefault('patch', self.patch)
-        kwargs.setdefault('stride', self.stride)
-        kwargs.setdefault('kernel', self.kernel)
-        kwargs.setdefault('max_iter', self.max_iter)
-        kwargs['return_theta'] = self.cache
-        kwargs.pop('mask', None)
-        ll = lgmmh(moving, fixed, **kwargs, grad=False, hess=False)
-        if self.cache:
-            ll, self.theta = ll
-        return ll
+        return self._call(moving, fixed, False, False, **kwargs)
 
     def loss_grad(self, moving, fixed, **kwargs):
-        """Compute the squared LCC loss
+        """Compute the local GMM entropy and its gradient
 
         Parameters
         ----------
@@ -503,21 +627,10 @@ class LGMMH(OptimizationLoss):
             Gradient with respect to the moving image
 
         """
-        kwargs.setdefault('dim', self.dim)
-        kwargs.setdefault('bins', self.bins)
-        kwargs.setdefault('patch', self.patch)
-        kwargs.setdefault('stride', self.stride)
-        kwargs.setdefault('kernel', self.kernel)
-        kwargs.setdefault('max_iter', self.max_iter)
-        kwargs['return_theta'] = self.cache
-        kwargs.pop('mask', None)
-        ll, g, *theta = lgmmh(moving, fixed, **kwargs, grad=True, hess=False)
-        if self.cache:
-            self.theta = theta[0]
-        return ll, g
+        return self._call(moving, fixed, True, False, **kwargs)
 
     def loss_grad_hess(self, moving, fixed, **kwargs):
-        """Compute the squared LCC loss
+        """Compute the local GMM entropy, its gradient and Hessian
 
         Parameters
         ----------
@@ -532,29 +645,19 @@ class LGMMH(OptimizationLoss):
             Loss
         g : (..., K, *spatial) tensor, optional
             Gradient with respect to the moving image
-        h : (..., K*(K+1)//2, *spatial) tensor, optional
-            Hessian with respect to the moving image.
-            Its spatial dimensions are singleton when `acceleration == 0`.
+        h : (..., K, *spatial) tensor, optional
+            (Diagonal) Hessian with respect to the moving image.
 
         """
-        kwargs.setdefault('dim', self.dim)
-        kwargs.setdefault('bins', self.bins)
-        kwargs.setdefault('patch', self.patch)
-        kwargs.setdefault('stride', self.stride)
-        kwargs.setdefault('kernel', self.kernel)
-        kwargs.setdefault('max_iter', self.max_iter)
-        kwargs['return_theta'] = self.cache
-        kwargs.pop('mask', None)
-        ll, g, h, *theta = lgmmh(moving, fixed, **kwargs, grad=True, hess=True)
-        if self.cache:
-            self.theta = theta[0]
-        return ll, g, h
+        return self._call(moving, fixed, True, True, **kwargs)
 
     def clear_state(self):
         self.theta = None
+        self._theta_key = None
 
     def get_state(self):
-        return dict(theta=self.theta)
+        return dict(theta=self.theta, theta_key=self._theta_key)
 
     def set_state(self, state):
         self.theta = state.get('theta', None)
+        self._theta_key = state.get('theta_key', None)
