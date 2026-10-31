@@ -64,9 +64,12 @@ def main(options):
 
     if options.plot > 0:
         try:
-            import matplotlib
-            matplotlib.use('TkAgg')
+            # use matplotlib's default backend selection (Agg when headless)
+            import matplotlib  # noqa: F401
         except ImportError:
+            import warnings
+            warnings.warn('matplotlib is not installed: plotting is '
+                          'disabled.')
             options.plot = 0
 
     wishart_mode = options.wish
