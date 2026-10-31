@@ -649,6 +649,7 @@ class PairwiseRegisterStep:
             # ----------------------------------------------------------
             # build full transform
             # ----------------------------------------------------------
+            right = None
             if _almost_identity(aff_right) and fixed.shape == self.nonlin.shape:
                 aff_right = None
                 phi = spatial.add_identity_grid(phi00)
@@ -726,9 +727,11 @@ class PairwiseRegisterStep:
             # chain rule -> derivatives wrt phi
             # ----------------------------------------------------------
             if grad or hess:
+                # `phi` is the forward warp on the fixed lattice: reuse it
                 g, h, mugrad = self.nonlin.propagate_grad(
                     g, h, moving, phi00, aff_left, aff_right,
-                    inv=loss.backward)
+                    inv=loss.backward, warp=phi, right_grid=right)
+                del phi, right
                 g = regutils.jg(mugrad, g)
                 h = regutils.jhj(mugrad, h)
                 is_svf = isinstance(self.nonlin, SVFModel)
