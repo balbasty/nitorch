@@ -195,6 +195,12 @@ def do_convt(x: Tensor, kernel: List[Tensor], stride: List[int],
             stride1: List[int] = [1] * dim
             stride1[d] = s
             shape1: List[int] = list(x.shape[-dim:])
+            if s == 1 and z == shape1[d]:
+                # Without stride, the transposed 'same' convolution is a
+                # 'same' convolution with the flipped kernel, which is
+                # faster than conv_transpose on most backends.
+                x = conv(x, k.flip([d+2]), stride1)
+                continue
             shape1[d] = z
             x = conv_transpose(x, k, stride1, shape1)
     return x
@@ -348,7 +354,8 @@ def _local_mean_conv(
 
     # --- cached conv(ones) --------------------------------------------
     if mask is None:
-        key = str((list(shape), list(kernel_size), list(stride)))
+        key = str((list(shape), list(kernel_size), list(stride),
+                   x.dtype, x.device))
         if cache is not None:
             if key not in cache:
                 convmask = torch.ones(shape, dtype=x.dtype, device=x.device)
