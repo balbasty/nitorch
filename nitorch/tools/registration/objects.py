@@ -994,12 +994,25 @@ class LogAffine(AffineTransform):
 
     @classmethod
     def _switch_basis(cls, dat, src, dst, dim=3):
+        # Map Lie parameters from basis `src` to basis `dst`.
+        # Components that `dst` shares with `src` are copied, the others
+        # are zero (so a step in `src` is embedded exactly in a larger
+        # `dst`) or dropped (projection onto a smaller `dst`).
+        # The similitude scale `s` stands for zooms `(s, ..., s)`, so
+        # affine -> similitude takes the mean zoom. This matches
+        # `_optim_grad` (which sums the zoom gradients), but not the
+        # similitude basis itself, whose scale generator is
+        # `I/sqrt(dim)` (3D): `switch_basis` between similitude and
+        # affine does not keep the matrix.
         src_dat = dat
         dst_dat = None
         dst = dst[:2].lower()
         src = src[:2].lower()
         if dst[0] == 't':
-            dst_dat = src_dat[:dim].clone()
+            if src == 'ro':
+                dst_dat = src_dat.new_zeros([dim])
+            else:
+                dst_dat = src_dat[:dim].clone()
         elif dst == 'ro':
             nb_prm = dim*(dim-1)//2
             if src == 'ro':
@@ -1015,7 +1028,7 @@ class LogAffine(AffineTransform):
             if src == 'ro':
                 dst_dat = src_dat.new_zeros([nb_prm])
                 dst_dat[dim:] = src_dat
-            elif len(src_dat) >= dim + nb_prm:
+            elif len(src_dat) >= nb_prm:
                 dst_dat = src_dat[:nb_prm].clone()
             else:
                 dst_dat = src_dat.new_zeros([nb_prm])
@@ -1025,10 +1038,9 @@ class LogAffine(AffineTransform):
             dst_dat = src_dat.new_zeros([nb_prm])
             if src == 'ro':
                 dst_dat[dim:-1] = src_dat
-            elif len(src_dat) >= dim + nb_prm:
-                # old_basis is full affine
+            elif src[0] == 'a':
                 dst_dat[:nb_prm-1] = src_dat[:nb_prm-1]
-                dst_dat[-1] = src_dat[nb_prm-1:nb_prm+2].mean()
+                dst_dat[-1] = src_dat[nb_prm-1:nb_prm-1+dim].mean()
             else:
                 dst_dat[:len(src_dat)] = src_dat
         else:
@@ -1167,6 +1179,13 @@ class LogAffine2d(LogAffine):
                     idx = [0, 2]
                 else:
                     idx = [0, 1]
+            elif self._basis_name[:2].lower() == 'ro':
+                if self.plane == 0:
+                    idx = [2]
+                elif self.plane == 1:
+                    idx = [1]
+                else:
+                    idx = [0]
             elif self._basis_name[0].lower() in 'rs':
                 if self.plane == 0:
                     idx = [1, 2, 5]
@@ -1180,7 +1199,7 @@ class LogAffine2d(LogAffine):
                 if self.plane == 0:
                     idx = [1, 2, 5, 7, 8, 11]
                 elif self.plane == 1:
-                    idx = [0, 2, 1, 6, 8, 10]
+                    idx = [0, 2, 4, 6, 8, 10]
                 else:
                     idx = [0, 1, 3, 6, 7, 9]
 
@@ -1226,7 +1245,10 @@ class LogAffine2d(LogAffine):
         dst = dst[:2].lower()
         src = src[:2].lower()
         if dst[0] == 't':
-            dst_dat = src_dat[:dim].clone()
+            if src == 'ro':
+                dst_dat = src_dat.new_zeros([dim])
+            else:
+                dst_dat = src_dat[:dim].clone()
         elif dst == 'ro':
             nb_prm = dim*(dim-1)//2
             if src == 'ro':
@@ -1252,10 +1274,9 @@ class LogAffine2d(LogAffine):
             dst_dat = src_dat.new_zeros([nb_prm])
             if src == 'ro':
                 dst_dat[dim:-1] = src_dat
-            elif len(src_dat) >= nb_prm:
-                # old_basis is full affine
+            elif src[0] == 'a':
                 dst_dat[:nb_prm-1] = src_dat[:nb_prm-1]
-                dst_dat[-1] = src_dat[nb_prm-1:nb_prm+2].mean()
+                dst_dat[-1] = src_dat[nb_prm-1:nb_prm-1+dim].mean()
             else:
                 dst_dat[:len(src_dat)] = src_dat
         else:
@@ -1265,7 +1286,7 @@ class LogAffine2d(LogAffine):
                 dst_dat[dim:dim+dim*(dim-1)//2] = src_dat
             elif src[0] == 's':
                 dst_dat[:len(src_dat)-1] = src_dat[:-1]
-                dst_dat[len(src_dat)-1:] = src_dat[-1]
+                dst_dat[len(src_dat)-1:len(src_dat)+dim-1] = src_dat[-1]
             else:
                 dst_dat[:len(src_dat)] = src_dat
         return dst_dat
@@ -2195,12 +2216,20 @@ class AffineModel(TransformationModel):
         def add(self, value, **kwargs):
             return self.dat.add(self._switch(value), **kwargs)
 
+        def _switch_mul(self, value):
+            # factor for the optimised parameters; one for the others
+            if self.optim not in (None, self.basis):
+                value = torch.as_tensor(value, dtype=self.dtype,
+                                        device=self.device)
+                value = self._switch(value.expand([len(self)]) - 1) + 1
+            return value
+
         def mul_(self, value, **kwargs):
-            self.dat.mul_(self._switch(value), **kwargs)
+            self.dat.mul_(self._switch_mul(value), **kwargs)
             return self
 
         def mul(self, value, **kwargs):
-            return self.dat.mul(self._switch(value), **kwargs)
+            return self.dat.mul(self._switch_mul(value), **kwargs)
 
         def __add__(self, other):
             return self.add(other)
@@ -2406,7 +2435,6 @@ class Affine2dModel(AffineModel):
 
     def __init__(self, basis, plane, ref_affine=None, factor=1, penalty=None,
                  dat=None, position='symmetric'):
-        super().__init__(basis, factor, penalty, dat, position)
         self._plane = plane
         self.ref_affine = ref_affine
         if ref_affine is None:
@@ -2415,7 +2443,10 @@ class Affine2dModel(AffineModel):
             rot = ref_affine.clone().double()
             rot[:-1, -1] = 0
             rot[:-1, :-1] /= rot[:-1, :-1].square().sum(0, keepdim=True).sqrt()
-        self._rotation = rot.to(ref_affine)
+            rot = rot.to(ref_affine)
+        self._rotation = rot
+        super().__init__(basis, factor=factor, penalty=penalty, dat=dat,
+                         position=position)
 
     rotation = property(lambda self: self.dat.rotation if self.dat is not None else None)
     plane = property(lambda self: self.dat.plane if self.dat is not None else None)
