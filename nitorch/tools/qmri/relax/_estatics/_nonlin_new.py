@@ -506,7 +506,7 @@ class _ESTATICS_nonlin:
                 self.rls = spatial.resize(self.rls[None, None], hape=shape)[0, 0]
             else:
                 self.rls = spatial.resize(self.rls[None], shape=shape)[0]
-            self.nll['rls'] = self.rls.reciprocal().sum(dtype=torch.double)
+            self.nll['rls'] = self.rls.reciprocal().sum().double()
 
     def show_maps(self):
         if not self.opt.plot:
@@ -554,13 +554,13 @@ def recon_fit(inter, slope, te: float):
 @torch.jit.script
 def ssq(x):
     """Sum of squares"""
-    return (x * x).sum(dtype=torch.double)
+    return (x * x).sum().double()
 
 
 @torch.jit.script
 def dot(x, y):
     """Dot product"""
-    return (x * y).sum(dtype=torch.double)
+    return (x * y).sum().double()
 
 
 def get_mask_missing(dat, fit):
@@ -612,15 +612,15 @@ def nll_chi(dat, fit, msk, lam, df, return_residuals=True):
     z = (dat * fit * lam).clamp_min_(1e-32)
     xi = besseli_ratio(df / 2 - 1, z)
     logbes = besseli(df / 2 - 1, z, 'log')
-    logbes = logbes[msk].sum(dtype=torch.double)
+    logbes = logbes[msk].sum().double()
 
     # chi log-likelihood
     fitm = fit[msk]
-    sumlogfit = fitm.clamp_min(1e-32).log_().sum(dtype=torch.double)
+    sumlogfit = fitm.clamp_min(1e-32).log_().sum().double()
     sumfit2 = fitm.flatten().dot(fitm.flatten())
     del fitm
     datm = dat[msk]
-    sumlogdat = datm.clamp_min(1e-32).log_().sum(dtype=torch.double)
+    sumlogdat = datm.clamp_min(1e-32).log_().sum().double()
     sumdat2 = datm.flatten().dot(datm.flatten())
     del datm
 
@@ -1051,7 +1051,7 @@ def update_rls(maps, lam=1., norm='jtv'):
             rls += update_rls(map, l, '__internal__')
         rls = rls.sqrt_()
 
-    sumrls = rls.sum(dtype=torch.double)
+    sumrls = rls.sum().double()
     eps = core.constants.eps(rls.dtype)
     rls = rls.clamp_min_(eps).reciprocal_()
 

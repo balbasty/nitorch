@@ -1313,7 +1313,7 @@ def _softmax_lse(x, dim=-1):
 
     sumval = sumval.log_()
     lse += sumval
-    lse = lse.sum(dtype=torch.float64)
+    lse = lse.sum().double()
     return x, lse
 
 

@@ -18,7 +18,7 @@ def _inplace_softmax(Z, W=None, dim=0):
     lse = lse.log_().add_(mx)
     if W is not None:
         lse *= W
-    lse = lse.sum(dtype=torch.float64)
+    lse = lse.sum().double()
     return lse
 
 

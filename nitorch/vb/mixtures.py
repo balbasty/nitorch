@@ -188,7 +188,7 @@ class Mixture:
 
             # Update mixing proportions
             if W is not None:
-                self.mp = ss0 / torch.sum(W, dim=0, dtype=torch.float64)
+                self.mp = ss0 / torch.sum(W, dim=0).double()
             else:
                 self.mp = ss0 / N
 
@@ -224,22 +224,21 @@ class Mixture:
         ss2 = torch.zeros((C, C, K), dtype=torch.float64, device=device)
 
         # Compute 0th moment
-        ss0 = torch.sum(Z, dim=0, dtype=torch.float64) + tiny
+        ss0 = torch.sum(Z, dim=0).double() + tiny
 
         # Compute 1st and 2nd moments
         for k in range(K):
             # 1st
             ss1[:, k] = torch.sum(torch.reshape(Z[:, k], (N, 1)) * X,
-                                  dim=0, dtype=torch.float64)
+                                  dim=0).double()
 
             # 2nd
             for c1 in range(C):
                 ss2[c1, c1, k] = \
-                    torch.sum(Z[:, k] * X[:, c1] ** 2, dtype=torch.float64)
+                    torch.sum(Z[:, k] * X[:, c1] ** 2).double()
                 for c2 in range(c1 + 1, C):
                     ss2[c1, c2, k] = \
-                        torch.sum(Z[:, k] * (X[:, c1] * X[:, c2]),
-                                  dtype=torch.float64)
+                        torch.sum(Z[:, k] * (X[:, c1] * X[:, c2])).double()
                     ss2[c2, c1, k] = ss2[c1, c2, k]
 
         return ss0, ss1, ss2
@@ -707,9 +706,9 @@ class CMM(Mixture):
         # Compute sufficient statistics
         for k in range(K):
             Zk = Z[:, k]
-            ss0[k] = Zk.sum(dtype=torch.float64)
-            ss1[k] = (logX * Zk).sum(dim=0, dtype=torch.float64)
-            ss2[k] = ((X*X) * Zk).sum(dim=0, dtype=torch.float64)
+            ss0[k] = Zk.sum().double()
+            ss1[k] = (logX * Zk).sum(dim=0).double()
+            ss2[k] = ((X*X) * Zk).sum(dim=0).double()
         return ss0, ss1, ss2
 
     def _update(self, ss0, ss1, ss2):

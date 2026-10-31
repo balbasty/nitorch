@@ -234,7 +234,7 @@ def emmi_hard(moving, fixed, dim=None, prior=None, fwhm=None, max_iter=32,
         # --------------------------------------------------------------
         norm = add_tiny_(torch.sum(z, -2, keepdim=True, out=norm), Nb)
         z /= norm
-        ll = sum_double(norm.log_().mul_(weights))
+        ll = norm.log_().mul_(weights).sum().double()
 
         z *= weights
 
@@ -306,7 +306,7 @@ def emmi_hard(moving, fixed, dim=None, prior=None, fwhm=None, max_iter=32,
             g = g.reshape([*g.shape[:-1], *shape])
 
     # norm is not needed anymore: take its log in place
-    ll = -sum_double(norm.log_().mul_(weights)) / Nm
+    ll = -norm.log_().mul_(weights).sum().double() / Nm
     out = [ll]
     if grad:
         out.append(g)
@@ -362,7 +362,7 @@ def emmi_soft(moving, fixed, dim=None, prior=None, fwhm=None, max_iter=32,
         # q(𝑥ₙ = 𝑗) / (𝑯(𝜇 ∘ 𝜙))ₙⱼ
         resp = torch.div(fixed, norm, out=resp)
         # norm is recomputed at the next iteration: take its log in place
-        ll = sum_double(norm.log_().mul_(fixed))
+        ll = norm.log_().mul_(fixed).sum().double()
         # M-step: N p(𝑥 = 𝑗, 𝑦 = 𝑘) = ∑ₙ q(𝑥ₙ = 𝑗) q(𝑦ₙ = 𝑘 | 𝑥ₙ = 𝑗)
         prior0 = prior * torch.matmul(resp, moving.transpose(-1, -2))
         prior = prior0.add_(tiny)
@@ -407,7 +407,7 @@ def emmi_soft(moving, fixed, dim=None, prior=None, fwhm=None, max_iter=32,
             h = h.reshape([*h.shape[:-1], *shape])
 
     # norm is not needed anymore: take its log in place
-    ll = -sum_double(norm.log_().mul_(fixed)) / Nm
+    ll = -norm.log_().mul_(fixed).sum().double() / Nm
     out = [ll]
     if grad:
         out.append(g)
@@ -539,18 +539,6 @@ def add_tiny_(x, n=0, eps=1e-12):
         tiny = torch.maximum(x.max(), x.min().neg_())
     x.add_(tiny, alpha=eps)
     return x
-
-
-def sum_double(x, chunk=2**20):
-    """Same as `x.sum(dtype=torch.double)`, but without a double copy
-    of the whole tensor when `x` is not double (it is summed in chunks)"""
-    if x.dtype == torch.double or x.numel() <= chunk:
-        return x.sum(dtype=torch.double)
-    x = x.reshape(-1)
-    out = x[:chunk].sum(dtype=torch.double)
-    for c in x[chunk:].split(chunk):
-        out += c.sum(dtype=torch.double)
-    return out
 
 
 class EMMI(OptimizationLoss):

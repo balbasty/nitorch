@@ -150,7 +150,7 @@ def _loglin_gradient(contrast, intercept, decay, opt, do_grad=True):
         msk = msk.to(**backend)
 
         # compute log-likelihood
-        crit = crit - 0.5 * lam * res.square().sum(dtype=torch.double)
+        crit = crit - 0.5 * lam * res.square().sum().double()
 
         if do_grad:
             # compute gradient and Hessian in observed space
