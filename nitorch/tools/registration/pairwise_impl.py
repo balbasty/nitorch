@@ -733,8 +733,13 @@ class PairwiseRegisterStep:
                     g, h, moving, phi00, aff_left, right,
                     inv=loss.backward, warp=phi)
                 del phi, right
-                g = regutils.jg(mugrad, g)
-                h = regutils.jhj(mugrad, h)
+                if mugrad is not None:
+                    g = regutils.jg(mugrad, g)
+                    h = regutils.jhj(mugrad, h)
+                else:
+                    # already wrt the displacement: channels last
+                    g = utils.fast_movedim(g, 0, -1)
+                    h = utils.fast_movedim(h, 0, -1) if h is not None else h
                 is_svf = isinstance(self.nonlin, SVFModel)
                 is_svf = is_svf or (isinstance(self.nonlin, Nonlin2dModel) and
                                     isinstance(self.nonlin._model, SVFModel))

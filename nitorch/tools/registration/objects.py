@@ -1986,8 +1986,7 @@ class SmallDefModel(NonLinModel):
             h (tensor) : pushed hessian
             gmu (tensor) : rotated spatial gradients
                 If `right` is used, `g` and `h` are already wrt the
-                displacement and `gmu` is the identity, as a
-                (D, *spatial, D) tensor.
+                displacement and `gmu` is None (the identity).
         """
         if inv:
             g = g.neg_()
@@ -1998,10 +1997,7 @@ class SmallDefModel(NonLinModel):
             # chain rule on the fixed lattice, wrt the displacement D
             g, h = _push_grad_fixed(g, h, moving, phi, left, right, self.shape,
                                     warp=warp)
-            dim = phi.shape[-1]
-            eye = torch.eye(dim, **utils.backend(g))
-            eye = eye.reshape([dim] + [1] * dim + [dim])
-            return g, h, eye.expand([dim, *self.shape, dim])
+            return g, h, None
 
         if warp is not None:
             # same warp as in the forward pass
@@ -2126,6 +2122,11 @@ class Nonlin2dModel(NonLinModel):
             g, h, moving, phi, left, right, inv, warp=warp)
 
         P = self.projection()
+        if mugrad is None:
+            # identity Jacobian: P * I' = P, laid out as (D, *spatial, D)
+            dim = len(self.shape)
+            P = P.T.to(g).reshape([dim] + [1] * dim + [dim])
+            return g, h, P.expand([dim, *self.shape, dim])
         mugrad = linalg.matvec(P.to(mugrad), mugrad)
         return g, h, mugrad
 
