@@ -369,3 +369,27 @@ def test_lgmm_class_warm_start():
     mov2, fix2 = make_data([12, 8])
     ll3, g3, h3 = loss.loss_grad_hess(mov2, fix2)  # new shape: cold start
     assert g3.shape == mov2.shape and torch.isfinite(ll3)
+
+
+@pytest.mark.parametrize('local', [False, True])
+def test_gmm_float32_more_classes_than_tissues(local):
+    """With more classes than tissues (and a constant background), the
+    responsibilities of a class can underflow in single precision. The
+    M-step used to compute 0/0 = NaN; empty classes now revert to the
+    global statistics."""
+    n = 16
+    g = torch.Generator().manual_seed(0)
+    lab = torch.randint(0, 4, [1, 1, 2, 2, 2], generator=g).float()
+    lab = torch.nn.functional.interpolate(lab, size=[n] * 3)[0].round().long()
+    noise = lambda: 0.05 * torch.randn([1, n, n, n], generator=g) * (lab > 0)
+    fix = torch.tensor([0., 1, 2, 3])[lab] + noise()
+    mov = torch.tensor([0., 2.5, 1, .3])[lab] + noise()
+    if local:
+        fn = lambda m, f: lgmmh(m, f, dim=3, bins=8, patch=6, max_iter=16)
+    else:
+        fn = lambda m, f: gmmh(m, f, dim=3, bins=8)
+    out32 = fn(mov, fix)
+    out64 = fn(mov.double(), fix.double())
+    for o32, o64 in zip(out32, out64):
+        assert torch.isfinite(o32).all()
+    assert torch.allclose(out32[0].double(), out64[0], rtol=1e-3, atol=1e-3)

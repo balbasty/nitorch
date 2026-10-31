@@ -310,7 +310,7 @@ def load_cov(xvar, yvar, cov, alpha: float = 1e-10):
 
 
 @torch.jit.script
-def m_step(f, z, ndim: int, alpha: float = 1e-10):
+def m_step(f, z, ndim: int, alpha: float = 1e-10, prior_weight: float = 1e-8):
     """
 
     Parameters
@@ -321,6 +321,16 @@ def m_step(f, z, ndim: int, alpha: float = 1e-10):
         Responsibilities
     ndim : int
         Number of spatial dimensions
+    alpha : float
+        Minimum eigenvalue of the covariance matrices
+    prior_weight : float
+        Weight of a (weak) prior that pulls each class towards the
+        statistics of the pooled classes (i.e., of the whole image), as
+        a fraction of the pooled statistics. It keeps classes that become
+        empty well defined (they revert to the global statistics with a
+        tiny proportion) instead of 0/0 = NaN, which happens in single
+        precision when responsibilities underflow (e.g., more classes
+        than tissues).
 
     Returns
     -------
@@ -330,6 +340,7 @@ def m_step(f, z, ndim: int, alpha: float = 1e-10):
     z2 = z.reshape(zbatch + [f.shape[-2], z.shape[-1]])
     # (tiny) statistics are processed in double precision
     s = sum_outer(f, z2)
+    s = s + prior_weight * s.sum(-1, keepdim=True)
     for _ in range(ndim):
         s = s.unsqueeze(-2)
     mom0, xmom1, ymom1, xmom2, ymom2, xymom2 = s.unbind(-ndim-2)
@@ -514,7 +525,8 @@ def make_moments(x, y):
 
 
 @torch.jit.script
-def m_step_local(fwd: Fwd, buf: Tensor, moments: Tensor)\
+def m_step_local(fwd: Fwd, buf: Tensor, moments: Tensor,
+                 prior_weight: float = 1e-8)\
         -> Tuple[Tensor, Tensor, Tensor, Tensor, Tensor, Tensor]:
     """
     buf : (6, ..., K, *spatial) tensor
@@ -525,6 +537,8 @@ def m_step_local(fwd: Fwd, buf: Tensor, moments: Tensor)\
     # a single local mean of [z, z*moments]
     torch.mul(moments, buf[0], out=buf[1:])
     stats = fwd(buf, None)
+    # weak prior towards the pooled local statistics (see `m_step`)
+    stats = stats.add_(stats.sum(-fwd.dim-1, keepdim=True), alpha=prior_weight)
     z0 = stats[0].clamp_min_(1e-10)
     xmean, ymean, xvar, yvar, cov = stats[1:].div_(z0).unbind(0)
     xvar = xvar.addcmul_(xmean, xmean, value=-1)
