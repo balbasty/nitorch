@@ -1364,8 +1364,14 @@ def _rotate_grad(grad, aff=None, dense=None):
     return grad
 
 
-def _push_grad_fixed(g, h, moving, disp, left, right, shape,
-                     warp=None, right_grid=None):
+def _right_grid(right, shape):
+    """Dense right grid, from a (D+1, D+1) affine or a (*shape, D) grid."""
+    if right is None or right.shape[-1] == len(shape):
+        return right
+    return spatial.affine_grid(right, shape)
+
+
+def _push_grad_fixed(g, h, moving, disp, left, right, shape, warp=None):
     """Chain rule on the fixed lattice, then push to the nonlinear lattice.
 
     Used when the fixed lattice differs from the nonlinear lattice.
@@ -1382,18 +1388,15 @@ def _push_grad_fixed(g, h, moving, disp, left, right, shape,
     moving : Image                      Moving image
     disp : (*shape, D) tensor           Displacement (nonlinear lattice)
     left : (D+1, D+1) tensor            Left affine, optional
-    right : (D+1, D+1) tensor           Right affine
+    right : (D+1, D+1) or (*fixed, D)   Right affine, matrix or dense grid
     shape : list[int]                   Nonlinear lattice
     warp : (*fixed, D) tensor           Forward warp, in moving voxels,
                                         optional (recomputed if None)
-    right_grid : (*fixed, D) tensor     `Right` as a dense grid, optional
     returns : (D, *shape) tensor        Pushed gradient wrt D
               (D*(D+1)//2, *shape)      Pushed Hessian wrt D (or None)
     """
     dim = disp.shape[-1]
-    if right_grid is None:
-        right_grid = spatial.affine_grid(right, g.shape[-dim:])
-    right = right_grid
+    right = _right_grid(right, g.shape[-dim:])
     if warp is None:
         # same warp as in the forward pass
         warp = regutils.smart_pull_grid(disp, right, bound='zero')
@@ -1706,7 +1709,7 @@ class ShootModel(NonLinModel):
             return grid, igrid
 
     def propagate_grad(self, g, h, moving, phi, left=None, right=None, inv=False,
-                       warp=None, right_grid=None):
+                       warp=None):
         """Convert derivatives wrt warped image in loss space to
         to derivatives wrt parameters
         parameters:
@@ -1715,10 +1718,10 @@ class ShootModel(NonLinModel):
             moving (Image) : moving image
             phi (tensor) : dense (exponentiated) displacement field
             left (matrix) : left affine
-            right (matrix) : right affine
+            right (matrix or tensor) : right affine, as a (D+1, D+1)
+                matrix or a dense (*fixed, D) grid
             inv (bool) : whether we're in a backward symmetric pass
             warp (tensor) : forward warp on the fixed lattice, optional
-            right_grid (tensor) : right affine as a dense grid, optional
         returns:
             g (tensor) : pushed gradient
             h (tensor) : pushed hessian
@@ -1730,8 +1733,7 @@ class ShootModel(NonLinModel):
         moving_shape = moving.shape
         if inv:
             # differentiate wrt δ in: Left o (Id + D) o (Id + δ) o Right
-            if right is not None:
-                right = spatial.affine_grid(right, fixed_shape)
+            right = _right_grid(right, fixed_shape)
             g = regutils.smart_push(g, right, shape=self.shape)
             h = regutils.smart_push(h, right, shape=self.shape)
             del right
@@ -1748,7 +1750,7 @@ class ShootModel(NonLinModel):
         else:
             # differentiate wrt δ in: Left o (Id - δ) o (Id + D) o Right
             if right is not None:
-                right = spatial.affine_grid(right, fixed_shape)
+                right = _right_grid(right, fixed_shape)
                 phi_right = regutils.smart_pull_grid(phi, right)
                 phi_right += right
             else:
@@ -1861,7 +1863,7 @@ class SVFModel(NonLinModel):
             return grid, igrid
 
     def propagate_grad(self, g, h, moving, phi, left=None, right=None, inv=False,
-                       warp=None, right_grid=None):
+                       warp=None):
         """Convert derivatives wrt warped image in loss space to
         to derivatives wrt parameters
         parameters:
@@ -1870,10 +1872,10 @@ class SVFModel(NonLinModel):
             moving (Image) : moving image
             phi (tensor) : dense (exponentiated) displacement field
             left (matrix) : left affine
-            right (matrix) : right affine
+            right (matrix or tensor) : right affine, as a (D+1, D+1)
+                matrix or a dense (*fixed, D) grid
             inv (bool) : whether we're in a backward symmetric pass
             warp (tensor) : forward warp on the fixed lattice, optional
-            right_grid (tensor) : right affine as a dense grid, optional
         returns:
             g (tensor) : pushed gradient
             h (tensor) : pushed hessian
@@ -1891,7 +1893,7 @@ class SVFModel(NonLinModel):
             # chain rule on the fixed lattice, wrt the displacement D;
             # Phi o (Id + δ) ~ Phi + Jac(Phi) δ, hence the rotation.
             g, h = _push_grad_fixed(g, h, moving, phi, left, right, self.shape,
-                                    warp=warp, right_grid=right_grid)
+                                    warp=warp)
             jac = spatial.grid_jacobian(phi, type='disp')
             return g, h, utils.fast_movedim(jac, -2, 0)
 
@@ -1966,7 +1968,7 @@ class SmallDefModel(NonLinModel):
         return (grid, igrid, jac, ijac) if jacobian else (grid, igrid)
 
     def propagate_grad(self, g, h, moving, phi, left=None, right=None, inv=False,
-                       warp=None, right_grid=None):
+                       warp=None):
         """Convert derivatives wrt warped image in loss space to
         to derivatives wrt parameters
         parameters:
@@ -1975,10 +1977,10 @@ class SmallDefModel(NonLinModel):
             moving (Image) : moving image
             phi (tensor) : dense (exponentiated) displacement field
             left (matrix) : left affine
-            right (matrix) : right affine
+            right (matrix or tensor) : right affine, as a (D+1, D+1)
+                matrix or a dense (*fixed, D) grid
             inv (bool) : whether we're in a backward symmetric pass
             warp (tensor) : forward warp on the fixed lattice, optional
-            right_grid (tensor) : right affine as a dense grid, optional
         returns:
             g (tensor) : pushed gradient
             h (tensor) : pushed hessian
@@ -1995,7 +1997,7 @@ class SmallDefModel(NonLinModel):
         if right is not None:
             # chain rule on the fixed lattice, wrt the displacement D
             g, h = _push_grad_fixed(g, h, moving, phi, left, right, self.shape,
-                                    warp=warp, right_grid=right_grid)
+                                    warp=warp)
             dim = phi.shape[-1]
             eye = torch.eye(dim, **utils.backend(g))
             eye = eye.reshape([dim] + [1] * dim + [dim])
@@ -2119,10 +2121,9 @@ class Nonlin2dModel(NonLinModel):
         return hess
 
     def propagate_grad(self, g, h, moving, phi, left=None, right=None, inv=False,
-                       warp=None, right_grid=None):
+                       warp=None):
         g, h, mugrad = self._model.propagate_grad(
-            g, h, moving, phi, left, right, inv,
-            warp=warp, right_grid=right_grid)
+            g, h, moving, phi, left, right, inv, warp=warp)
 
         P = self.projection()
         mugrad = linalg.matvec(P.to(mugrad), mugrad)

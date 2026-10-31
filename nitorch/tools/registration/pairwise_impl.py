@@ -727,10 +727,11 @@ class PairwiseRegisterStep:
             # chain rule -> derivatives wrt phi
             # ----------------------------------------------------------
             if grad or hess:
-                # `phi` is the forward warp on the fixed lattice: reuse it
+                # reuse the forward warp and the dense right affine
+                # (`right` is None iff `aff_right` is None)
                 g, h, mugrad = self.nonlin.propagate_grad(
-                    g, h, moving, phi00, aff_left, aff_right,
-                    inv=loss.backward, warp=phi, right_grid=right)
+                    g, h, moving, phi00, aff_left, right,
+                    inv=loss.backward, warp=phi)
                 del phi, right
                 g = regutils.jg(mugrad, g)
                 h = regutils.jhj(mugrad, h)
