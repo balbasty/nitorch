@@ -132,18 +132,22 @@ def greens(shape, absolute=_default_absolute, membrane=_default_membrane,
     else:
         kernel = torch.zeros([*shape, 1, 1], **backend)
 
-    # generate kernel: impulse response of the regulariser.
-    # It is computed on the full lattice (rather than on a 3^D or 5^D
-    # patch around the center) so that small or singleton dimensions,
-    # which wrap around, are handled correctly.
-    center = tuple(s//2 for s in shape)
+    # generate kernel: impulse response of the regulariser, computed
+    # on a patch around the center (the stencil's support) along
+    # dimensions that are at least as large as the stencil, and on the
+    # full extent along smaller dimensions, which wrap around.
+    subsize = 5 if bending else 3
+    patch = tuple(slice(s//2 - subsize//2, s//2 + subsize//2 + 1)
+                  if s >= subsize else slice(None) for s in shape)
+    subkernel = kernel[patch]
+    center = tuple(subsize//2 if s >= subsize else s//2 for s in shape)
     if lame1 or lame2:
         for d in range(dim):
-            kernel[center + (d, d)] = 1
-            kernel[..., :, d] = regulariser_grid(kernel[..., :, d], **prm)
+            subkernel[center + (d, d)] = 1
+            subkernel[..., :, d] = regulariser_grid(subkernel[..., :, d], **prm)
     else:
-        kernel[center + (0, 0)] = 1
-        kernel[..., 0, 0] = regulariser(kernel[None, ..., 0, 0], **prm, dim=dim)[0]
+        subkernel[center + (0, 0)] = 1
+        subkernel[..., 0, 0] = regulariser(subkernel[None, ..., 0, 0], **prm, dim=dim)[0]
 
     kernel = fft.ifftshift(kernel, dim=range(dim))
 
