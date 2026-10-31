@@ -212,6 +212,7 @@ def _main(options):
     affine, nonlin = run(
         losses, affine, nonlin, affine_optim, nonlin_optim,
         pyramid=not options.pyramid.concurrent,
+        reg_eps=options.pyramid.reg_eps,
         interleaved=options.optim.name != 'sequential',
         progressive=getattr(options.affine, 'progressive', False),
         max_iter=options.optim.max_iter,
