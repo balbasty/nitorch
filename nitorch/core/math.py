@@ -1071,7 +1071,7 @@ def softmax_lse(input, dim=-1, lse=False, weights=None, implicit=False,):
         maxval += sumval
         if weights is not None:
             maxval *= weights
-        maxval = maxval.sum(dtype=torch.float64)
+        maxval = maxval.sum().double()
     else:
         maxval = None
 
@@ -1649,10 +1649,10 @@ def besseli_old(X, order=0, Nk=64):
     K_factorial = (K + 1).lgamma().exp()
     if order == 0:
         # ..0th order
-        i = torch.sum((0.25 * X ** 2) ** K / (K_factorial ** 2), dim=1, dtype=torch.float64)
+        i = torch.sum((0.25 * X ** 2) ** K / (K_factorial ** 2), dim=1).double()
     else:
         # ..1st order
         i = torch.sum(
             0.5 * X * ((0.25 * X ** 2) ** K /
-                       (K_factorial * torch.exp(torch.lgamma(K + 2)))), dim=1, dtype=torch.float64)
+                       (K_factorial * torch.exp(torch.lgamma(K + 2)))), dim=1).double()
     return i

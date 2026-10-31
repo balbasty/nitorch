@@ -187,7 +187,7 @@ def greeq(data, transmit=None, receive=None, opt=None, **kwopt):
             vol = vx.prod() / vol0
             maps, rls = resize(maps, rls, aff, shape)
             if opt.penalty.norm in ('tv', 'jtv'):
-                sumrls = 0.5 * vol * rls.reciprocal().sum(dtype=torch.double)
+                sumrls = 0.5 * vol * rls.reciprocal().sum().double()
         
         # --- compute derivatives ---
         nb_prm = len(maps)

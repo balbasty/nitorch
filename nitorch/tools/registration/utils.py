@@ -288,9 +288,9 @@ def _affine_grid_backward_g(grid, grad):
     dim = grid.shape[-1]
     g = torch.empty([grad.shape[0], dim, dim+1], dtype=grad.dtype, device=grad.device)
     for i in range(dim):
-        g[:, i, -1] = grad[:, :, i].sum(1, dtype=torch.double).to(g.dtype)
+        g[:, i, -1] = grad[:, :, i].sum(1)
         for j in range(dim):
-            g[:, i, j] = (grad[:, :, i] * grid[:, :, j]).sum(1, dtype=torch.double).to(g.dtype)
+            g[:, i, j] = (grad[:, :, i] * grid[:, :, j]).sum(1)
     return g
 
 

@@ -1,38 +1,76 @@
 r"""
 This loss has the same behaviour as `spm_maff8`
+(see also `nitorch.tools.registration.affine_tpm`, which uses the same
+model and the same EM, with a TPM as moving image).
 
 General idea
 ------------
-. Let 𝒙 ∈ ⟦1,K⟧ᴺ be an *observed* label map.
-  Typically, an image is discretized into K bins, and 𝑥ₙ indexes
+. Let 𝒙 ∈ ⟦1,J⟧ᴺ be an *observed* label map.
+  Typically, an image is discretized into J bins, and 𝑥ₙ indexes
   the bin in which voxel n falls. But it could also be any segmentation.
-. Let 𝒚 ∈ ⟦1,J⟧ᴺ be a *hidden* label map (with a potentially different
-  labelling scheme: J != K), such that p(𝑥ₙ = 𝑖 | 𝑦ₙ = 𝑗) = 𝐻ᵢⱼ
-. Let 𝜇 ∈ ℝᴺᴶ be a (deformable) prior probability to see
-  label j in voxel n, and 𝜙 ∈ ℝᴺᴰ be the corresponding
-  deformation field, such that: p(𝑦ₙ = 𝑗) = (𝜇 ∘ 𝜙)ₙⱼ
+. Let 𝒚 ∈ ⟦1,K⟧ᴺ be a *hidden* label map (with a potentially different
+  labelling scheme: J != K), such that p(𝑥ₙ = 𝑗 | 𝑦ₙ = 𝑘) = p(𝑥 = 𝑗) 𝐻ⱼₖ
+  (see below for the normalization of H).
+. Let 𝜇 ∈ ℝᴺᴷ be a (deformable) prior probability to see
+  label k in voxel n, and 𝜙 ∈ ℝᴺᴰ be the corresponding
+  deformation field, such that: p(𝑦ₙ = 𝑘) = (𝜇 ∘ 𝜙)ₙₖ
+  This loss receives the deformed probabilities 𝜇 ∘ 𝜙 (the moving image).
 . We want to find the parameters {𝐻, 𝜙} that maximize the marginal
   likelihood:
-      p(𝒙; 𝑯, 𝜇, 𝜙) = ∏ₙ ∑ⱼ p(𝑥ₙ | 𝑦ₙ = 𝑗; 𝑯) p(𝑦ₙ; 𝜇, 𝜙)
+      p(𝒙; 𝑯, 𝜇, 𝜙) = ∏ₙ ∑ₖ p(𝑥ₙ | 𝑦ₙ = 𝑘; 𝑯) p(𝑦ₙ; 𝜇, 𝜙)
   where we use ";" to separate random variables from parameters.
 . Note that 𝜇 is assumed constant in this problem: only H and 𝜙 are
   optimized.
 . In order to maximize H, we use an EM algorithm:
   We introduce an approximate parameter H and compute the approximate
   posterior distribution:
-      q(𝑦ₙ = 𝑗 | 𝑥ₙ = 𝑖) ∝ 𝐻ᵢⱼ (𝜇 ∘ 𝜙)ₙⱼ                   (E-step)
+      q(𝑦ₙ = 𝑘 | 𝑥ₙ = 𝑗) ∝ 𝐻ⱼₖ (𝜇 ∘ 𝜙)ₙₖ                   (E-step)
   We then compute the expected value of the joint log-likelihood with respect
   to q, and maximize it with respect to H:
-      𝐻ᵢⱼ ∝ ∑ₙ (𝑥ₙ = 𝑖) q(𝑦ₙ = 𝑗)                          (M-step)
+      p(𝑥 = 𝑗, 𝑦 = 𝑘) ∝ ∑ₙ 𝛿(𝑥ₙ = 𝑗) q(𝑦ₙ = 𝑘)              (M-step)
+      𝐻ⱼₖ = p(𝑥 = 𝑗, 𝑦 = 𝑘) / (p(𝑥 = 𝑗) p(𝑦 = 𝑘))
+. H is therefore the "normalized" joint histogram p(x,y) / (p(x) p(y))
+  = p(x|y) / p(x), not the conditional p(x|y). The factor 1/p(𝑥 = 𝑗)
+  does not depend on k, so it cancels in the E-step. In 𝓛 (below) it
+  only adds the constant -∑ₙ ln p(𝑥 = 𝑥ₙ), which depends on the fixed
+  image histogram only. With this normalization, when 𝜇 ∘ 𝜙 is one-hot
+  (and the histogram is not smoothed), 𝓛/N is the mutual information
+  between 𝒙 and 𝒚.
+. If `fwhm` is set, the joint histogram is smoothed along the fixed-bin
+  axis (j) after each M-step. The M-step is then not an exact maximizer
+  of 𝓛, and EM is not guaranteed to be monotonic: it stops when the
+  absolute change of 𝓛 is below `tolerance * N`.
 . With H fixed, in order to maximize 𝜙, we go back to the
   marginal log-likelihood:
-      𝓛 = ln p(𝒙) = ∑ₙ ln ∑ⱼ 𝐻{[𝑥ₙ],𝑗} (𝜇 ∘ 𝜙)ₙⱼ
-  which we differentiate with respect to 𝜙.
+      𝓛 = ln p(𝒙) = ∑ₙ ln ∑ₖ 𝐻{[𝑥ₙ],𝑘} (𝜇 ∘ 𝜙)ₙₖ
+  which we differentiate with respect to 𝜇 ∘ 𝜙 (and, by the chain rule,
+  𝜙). If H were the exact maximizer of 𝓛 for the current 𝜙, this would
+  be the gradient of the profile log-likelihood max_H 𝓛 (envelope
+  theorem). Because EM is stopped early (and the histogram may be
+  smoothed), this is only approximate.
 . If we do not have an observed hard segmentation, but a (fixed) separable
   distribution q over x, we can maximize the expected log-likelihood instead:
-      𝓛 = 𝔼_q[ln p(𝒙)] = ∑ₙᵢ q(𝑥ₙ = 𝑖) ln ∑ⱼ 𝐻ᵢⱼ (𝜇 ∘ 𝜙)ₙⱼ
+      𝓛 = 𝔼_q[ln p(𝒙)] = ∑ₙⱼ q(𝑥ₙ = 𝑗) ln ∑ₖ 𝐻ⱼₖ (𝜇 ∘ 𝜙)ₙₖ
+  EM then treats each pair (n, j) as an observation with weight
+  q(𝑥ₙ = 𝑗): the E-step computes q(𝑦ₙ = 𝑘 | 𝑥ₙ = 𝑗) as above, for all j,
+  and the M-step becomes
+      p(𝑥 = 𝑗, 𝑦 = 𝑘) ∝ ∑ₙ q(𝑥ₙ = 𝑗) q(𝑦ₙ = 𝑘 | 𝑥ₙ = 𝑗)       (M-step)
+
+Sign and scale conventions
+--------------------------
+. `emmi` (and the `EMMI` loss) return the value to *minimize*:
+  -𝓛/N, evaluated at the final H, where N is the total voxel weight,
+  together with its gradient and Hessian with respect to 𝜇 ∘ 𝜙
+  (H fixed).
+. `affine_tpm.em_prior` returns +𝓛 (summed over voxels, to maximize),
+  with the same H and the same EM.
+
+Mapping to the code
+-------------------
+. `prior[..., j, k]` is 𝐻ⱼₖ, of shape (..., J, K); `fixed` holds 𝒙
+  (or q); `moving[..., k, :]` holds (𝜇 ∘ 𝜙)ₙₖ.
 """
-from nitorch.core import utils, linalg, math
+from nitorch.core import utils, linalg
 from nitorch import spatial
 from .base import OptimizationLoss
 import torch
@@ -44,19 +82,35 @@ def emmi(moving, fixed, *args, **kwargs):
     Parameters
     ----------
     moving : (..., K, *spatial) tensor
+        Deformed moving probabilities 𝜇 ∘ 𝜙 (K classes)
     fixed : (..., J|1, *spatial) tensor
+        Fixed image: discretized into J bins (integer, one channel)
+        or a soft (float) distribution over J bins.
     dim : int, default=`moving.dim()-1`
     prior : (..., J, K) tensor
+        Initial normalized joint histogram H = p(x,y)/(p(x)p(y))
     fwhm : float, optional
+        Smoothing of the joint histogram along the fixed-bin axis.
+        Default: no smoothing.
     max_iter : int, default=32
+        Maximum number of EM iterations (0 = H fixed).
+    tolerance : float, default=1e-5
+        Stop EM when the absolute change of the log-likelihood is
+        less than `tolerance * N`.
     weights : tensor (..., 1, *spatial) tensor, optional
 
     Returns
     -------
     ll : () tensor
+        Negative average log-likelihood -𝓛/N, at the final H.
     grad : (..., K, *spatial) tensor, if `grad`
-    hess : (..., K, *spatial) tensor, if `hess`
+        Gradient of -𝓛/N with respect to 𝜇 ∘ 𝜙 (H fixed)
+    hess : (..., K*(K+1)//2, *spatial) tensor, if `hess`
+        Hessian of -𝓛/N with respect to 𝜇 ∘ 𝜙 (H fixed), packed: the K
+        diagonal elements (k, k), then the (k, kk), k < kk, elements in
+        row-major order.
     prior : (..., J, K) tensor, if `return_prior`
+        Final H
 
     """
     if fixed.dtype.is_floating_point:
@@ -120,8 +174,21 @@ def emmi_prepare(moving, fixed, weights, prior, dim):
     return moving, fixed, weights, prior, shape
 
 
+def em_converged(ll, ll_prev, tolerance, nvox):
+    """EM stopping test.
+
+    With a smoothed histogram, EM is not monotonic, so a decrease of the
+    log-likelihood does not mean that it has converged: stop only when
+    the absolute change is small (or the value is not finite).
+    """
+    if not torch.isfinite(ll).all():
+        return True
+    return bool(((ll - ll_prev).abs() <= tolerance * nvox).all())
+
+
 def emmi_hard(moving, fixed, dim=None, prior=None, fwhm=None, max_iter=32,
-              weights=None, grad=True, hess=True, return_prior=False):
+              weights=None, grad=True, hess=True, return_prior=False,
+              tolerance=1e-5):
     # ------------------------------------------------------------------
     #           PREPARATION
     # ------------------------------------------------------------------
@@ -138,8 +205,10 @@ def emmi_hard(moving, fixed, dim=None, prior=None, fwhm=None, max_iter=32,
     # ------------------------------------------------------------------
     #           EM LOOP
     # ------------------------------------------------------------------
-    ll = -float('inf')
+    ll = torch.as_tensor(-float('inf'), dtype=torch.double)
+    # buffers reused across EM iterations and by the final objective
     z = moving.new_empty([*batch, K, N])
+    norm = moving.new_empty([*batch, 1, N])
     prior0 = torch.empty_like(prior)
     for n_iter in range(max_iter):
         ll_prev = ll
@@ -163,10 +232,9 @@ def emmi_hard(moving, fixed, dim=None, prior=None, fwhm=None, max_iter=32,
         #    = Σ_n log Σ_k p(x[n] == j[n] | z[n] == k)  p(z[n] == k)
         #    = Σ_n log Σ_k p(z[n] == k | x[n] == j) + constant{\z}
         # --------------------------------------------------------------
-        ll = z.sum(-2, keepdim=True)
-        ll = add_tiny_(ll, Nb)
-        z /= ll
-        ll = ll.log_().mul_(weights).sum([-1, -2], dtype=torch.double)
+        norm = add_tiny_(torch.sum(z, -2, keepdim=True, out=norm), Nb)
+        z /= norm
+        ll = norm.log_().mul_(weights).sum().double()
 
         z *= weights
 
@@ -190,53 +258,60 @@ def emmi_hard(moving, fixed, dim=None, prior=None, fwhm=None, max_iter=32,
         # prior /= prior.sum(dim=[-1, -2], keepdim=True)
         # MI-like normalization
         prior /= add_tiny_(prior.sum(dim=-1, keepdim=True) * prior.sum(dim=-2, keepdim=True), Nb)
-        if ll - ll_prev < 1e-5 * Nm:
+        if em_converged(ll, ll_prev, tolerance, Nm):
             break
 
-    # compute mutual information (times number of observations)
-    # > prior contains p(x,y)/(p(x) p(y))
-    # > prior0 contains N * p(x,y)
-    # >> 1/N \sum_{j,k} prior0[j,k] * log(prior[j,k])
-    #    = \sum_{x,y} p(x,y) * (log p(x,y) - log p(x) - log p(y)
-    #    = \sum_{x,y} p(x,y) * log p(x,y)
-    #       - \sum_{xy} p(x,y) log p(x)
-    #       - \sum_{xy} p(x,y) log p(y)
-    #    = \sum_{x,y} p(x,y) * log p(x,y)
-    #       - \sum_{x} p(x) log p(x)
-    #       - \sum_{y} p(y) log p(y)
-    #    = -H[x,y] + H[x] + H[y]
-    #    = MI[x, y]
-    ll = -(prior0 * add_tiny_(prior, Nb).log()).sum() / Nm
-    out = [ll]
+    # ------------------------------------------------------------------
+    #           OBJECTIVE
+    # ------------------------------------------------------------------
+    # The value is the negative, averaged marginal log-likelihood,
+    # evaluated at the final prior
+    # 𝐻ⱼₖ = p(𝑥 = 𝑗, 𝑦 = 𝑘) / (p(𝑥 = 𝑗) p(𝑦 = 𝑘)):
+    #   -𝓛/N = -1/N ∑ₙ ln ∑ₖ 𝐻{[𝑥ₙ],𝑘} (𝜇 ∘ 𝜙)ₙₖ
+    # This is the function whose gradient and Hessian are returned below.
+    # When 𝜇 ∘ 𝜙 is a hard (one-hot) map (and fwhm=0), -𝓛/N = -MI[x, y].
+    #
+    # The previous implementation returned -∑ⱼₖ p(𝑥 = 𝑗, 𝑦 = 𝑘) ln 𝐻ⱼₖ,
+    # the MI of the expected joint histogram, which is a different
+    # function of 𝜇 ∘ 𝜙: its finite differences did not match the
+    # gradient (not even in sign), and Gauss-Newton stopped early.
+    # norm = ∑ₖ 𝐻{[𝑥ₙ],𝑘} (𝜇 ∘ 𝜙)ₙₖ, as in the E-step and in the same
+    # buffers (the log is taken at the end, once the gradient is done)
+    z = sample_prior(prior, fixed, z)
+    z *= moving
+    norm = add_tiny_(torch.sum(z, -2, keepdim=True, out=norm), Nb)
 
     # ------------------------------------------------------------------
     #           GRADIENTS
     # ------------------------------------------------------------------
-    # compute gradients
-    # Keeping only terms that depend on y, the mutual information is H[y]-H[x,y]
-    # The objective function is \sum_n E[y_n]
-    # > ll = \sum_n log p(x[n] == j[n], h)
-    #      = \sum_n log \sum_k p(x[n] == j[n] | z[n] == k, h) p(z[n] == k)
+    # The prior H is kept fixed (it (approximately) maximises 𝓛 w.r.t. H,
+    # so its own variation does not contribute to the first-order
+    # derivative). Writing (𝑯(𝜇 ∘ 𝜙))ₙⱼ = ∑ₖ 𝐻ⱼₖ (𝜇 ∘ 𝜙)ₙₖ, the
+    # gradient and Hessian of -𝓛/N with respect to (𝜇 ∘ 𝜙)ₙₖ are
+    #   g[n, k]     = -𝐻{[𝑥ₙ],𝑘} / (𝑯(𝜇 ∘ 𝜙))ₙ,[𝑥ₙ] / N
+    #   h[n, k, kk] =  g[n, k] g[n, kk] N    (exact, positive semi-definite)
+    g = h = None
     if grad or hess:
-
-        g = sample_prior(prior, fixed)
-        norm = linalg.dot(g.transpose(-1, -2), moving.transpose(-1, -2))
-        norm = add_tiny_(norm, Nb).unsqueeze(-2).reciprocal_()
-        g *= norm
+        # z is free again: gather 𝐻{[𝑥ₙ],𝑘} into it
+        g = sample_prior(prior, fixed, z)
+        g /= norm
         if hess:
             h = sym_outer(g, -2)
-
-        if grad:
-            g *= weights
-            g /= -Nm
-            # g.neg_()
-            g = g.reshape([*g.shape[:-1], *shape])
-            out.append(g)
-        if hess:
             h *= weights
             h /= Nm
             h = h.reshape([*h.shape[:-1], *shape])
-            out.append(h)
+        if grad:
+            g *= weights
+            g /= -Nm
+            g = g.reshape([*g.shape[:-1], *shape])
+
+    # norm is not needed anymore: take its log in place
+    ll = -norm.log_().mul_(weights).sum().double() / Nm
+    out = [ll]
+    if grad:
+        out.append(g)
+    if hess:
+        out.append(h)
 
     if return_prior:
         out.append(prior)
@@ -245,7 +320,15 @@ def emmi_hard(moving, fixed, dim=None, prior=None, fwhm=None, max_iter=32,
 
 
 def emmi_soft(moving, fixed, dim=None, prior=None, fwhm=None, max_iter=32,
-              weights=None, grad=True, hess=True, return_prior=False):
+              weights=None, grad=True, hess=True, return_prior=False,
+              tolerance=1e-5):
+    # The fixed image is a (fixed) separable distribution q over x, and
+    # the value is the negative, averaged expected log-likelihood
+    #   -𝓛/N = -1/N ∑ₙⱼ q(𝑥ₙ = 𝑗) ln ∑ₖ 𝐻ⱼₖ (𝜇 ∘ 𝜙)ₙₖ
+    # H is estimated by EM (a weighted mixture: each pair (n, j) is an
+    # observation with weight q(𝑥ₙ = 𝑗)), so that the gradient and
+    # Hessian with respect to 𝜇 ∘ 𝜙 (with H fixed) are those of the
+    # returned value.
     # ------------------------------------------------------------------
     #           PREPARATION
     # ------------------------------------------------------------------
@@ -256,33 +339,33 @@ def emmi_soft(moving, fixed, dim=None, prior=None, fwhm=None, max_iter=32,
 
     *batch, J, K = prior.shape
     Nb = len(batch)
-    N = moving.shape[-1]
     Nm = weights.sum()
+    fixed = fixed * weights                         # [*batch, J, N]
+
+    # [*batch, J, N] buffers, reused across EM iterations and by the
+    # final objective and derivatives
+    norm = resp = None
+
+    def marginal(prior, out=None):
+        # (𝑯(𝜇 ∘ 𝜙))ₙⱼ = ∑ₖ 𝐻ⱼₖ (𝜇 ∘ 𝜙)ₙₖ  -> [*batch, J, N]
+        return add_tiny_(torch.matmul(prior, moving, out=out), Nb)
 
     # ------------------------------------------------------------------
     #           EM LOOP
     # ------------------------------------------------------------------
-    ll = -float('inf')
-    z = moving.new_empty([*batch, K, N])
-    prior0 = torch.empty_like(prior)
+    ll = torch.as_tensor(-float('inf'), dtype=torch.double)
     for n_iter in range(max_iter):
         ll_prev = ll
-        # --------------------------------------------------------------
-        # E-step
-        # --------------------------------------------------------------
-        z = sample_prior(prior.log(), fixed, z)
-        z += moving.log()
-        z, ll = math.softmax_lse(z, -2, lse=True, weights=weights)
-
-        # --------------------------------------------------------------
-        # M-step
-        # ------
-        # estimate joint prior by maximizing Q = E_{Z;H,mu}[ln p(X, Z; H)]
-        # => H_jk = p(x == j, z == k) ∝ Σ_n p(z[n] == k | x[n] == j) 𝛿(x[n] == j)
-        # --------------------------------------------------------------
-        z *= weights
-        prior0 = scatter_prior(prior0, fixed, z)
-        prior.copy_(prior0).add_(tiny)
+        # E-step: responsibilities q(𝑦ₙ = 𝑘 | 𝑥ₙ = 𝑗) ∝ 𝐻ⱼₖ (𝜇 ∘ 𝜙)ₙₖ
+        # (only their weighted sums over n are needed)
+        norm = marginal(prior, out=norm)
+        # q(𝑥ₙ = 𝑗) / (𝑯(𝜇 ∘ 𝜙))ₙⱼ
+        resp = torch.div(fixed, norm, out=resp)
+        # norm is recomputed at the next iteration: take its log in place
+        ll = norm.log_().mul_(fixed).sum().double()
+        # M-step: N p(𝑥 = 𝑗, 𝑦 = 𝑘) = ∑ₙ q(𝑥ₙ = 𝑗) q(𝑦ₙ = 𝑘 | 𝑥ₙ = 𝑗)
+        prior0 = prior * torch.matmul(resp, moving.transpose(-1, -2))
+        prior = prior0.add_(tiny)
         # make it a joint distribution
         prior /= add_tiny_(prior.sum(dim=[-1, -2], keepdim=True), Nb)
         if fwhm:
@@ -291,62 +374,45 @@ def emmi_soft(moving, fixed, dim=None, prior=None, fwhm=None, max_iter=32,
             prior = spatial.smooth(prior, dim=1, basis=0, fwhm=fwhm, bound='replicate')
             prior = prior.transpose(-1, -2)
         # MI-like normalization
-        prior /= prior.sum(dim=-1, keepdim=True) * prior.sum(dim=-2, keepdim=True)
-        if ll - ll_prev < 1e-5 * Nm:
+        prior /= add_tiny_(prior.sum(dim=-1, keepdim=True) * prior.sum(dim=-2, keepdim=True), Nb)
+        if em_converged(ll, ll_prev, tolerance, Nm):
             break
 
-    # compute mutual information (times number of observations)
-    # > prior contains p(x,y)/(p(x) p(y))
-    # > prior0 contains N * p(x,y)
-    # >> 1/N Σ_{j,k} prior0[j,k] * log(prior[j,k])
-    #    = Σ_{x,y} p(x,y) * (log p(x,y) - log p(x) - log p(y)
-    #    = Σ_{x,y} p(x,y) * log p(x,y)
-    #       - Σ_{xy} p(x,y) log p(x)
-    #       - Σ_{xy} p(x,y) log p(y)
-    #    = Σ_{x,y} p(x,y) * log p(x,y)
-    #       - Σ_{x} p(x) log p(x)
-    #       - Σ_{y} p(y) log p(y)
-    #    = -H[x,y] + H[x] + H[y]
-    #    = MI[x, y]
-    ll = -(prior0 * prior.log()).sum() / Nm
-    out = [ll]
+    # ------------------------------------------------------------------
+    #           OBJECTIVE
+    # ------------------------------------------------------------------
+    norm = marginal(prior, out=norm)
 
     # ------------------------------------------------------------------
     #           GRADIENTS
     # ------------------------------------------------------------------
-    # compute gradients
-    # Keeping only terms that depend on y, the mutual information is H[y]-H[x,y]
-    # The objective function is \sum_n E[y_n]
-    # > ll = Σ_n log p(x[n] == j[n], h)
-    #      = Σ_nj \sum_j q(x[n] == j) log \sum_k p(x[n] == j | z[n] == k, h) p(z[n] == k)
+    # With respect to (𝜇 ∘ 𝜙)ₙₖ:
+    #   g[n, k]     = -1/N ∑ⱼ q(𝑥ₙ = 𝑗) 𝐻ⱼₖ / (𝑯(𝜇 ∘ 𝜙))ₙⱼ
+    #   h[n, k, kk] =  1/N ∑ⱼ q(𝑥ₙ = 𝑗) 𝐻ⱼₖ 𝐻ⱼ,ₖₖ / (𝑯(𝜇 ∘ 𝜙))ₙⱼ²
+    # Both are contractions over j, computed with one matmul each
+    # (no [*batch, J, K, N] intermediate).
+    g = h = None
     if grad or hess:
-
-        norm = linalg.dot(prior.transpose(-1, -2).unsqueeze(-1),
-                          moving.transpose(-1, -2).unsqueeze(-3))
-        norm = norm.add_(tiny).reciprocal_()
-        g = sample_prior(prior, fixed * norm)
-
-        if hess:
-            norm = norm.square_().mul_(fixed).unsqueeze(-1)
-            h = moving.new_zeros([*g.shape[:-2], K*(K+1)//2, N])
-            for j in range(J):
-                h[..., :K, :] += prior[..., j, :K, None].square() * norm
-                c = K
-                for k in range(K):
-                    for kk in range(k + 1, K):
-                        h[..., c, :] += (prior[..., j, k, None] *
-                                         prior[..., j, kk, None] * norm)
-                        c += 1
-
+        resp = torch.div(fixed, norm, out=resp)     # [*batch, J, N]
         if grad:
-            g *= weights
-            g.neg_()
+            g = torch.matmul(prior.transpose(-1, -2), resp)
+            g /= -Nm
             g = g.reshape([*g.shape[:-1], *shape])
-            out.append(g)
         if hess:
-            h *= weights
+            resp /= norm
+            # [*batch, J, K*(K+1)//2] products 𝐻ⱼₖ 𝐻ⱼ,ₖₖ, in the packed order
+            h = sym_outer(prior, -1)
+            h = torch.matmul(h.transpose(-1, -2), resp)
+            h /= Nm
             h = h.reshape([*h.shape[:-1], *shape])
-            out.append(h)
+
+    # norm is not needed anymore: take its log in place
+    ll = -norm.log_().mul_(fixed).sum().double() / Nm
+    out = [ll]
+    if grad:
+        out.append(g)
+    if hess:
+        out.append(h)
 
     if return_prior:
         out.append(prior)
@@ -463,10 +529,14 @@ def make_finite_(x):
 
 
 def add_tiny_(x, n=0, eps=1e-12):
+    # max |x| = max(max x, -min x), without the |x| temporary
     if n:
-        tiny = x.abs().max(range(n), keepdim=True)
+        # one value per batch element
+        dims = list(range(n, x.dim()))
+        tiny = torch.maximum(x.amax(dim=dims, keepdim=True),
+                             x.amin(dim=dims, keepdim=True).neg_())
     else:
-        tiny = x.abs().max()
+        tiny = torch.maximum(x.max(), x.min().neg_())
     x.add_(tiny, alpha=eps)
     return x
 
@@ -476,17 +546,34 @@ class EMMI(OptimizationLoss):
 
     order = 2
 
-    def __init__(self, dim=None, fwhm=None, max_iter=32, cache=True):
+    def __init__(self, dim=None, fwhm=None, max_iter=32, cache=True,
+                 tolerance=1e-5):
+        """
+        Parameters
+        ----------
+        dim : int, optional
+        fwhm : float, optional
+            Smoothing of the joint histogram along the fixed-bin axis
+        max_iter : int, default=32
+            Maximum number of EM iterations per call
+        cache : bool, default=True
+            Warm-start EM from the previous joint histogram
+        tolerance : float, default=1e-5
+            Stop EM when the absolute change of the log-likelihood is
+            less than `tolerance * N`
+        """
         super().__init__()
         self.dim = dim
         self.fwhm = fwhm
         self.max_iter = max_iter
         self.cache = cache
+        self.tolerance = tolerance
 
     def loss(self, moving, fixed, **kwargs):
         dim = kwargs.pop('dim', self.dim)
         fwhm = kwargs.pop('fwhm', self.fwhm)
         max_iter = kwargs.pop('max_iter', self.max_iter)
+        kwargs.setdefault('tolerance', self.tolerance)
         mask = kwargs.pop('mask', None)
         prior = getattr(self, '_prior', None) if self.cache else None
         ll, prior = emmi(moving, fixed, grad=False, hess=False, weights=mask,
@@ -500,6 +587,7 @@ class EMMI(OptimizationLoss):
         dim = kwargs.pop('dim', self.dim)
         fwhm = kwargs.pop('fwhm', self.fwhm)
         max_iter = kwargs.pop('max_iter', self.max_iter)
+        kwargs.setdefault('tolerance', self.tolerance)
         mask = kwargs.pop('mask', None)
         prior = getattr(self, '_prior', None) if self.cache else None
         ll, g, prior = emmi(moving, fixed, grad=True, hess=False, weights=mask,
@@ -513,6 +601,7 @@ class EMMI(OptimizationLoss):
         dim = kwargs.pop('dim', self.dim)
         fwhm = kwargs.pop('fwhm', self.fwhm)
         max_iter = kwargs.pop('max_iter', self.max_iter)
+        kwargs.setdefault('tolerance', self.tolerance)
         mask = kwargs.pop('mask', None)
         prior = getattr(self, '_prior', None) if self.cache else None
         ll, g, h, prior = emmi(moving, fixed, grad=True, hess=True, weights=mask,

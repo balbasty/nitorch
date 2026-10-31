@@ -757,9 +757,9 @@ def fit_curve_joint(f, s, max_iter=128, tol=1e-8):
 
     def get_nll(e):
         if f.dtype is torch.bool:
-            return sumf + e.sum(dtype=torch.double) - 2 * e[f].sum(dtype=torch.double)
+            return sumf + e.sum().double() - 2 * e[f].sum().double()
         else:
-            return sumf + e.sum(dtype=torch.double) - 2 * (e*f).sum(dtype=torch.double)
+            return sumf + e.sum().double() - 2 * (e*f).sum().double()
 
     start = time.time()
     nll = float('inf')
@@ -1005,14 +1005,14 @@ def fit_curve_cat(f, s, lam=0, gamma=0, vx=1, max_iter=8, tol=1e-8, max_levels=4
         if lam:
             L = lam * bending3(len(s.coeff), **backend)
             reg = L.matmul(s.coeff).mul_(vx.square())
-            reg = 0.5 * (s.coeff * reg).sum(dtype=torch.double)
+            reg = 0.5 * (s.coeff * reg).sum().double()
         else:
             reg = 0
         if gamma:
             Lr = gamma * membrane3(len(s.coeff_radius), **backend)
             Lr /= vx.prod().pow_(1/len(vx)).square_()
             reg_radius = Lr.matmul(s.coeff_radius)
-            reg_radius = 0.5 * (s.coeff_radius * reg_radius).sum(dtype=torch.double)
+            reg_radius = 0.5 * (s.coeff_radius * reg_radius).sum().double()
         else:
             reg_radius = 0
 
@@ -1020,9 +1020,9 @@ def fit_curve_cat(f, s, lam=0, gamma=0, vx=1, max_iter=8, tol=1e-8, max_levels=4
             ie = (1 - e).log()
             e = e.log()
             if f.dtype is torch.bool:
-                ll = e[f].sum(dtype=torch.double) + ie[~f].sum(dtype=torch.double)
+                ll = e[f].sum().double() + ie[~f].sum().double()
             else:
-                ll = (e * f).sum(dtype=torch.double) + (ie * (1 - f)).sum(dtype=torch.double)
+                ll = (e * f).sum().double() + (ie * (1 - f)).sum().double()
             ll = -ll
             return ll
 
@@ -1071,7 +1071,7 @@ def fit_curve_cat(f, s, lam=0, gamma=0, vx=1, max_iter=8, tol=1e-8, max_levels=4
                 if lam:
                     reg = L.matmul(s.coeff).mul_(vx.square())
                     g += reg
-                    reg = 0.5 * (s.coeff * reg).sum(dtype=torch.double)
+                    reg = 0.5 * (s.coeff * reg).sum().double()
                     # h += L[1, :].abs().sum()
                     g = torch.stack([linalg.lmdiv(h1.diag() + (v1*v1)*L, g1[:, None])[:, 0]
                                      for v1, g1, h1 in zip(vx, g.T, h.T)], -1)
@@ -1131,7 +1131,7 @@ def fit_curve_cat(f, s, lam=0, gamma=0, vx=1, max_iter=8, tol=1e-8, max_levels=4
                 if gamma:
                     reg_radius = Lr.matmul(s.coeff_radius)
                     g += reg_radius
-                    reg_radius = 0.5 * (s.coeff_radius * reg_radius).sum(dtype=torch.double)
+                    reg_radius = 0.5 * (s.coeff_radius * reg_radius).sum().double()
                     g = linalg.lmdiv(h.diag() + L, g[:, None])[:, 0]
                 else:
                     g.div_(h)
@@ -1238,9 +1238,9 @@ def fit_curves_cat(f, s, vx=1, max_iter=8, tol=1e-8, max_levels=4):
             ie = (1 - e).log()
             e = e.log()
             if f.dtype is torch.bool:
-                ll = e[f].sum(dtype=torch.double) + ie[~f].sum(dtype=torch.double)
+                ll = e[f].sum().double() + ie[~f].sum().double()
             else:
-                ll = (e * f).sum(dtype=torch.double) + (ie * (1 - f)).sum(dtype=torch.double)
+                ll = (e * f).sum().double() + (ie * (1 - f)).sum().double()
             return -ll
 
         nll = float('inf')

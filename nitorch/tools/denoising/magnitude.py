@@ -214,16 +214,16 @@ def nll_chi(dat, fit, msk, lam, df, return_grad=True, out=None):
     datm = dat[msk]
 
     # components of the log-likelihood
-    sumlogfit = fitm.clamp_min(1e-32).log_().sum(dtype=torch.double)
+    sumlogfit = fitm.clamp_min(1e-32).log_().sum().double()
     sumfit2 = ssq(fitm)
-    sumlogdat = datm.clamp_min(1e-32).log_().sum(dtype=torch.double)
+    sumlogdat = datm.clamp_min(1e-32).log_().sum().double()
     sumdat2 = ssq(datm)
 
     # reweighting
     z = (fitm * datm).mul_(lam).clamp_min_(1e-32)
     xi = math.besseli_ratio(df / 2 - 1, z)
     logbes = math.besseli(df / 2 - 1, z, 'log')
-    logbes = logbes.sum(dtype=torch.double)
+    logbes = logbes.sum().double()
 
     # sum parts
     crit = (df / 2 - 1) * sumlogfit - (df / 2) * sumlogdat - logbes

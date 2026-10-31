@@ -77,13 +77,13 @@ def estimate_fwhm(dat, vx=None, verbose=0, mn=-inf, mx=inf):
     slicer = (slice(1, -1),) * dim
     g = g[(*slicer, None)]
     g[msk[slicer], :] = 0
-    g = g.reshape([-1, dim]).sum(0, dtype=torch.double)
+    g = g.reshape([-1, dim]).sum(0).double()
     # Make dat have zero mean
     dat = dat[slicer]
     dat = dat[msk[slicer]]
     x0 = dat - dat.mean()
     # Compute FWHM
-    fwhm = pymath.sqrt(4 * pymath.log(2)) * x0.abs().sum(dtype=torch.double)
+    fwhm = pymath.sqrt(4 * pymath.log(2)) * x0.abs().sum().double()
     fwhm = fwhm / g
     if verbose >= 1:
         print(f'FWHM={fwhm.tolist()}')
@@ -95,7 +95,7 @@ def estimate_fwhm(dat, vx=None, verbose=0, mn=-inf, mx=inf):
         sz = smooth('gauss', fwhm[2], x=0, **backend)[0][0, 0, 0]
     sc = (sx * sy * sz) / dim
     sc.clamp_min_(1)
-    sd = torch.sqrt(x0.square().sum(dtype=torch.double) / (x0.numel() * sc))
+    sd = torch.sqrt(x0.square().sum().double() / (x0.numel() * sc))
     if verbose >= 1:
         print(f'sd={sd.tolist()}')
     return fwhm, sd

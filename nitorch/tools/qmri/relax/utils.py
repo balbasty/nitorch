@@ -465,11 +465,11 @@ def reg(tensor, vx=1., rls=None, lam=1., do_grad=True):
     # ^ average across side
 
     if do_grad:
-        reg = (tensor * grad).sum(dtype=torch.double)
+        reg = (tensor * grad).sum().double()
         return 0.5 * reg, grad
     else:
         grad *= tensor
-        return 0.5 * grad.sum(dtype=torch.double)
+        return 0.5 * grad.sum().double()
 
 
 def reg1(tensor, vx=1., rls=None, lam=1., do_grad=True):
@@ -516,11 +516,11 @@ def reg1(tensor, vx=1., rls=None, lam=1., do_grad=True):
     grad *= lam / 2.   # average across directions (3) and side (2)
 
     if do_grad:
-        reg = (tensor * grad).sum(dtype=torch.double)
+        reg = (tensor * grad).sum().double()
         return 0.5 * reg, grad
     else:
         grad *= tensor
-        return 0.5 * grad.sum(dtype=torch.double)
+        return 0.5 * grad.sum().double()
 
 def rls_maj(rls, vx=1., lam=1.):
     """Diagonal majoriser of the RLS regulariser.
@@ -659,13 +659,13 @@ def min_intensity_step(x, max_points=1e6):
 @torch.jit.script
 def ssq(x):
     """Sum of squares"""
-    return (x*x).sum(dtype=torch.double)
+    return (x*x).sum().double()
 
 
 @torch.jit.script
 def dot(x, y):
     """Dot product"""
-    return (x*y).sum(dtype=torch.double)
+    return (x*y).sum().double()
 
 
 def get_mask_missing(dat, fit):
@@ -724,11 +724,11 @@ def nll_chi(dat, fit, msk, lam, df, return_residuals=True, sum_crit=True):
 
     # components of the log-likelihood
     if sum_crit:
-        logfit = fitm.clamp_min(1e-32).log_().sum(dtype=torch.double)
+        logfit = fitm.clamp_min(1e-32).log_().sum().double()
         fit2 = ssq(fitm)
-        logdat = datm.clamp_min(1e-32).log_().sum(dtype=torch.double)
+        logdat = datm.clamp_min(1e-32).log_().sum().double()
         dat2 = ssq(datm)
-        logbes = logbes.sum(dtype=torch.double)
+        logbes = logbes.sum().double()
     else:
         logfit = fitm.clamp_min(1e-32).log_()
         fit2 = fitm.square()

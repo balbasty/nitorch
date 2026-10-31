@@ -113,7 +113,7 @@ class BacktrackingLineSearch(LineSearch):
 
             # Perform step
             delta = optim.search_direction(*derivatives)
-            param = optim.update(param0.clone(), delta)
+            param = optim.update(delta, param0.clone())
             loss = closure_line_search(param)
 
             if loss < loss0:
@@ -130,10 +130,8 @@ class BacktrackingLineSearch(LineSearch):
             param = param0.copy_(param)
             if optim0 is self.optim:
                 self.optim = optim
-            print('success')
             loss, *derivatives = closure(param, **self.requires)
         else:
-            print('failure')
             param, loss = param0, loss0
         return (param, loss, *derivatives)
 
@@ -165,23 +163,27 @@ class StepSizeLineSearch(BacktrackingLineSearch):
         delta = optim.search_direction(*derivatives)
 
         # line search step size
+        # (the search direction already includes the optimizer's step
+        # size `lr`, so we search over a multiplicative factor of it)
         success = False
-        loss0, param0, lr0 = loss, param, optim.lr
-        lr = lr0
+        loss0, param0, lr0 = loss, param, getattr(optim, self.key)
+        scale = 1
         for n_iter in range(self.max_iter):
 
-            param = param0.add(delta, alpha=lr)
-            loss = closure_line_search(param.add(delta, alpha=lr))
+            param = param0.add(delta, alpha=scale)
+            loss = closure_line_search(param)
 
             if loss < loss0:
                 success = True
                 break
             else:
-                lr = self.factor * lr
+                scale = self.factor * scale
 
         if success:
             if self.store_value:
-                self.lr = lr * self.store_value
+                # same semantics as BacktrackingLineSearch: store the
+                # successful step size (modulated) in the optimizer
+                setattr(optim, self.key, lr0 * scale * self.store_value)
             param = param0.copy_(param)
             loss, *derivatives = closure(param, **self.requires)
         else:

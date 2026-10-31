@@ -189,9 +189,17 @@ def _main(options):
     # ------------------------------------------------------------------
     #                           BACKEND STUFF
     # ------------------------------------------------------------------
-    if options.verbose > 1:
-        import matplotlib
-        matplotlib.use('TkAgg')
+    # Plotting (-v >= 3) uses matplotlib's default backend selection, which
+    # honours MPLBACKEND / matplotlibrc and falls back to a non-interactive
+    # backend (Agg) when no display is available. Without matplotlib, the
+    # registration runs without live plots.
+    if options.verbose > 2:
+        try:
+            import matplotlib  # noqa: F401
+        except ImportError:
+            import warnings
+            warnings.warn('matplotlib is not installed: live plotting is '
+                          'disabled.')
 
     # local losses may benefit from selecting the best conv
     if hasattr(torch.backends, 'cudnn'):
@@ -316,7 +324,9 @@ def build_losses(options, pyramids, device):
         if loss.name == 'emmi':
             loss.mov.rescale = (0, 0)
             loss.fix.discretize = loss.fix.discretize or 256
-            loss.mov.soft_quantize = loss.mov.discretize or 16
+            # moving image: soft-quantized into (default) 16 bins
+            loss.mov.discretize = loss.mov.discretize or 16
+            loss.mov.soft = True
             loss.mov.missing = []
         loss.fix.pyramid = pyramid['fix']
         loss.mov.pyramid = pyramid['mov']
@@ -347,7 +357,7 @@ def build_losses(options, pyramids, device):
                 for key in ('rescale', 'missing', 'discretize'):
                     setattr(optfix, key, getattr(loss.fix, key))
                     setattr(optmov, key, getattr(loss.mov, key))
-                optmov.soft_quantize = loss.mov.soft_quantize
+                optfix.soft, optmov.soft = False, True
                 bwd_fix = make_image(*preproc_image(optfix.files, **include(optfix, loadkeys), dim=dim, device=device),
                                      **include(optfix, imagekeys))
                 bwd_mov = make_image(*preproc_image(optmov.files, **include(optmov, loadkeys), dim=dim, device=device),

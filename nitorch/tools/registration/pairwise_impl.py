@@ -40,6 +40,21 @@ from .objects import SVFModel, ShootModel, MeanSpace, Nonlin2dModel, SumSimilari
 #      too large, it would allow us to use Gauss-Newton directly.
 
 
+
+def _new_figure():
+    """New matplotlib figure, or None (with a warning) if unavailable"""
+    try:
+        import matplotlib.pyplot as plt
+    except ImportError:
+        return None
+    try:
+        return plt.figure()
+    except Exception as e:  # e.g. broken interactive backend
+        import warnings
+        warnings.warn(f'Cannot create a figure ({e}): live plotting is '
+                      f'disabled.')
+        return None
+
 class PairwiseRegister:
     """A class that registers pairs of images"""
 
@@ -93,8 +108,14 @@ class PairwiseRegister:
         return self.fit()
 
     def fit(self):
-        backend = dict(device=self.losses[0].moving.device,
-                       dtype=self.losses[0].moving.dtype)
+        # Transformation parameters must be floating point, even when
+        # the images are not (e.g., discretized images are integers).
+        dtype = self.losses[0].moving.dtype
+        if not dtype.is_floating_point:
+            dtype = self.losses[0].fixed.dtype
+        if not dtype.is_floating_point:
+            dtype = torch.get_default_dtype()
+        backend = dict(device=self.losses[0].moving.device, dtype=dtype)
         if self.affine and self.affine.parameters() is None:
             self.affine = self.affine.set_dat(dim=self.losses[0].fixed.dim,
                                               **backend)
@@ -257,12 +278,13 @@ class PairwiseRegisterStep:
         self.figure = figure
         self._last_plot = 0
         self._plot_lock = Lock()
+        self._plot_pending = None
         if self.verbose > 2 and not self.figure:
-            import matplotlib.pyplot as plt
-            self.figure = plt.figure()
-            self._plot_pending = None
+            self.figure = _new_figure()
 
     def mov2fix(self, *args, **kwargs):
+        if not self.figure:  # matplotlib unavailable: no live plot
+            return
         thread = Thread(target=(lambda: self._mov2fix(*args, **kwargs)))
         if self._plot_lock.locked():
             self._plot_pending = thread
@@ -649,25 +671,26 @@ class PairwiseRegisterStep:
             # ----------------------------------------------------------
             # build full transform
             # ----------------------------------------------------------
+            right = None
             if _almost_identity(aff_right) and fixed.shape == self.nonlin.shape:
                 aff_right = None
-                phi = spatial.add_identity_grid(phi00)
+                psi = spatial.add_identity_grid(phi00)
                 disp = phi00
             else:
                 right = spatial.affine_grid(aff_right, fixed.shape)
-                phi = regutils.smart_pull_grid(phi00, right, bound='zero')
+                psi = regutils.smart_pull_grid(phi00, right, bound='zero')
                 if do_print:
-                    disp = phi.clone()
-                phi += right
+                    disp = psi.clone()
+                psi += right
             if _almost_identity(aff_left) and moving.shape == self.nonlin.shape:
                 aff_left = None
             else:
-                phi = spatial.affine_matvec(aff_left, phi)
+                psi = spatial.affine_matvec(aff_left, psi)
 
             # ----------------------------------------------------------
             # forward pass
             # ----------------------------------------------------------
-            warped, warped_mask = moving.pull(phi, mask=True)
+            warped, warped_mask = moving.pull(psi, mask=True)
             if fixed.masked:
                 if warped_mask is None:
                     mask = fixed.mask
@@ -689,7 +712,7 @@ class PairwiseRegisterStep:
                     if mask is not None:
                         lam *= mask
                 if moving.previewed:
-                    preview = moving.pull(phi, preview=True, dat=False)
+                    preview = moving.pull(psi, preview=True, dat=False)
                 else:
                     preview = warped
                 init = spatial.affine_lmdiv(moving.affine, fixed.affine)
@@ -723,14 +746,22 @@ class PairwiseRegisterStep:
                 loss.loss.set_state(state)
 
             # ----------------------------------------------------------
-            # chain rule -> derivatives wrt phi
+            # chain rule -> derivatives wrt the displacement
             # ----------------------------------------------------------
             if grad or hess:
+                # reuse the full warp `psi` and the dense right affine
+                # (`right` is None iff `aff_right` is None)
                 g, h, mugrad = self.nonlin.propagate_grad(
-                    g, h, moving, phi00, aff_left, aff_right,
-                    inv=loss.backward)
-                g = regutils.jg(mugrad, g)
-                h = regutils.jhj(mugrad, h)
+                    g, h, moving, phi00, aff_left, right,
+                    inv=loss.backward, psi=psi)
+                del psi, right
+                if mugrad is not None:
+                    g = regutils.jg(mugrad, g)
+                    h = regutils.jhj(mugrad, h)
+                else:
+                    # already wrt the displacement: channels last
+                    g = utils.fast_movedim(g, 0, -1)
+                    h = utils.fast_movedim(h, 0, -1) if h is not None else h
                 is_svf = isinstance(self.nonlin, SVFModel)
                 is_svf = is_svf or (isinstance(self.nonlin, Nonlin2dModel) and
                                     isinstance(self.nonlin._model, SVFModel))
@@ -840,22 +871,22 @@ class PairwiseRegisterStep:
             # ----------------------------------------------------------
             if _almost_identity(aff_right) and fixed.shape == self.nonlin.shape:
                 right = None
-                phi = spatial.add_identity_grid(phi00)
+                psi = spatial.add_identity_grid(phi00)
             else:
                 right = spatial.affine_grid(aff_right, fixed.shape)
-                phi = regutils.smart_pull_grid(phi00, right, bound='zero')
-                phi += right
-            phi_right = phi
+                psi = regutils.smart_pull_grid(phi00, right, bound='zero')
+                psi += right
+            phi_right = psi
             if _almost_identity(aff_left) and moving.shape == self.nonlin.shape:
                 left = None
             else:
                 left = spatial.affine_grid(aff_left, self.nonlin.shape)
-                phi = spatial.affine_matvec(aff_left, phi)
+                psi = spatial.affine_matvec(aff_left, psi)
 
             # ----------------------------------------------------------
             # forward pass
             # ----------------------------------------------------------
-            warped, warped_mask = moving.pull(phi, mask=True)
+            warped, warped_mask = moving.pull(psi, mask=True)
             if fixed.masked:
                 if warped_mask is None:
                     mask = fixed.mask
@@ -875,7 +906,7 @@ class PairwiseRegisterStep:
                     if mask is not None:
                         lam *= mask
                 if moving.previewed:
-                    preview = moving.pull(phi, preview=True, dat=False)
+                    preview = moving.pull(psi, preview=True, dat=False)
                 else:
                     preview = warped
                 init = spatial.affine_lmdiv(moving.affine, fixed.affine)
@@ -947,7 +978,7 @@ class PairwiseRegisterStep:
                     g, h = g_left, h_left
                 if pos in 'fs':
                     g_right, h_right = g0, h0
-                    mugrad = moving.pull_grad(phi, rotate=False)
+                    mugrad = moving.pull_grad(psi, rotate=False)
                     jac = spatial.grid_jacobian(phi00, right, type='disp', extrapolate=False)
                     jac = torch.matmul(aff_left[:-1, :-1], jac)
                     mugrad = linalg.matvec(jac.transpose(-1, -2), mugrad)
@@ -1031,12 +1062,12 @@ class PairwiseRegisterStep:
             aff = linalg.lmdiv(aff_mov, aff)
             gaff = gaff00 @ aff_fix
             gaff = linalg.lmdiv(aff_mov, gaff)
-            phi = spatial.affine_grid(aff, fixed.shape)
+            psi = spatial.affine_grid(aff, fixed.shape)
 
             # ----------------------------------------------------------
             # forward pass
             # ----------------------------------------------------------
-            warped, warped_mask = moving.pull(phi, mask=True)
+            warped, warped_mask = moving.pull(psi, mask=True)
             if fixed.masked:
                 if warped_mask is None:
                     mask = fixed.mask
@@ -1056,7 +1087,7 @@ class PairwiseRegisterStep:
                     if mask is not None:
                         lam *= mask
                 if moving.previewed:
-                    preview = moving.pull(phi, preview=True, dat=False)
+                    preview = moving.pull(psi, preview=True, dat=False)
                 else:
                     preview = warped
                 init = spatial.affine_lmdiv(moving.affine, fixed.affine)
@@ -1119,7 +1150,7 @@ class PairwiseRegisterStep:
 
             # compose with spatial gradients
             if grad or hess:
-                mugrad = moving.pull_grad(phi, rotate=False)
+                mugrad = moving.pull_grad(psi, rotate=False)
                 g, h = compose_grad(g, h, mugrad, gaff)
 
                 if loss.backward:
