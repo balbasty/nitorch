@@ -81,6 +81,27 @@ def entropy(moving, fixed, dim=None, bins=64, order=3, fwhm=2,
     return tuple(out) if len(out) > 1 else out[0]
 
 
+def _degenerate(idx, mask=None):
+    """Batch elements without information: empty mask, or constant
+    moving or fixed image, i.e. (numerically) zero intensity range (same
+    criterion as `core._hist._guard_range`, which widens such ranges).
+
+    idx : (..., N, 2) tensor, mask : (..., N) tensor -> (...) bool tensor
+    """
+    if mask is not None:
+        inside = (mask > 0).unsqueeze(-1)
+        mn = idx.masked_fill(~inside, float('inf')).amin(-2)
+        mx = idx.masked_fill(~inside, -float('inf')).amax(-2)
+        empty = ~inside.any(-2).squeeze(-1)
+        mn, mx = mn.masked_fill(empty[..., None], 0), mx.masked_fill(empty[..., None], 0)
+    else:
+        mn, mx = idx.amin(-2), idx.amax(-2)
+        empty = None
+    scale = torch.maximum(mn.abs(), mx.abs()).clamp_min(1)
+    bad = ((mx - mn) <= 4 * torch.finfo(mx.dtype).eps * scale).any(-1)
+    return bad if empty is None else bad | empty
+
+
 def mi(moving, fixed, dim=None, bins=64, order=3, fwhm=2, norm='studholme',
        grad=True, hess=True, minmax=False, mask=None):
     """(Normalized) Mutual Information
@@ -147,6 +168,17 @@ def mi(moving, fixed, dim=None, bins=64, order=3, fwhm=2, norm='studholme',
         h, mn, mx = hist.forward(idx, min=mn, max=mx, w=mask, return_minmax=True)
     else:
         h, mn, mx = hist.forward(idx, w=mask, return_minmax=True)
+    # Batch elements (channels, slices) without information: empty mask,
+    # or constant moving or fixed image (whose histogram range is then
+    # widened artificially by `JointHistCount`). Their mutual information
+    # is zero, i.e. the worst possible value, and so are their gradient
+    # and Hessian. Otherwise, the histogram of an empty overlap or of a
+    # constant image is spread over a few central bins by the spline
+    # window, which gives a spuriously *good* value (e.g., when an
+    # optimizer pushes the moving image out of the field of view).
+    empty = _degenerate(idx, mask)
+    empty = empty[..., None, None]
+
     h = h.clamp(1e-8)
     h /= nvox
 
@@ -191,6 +223,7 @@ def mi(moving, fixed, dim=None, bins=64, order=3, fwhm=2, norm='studholme',
             # g = ((1 + px.log()) + (1 + py.log())) - (1 + pxy.log())
             g = pxy.log().neg_().add_(px.log()).add_(py.log()).add_(1)
         g = g.div_(nvox)
+        g = g.masked_fill_(empty, 0)
 
     if grad:
         gx = hist.backward(g, idx, min=mn, max=mx, w=mask)[..., 0]
@@ -211,6 +244,10 @@ def mi(moving, fixed, dim=None, bins=64, order=3, fwhm=2, norm='studholme',
         H = hist.backward_hess(g, idx, min=mn, max=mx, w=mask)[..., 0]
         H = H.abs_().reshape(shape)
         out.append(H)
+
+    # zero mutual information where there is no information
+    nmi_zero = {'studholme': 1., 'arithmetic': -1.}.get(norm, 0.)
+    nmi = nmi.masked_fill(empty, nmi_zero)
 
     nmi = -nmi
     if norm == 'studholme':
