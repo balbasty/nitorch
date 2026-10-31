@@ -26,3 +26,22 @@ def test_compute_fov_shared_shape():
     mn, mx = compute_fov(mat, affs, shape)
     assert torch.allclose(mn, torch.full([3], 1.).double())
     assert torch.allclose(mx, torch.full([3], 14.).double())
+
+
+def test_fov_max_single_space_is_identity():
+    """The bounding box of a single space, in that space, is itself:
+    it used to be shifted by one voxel (and could gain a voxel through
+    round-off errors)."""
+    from nitorch.spatial import fov_max, mean_space
+    mat = torch.eye(4, dtype=torch.double)
+    shape = (10, 12, 1)
+    out, oshape = fov_max(mat, mat[None], [shape])
+    assert oshape == shape
+    assert torch.allclose(out, mat)
+
+    aff = torch.as_tensor([[0.8, 0, 0, -30.], [0, 1.2, 0, 10.],
+                           [0, 0, 2., 5.], [0, 0, 0, 1]], dtype=torch.double)
+    shape = (20, 16, 8)
+    out, oshape = mean_space(aff[None], [shape])
+    assert oshape == shape
+    assert torch.allclose(out, aff, atol=1e-3)  # affine_mean is approximate

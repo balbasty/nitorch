@@ -2666,11 +2666,16 @@ def fov_max(mat, affines, shapes, pad=0, pad_unit='%'):
     mn, mx = compute_fov(mat, affines, shapes, pad=pad, pad_unit=pad_unit)
 
     # make it integer and adapt orientation matrix
-    mx = torch.ceil(mx)
-    mn = torch.floor(mn)
+    # (with some tolerance, so that round-off errors -- or the
+    # approximate `affine_mean` -- do not add a voxel)
+    tol = 1e-2
+    mx = torch.ceil(mx - tol)
+    mn = torch.floor(mn + tol)
     shape = (mx - mn + 1).long()
-    # M = mn - 1
-    M = mn
+    # `compute_fov` uses one-based voxel coordinates (corners are at
+    # 1 and N), so the first voxel of the bounding box is at `mn - 1`
+    # in zero-based coordinates.
+    M = mn - 1
     M = torch.cat((torch.eye(dim, **backend), M[:, None]), dim=1)
     M = affine_make_homogeneous(as_euclidean(M))
     mat = torch.matmul(mat, M)
