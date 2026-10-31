@@ -124,3 +124,58 @@ def test_grid_inv_runs_and_inverts(shape):
                          extrapolate=True)[0].movedim(0, -1)
     inner = tuple(slice(3, -3) if s > 6 else slice(None) for s in shape)
     assert comp[inner].abs().mean() < 0.1 * d[inner].abs().mean()
+
+
+@pytest.mark.parametrize('shape', [(8, 8), (6, 7, 5)])
+@pytest.mark.parametrize('bound', ['dft', 'dct2'])
+def test_lame_shear_self_adjoint(shape, bound):
+    """The (unweighted) shear operator used `d_i x_j + d_j x_i / 2` instead
+    of the symmetric strain, so it was not self-adjoint (and differed
+    from the weighted implementation)."""
+    from nitorch.spatial._regularisers import lame_shear
+    g = torch.Generator().manual_seed(0)
+    dim = len(shape)
+    vx = [1.5, 1., 2.][:dim]
+    a = torch.randn(shape + (dim,), dtype=torch.double, generator=g)
+    b = torch.randn(shape + (dim,), dtype=torch.double, generator=g)
+    La = lame_shear(a, voxel_size=vx, bound=bound)
+    Lb = lame_shear(b, voxel_size=vx, bound=bound)
+    assert torch.allclose((La * b).sum(), (a * Lb).sum())
+    w = torch.ones(shape, dtype=torch.double)
+    assert torch.allclose(La, lame_shear(a, voxel_size=vx, bound=bound, weights=w))
+
+
+@pytest.mark.parametrize('dim', [2, 3])
+@pytest.mark.parametrize('name', ['shear', 'div'])
+def test_lame_kernels_match_operators(dim, name):
+    """The 3D `lame_div_kernel` included mixed derivatives along the wrong
+    pairs of axes."""
+    from nitorch.spatial import _regularisers as R
+    fn = getattr(R, f'lame_{name}')
+    kfn = getattr(R, f'lame_{name}_kernel')
+    vx = [1.5, 1., 2.][:dim]
+    shape = (9,) * dim
+    K = kfn(dim, voxel_size=vx, dtype=torch.double).to_dense()
+    resp = torch.zeros((dim, dim) + (3,) * dim, dtype=torch.double)
+    center = (4,) * dim
+    for d in range(dim):
+        x = torch.zeros(shape + (dim,), dtype=torch.double)
+        x[center + (d,)] = 1
+        y = fn(x, voxel_size=vx, bound='dft')
+        resp[:, d] = y[(slice(3, 6),) * dim].movedim(-1, 0)
+    assert torch.allclose(K, resp)
+
+
+@pytest.mark.parametrize('shape', [(32, 32), (16, 16, 16), (32, 32, 1)])
+def test_greens_inverts_regulariser(shape):
+    """In 2D, the Green's function did not invert the regulariser when both
+    Lame terms were used (non-symmetric shear + transposed 2x2 inverse)."""
+    from nitorch.spatial import greens, greens_apply, regulariser_grid
+    g = torch.Generator().manual_seed(0)
+    dim = len(shape)
+    prm = dict(absolute=1e-4, membrane=1e-3, bending=0.2, lame=(0.05, 0.2))
+    v = torch.randn(shape + (dim,), dtype=torch.double, generator=g)
+    k = greens(shape, **prm, voxel_size=[1.5] * dim, dtype=torch.double)
+    m = regulariser_grid(v, **prm, voxel_size=[1.5] * dim, bound='dft')
+    vv = greens_apply(m, k, voxel_size=[1.5] * dim)
+    assert torch.allclose(vv, v, rtol=1e-4, atol=1e-6 * v.abs().max())

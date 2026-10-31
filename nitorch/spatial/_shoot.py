@@ -30,8 +30,8 @@ def _inv2(A):
     F = torch.empty_like(A)
     F[0, 0] = A[1, 1]
     F[1, 1] = A[0, 0]
-    F[0, 1] = -A[1, 0]
-    F[1, 0] = -A[0, 1]
+    F[0, 1] = -A[0, 1]
+    F[1, 0] = -A[1, 0]
     dt = _det2(A)
     Aabs = A.reshape((-1,) + A.shape[2:]).abs()
     rnge = Aabs.max(dim=0).values - Aabs.min(dim=0).values
