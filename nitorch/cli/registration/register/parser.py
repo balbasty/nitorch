@@ -393,7 +393,6 @@ loss.add_suboption('mi', 'fwhm', ('-f', '--fwhm'), nargs='1*', default=0,
                    convert=float, help='Smoothing of the joint histogram, in bins.')
 loss.add_suboption('mi', 'order', ('-n', '--order'), nargs='1*2?', default=[3],
                    convert=int, help='Spline order of the joint histogram')
-loss.add_suboption('mi', patch_option)
 loss.add_suboption('ent', 'bins', ('-b', '--bins'), nargs='1*2?', default=32,
                    convert=int, help='Number of bins in joint histogram')
 loss.add_suboption('ent', 'fwhm', ('-f', '--fwhm'), nargs='1*', default=0,

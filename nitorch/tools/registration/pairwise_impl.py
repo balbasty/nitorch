@@ -108,8 +108,14 @@ class PairwiseRegister:
         return self.fit()
 
     def fit(self):
-        backend = dict(device=self.losses[0].moving.device,
-                       dtype=self.losses[0].moving.dtype)
+        # Transformation parameters must be floating point, even when
+        # the images are not (e.g., discretized images are integers).
+        dtype = self.losses[0].moving.dtype
+        if not dtype.is_floating_point:
+            dtype = self.losses[0].fixed.dtype
+        if not dtype.is_floating_point:
+            dtype = torch.get_default_dtype()
+        backend = dict(device=self.losses[0].moving.device, dtype=dtype)
         if self.affine and self.affine.parameters() is None:
             self.affine = self.affine.set_dat(dim=self.losses[0].fixed.dim,
                                               **backend)
