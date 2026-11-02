@@ -426,3 +426,25 @@ def test_kron_vs_kron2():
     y = torch.randn([4, 5], generator=g, dtype=torch.float64)
     _assert_equal(nilinalg.kron2(x, y), nilinalg.kron(y, x))
 
+
+# ----------------------------------------------------------------------
+#                    sqrtm with all fallbacks
+# ----------------------------------------------------------------------
+
+@pytest.mark.parametrize('old', [False, True])
+def test_sqrtm_fallbacks(old, request, fallback):
+    """`sqrtm` uses eigvals/inv/det/kron/lmdiv/amax wrappers"""
+    if old:
+        request.getfixturevalue('eig_fallback')
+        fallback(nilinalg, '_torch_has_linalg_det', '_torch_has_kron')
+        fallback(nimath, '_torch_has_amax')
+    g = torch.Generator().manual_seed(6)
+    A = torch.eye(4, dtype=torch.float64).expand([3, 4, 4]).clone()
+    A[:, :3, :] += 0.2 * torch.randn([3, 3, 4], generator=g,
+                                     dtype=torch.float64)
+    X = nilinalg.sqrtm(A)
+    _assert_equal(X.matmul(X), A, rtol=1e-10, atol=1e-10)
+    assert (X[:, -1] == torch.tensor([0., 0., 0., 1.],
+                                     dtype=torch.float64)).all()
+    with pytest.raises(ValueError):
+        nilinalg.sqrtm(torch.diag(torch.tensor([-1., 1., 1., 1.])))

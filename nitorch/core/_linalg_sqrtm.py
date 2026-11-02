@@ -1,5 +1,6 @@
 """Principal matrix square root (pure PyTorch, batched)."""
 import torch
+from .math import amax
 
 
 def sqrtm(mat, tol=None, max_iter=100):
@@ -37,6 +38,10 @@ def sqrtm(mat, tol=None, max_iter=100):
         square root exists, or if the iteration does not converge.
 
     """
+    # torch.linalg / torch.kron wrappers (torch >= 1.4); imported here
+    # because `linalg` imports this module.
+    from .linalg import eigvals, inv, det, kron, lmdiv
+
     mat = torch.as_tensor(mat)
     if mat.dim() < 2 or mat.shape[-1] != mat.shape[-2]:
         raise ValueError(f'Expected a (batch of) square matrices but got '
@@ -54,8 +59,8 @@ def sqrtm(mat, tol=None, max_iter=100):
         raise ValueError('sqrtm: input contains non-finite values')
 
     # --- check that a real principal square root exists ---------------
-    eig = torch.linalg.eigvals(A)
-    scale = A.abs().amax(dim=(-1, -2), keepdim=True).squeeze(-1).clamp_min(1e-300)
+    eig = eigvals(A)
+    scale = amax(A.abs(), dim=(-1, -2), keepdim=True).squeeze(-1).clamp_min(1e-300)
     on_neg_axis = ((eig.imag.abs() <= 1e-10 * scale) &
                    (eig.real <= 1e-10 * scale))
     if on_neg_axis.any():
@@ -72,11 +77,11 @@ def sqrtm(mat, tol=None, max_iter=100):
     Y = A.clone()
     converged = False
     for it in range(max_iter):
-        Minv = torch.linalg.inv(M)
+        Minv = inv(M)
         # determinant scaling (only while far from convergence)
-        delta = (M - eye).abs().amax(dim=(-1, -2))
+        delta = amax((M - eye).abs(), dim=(-1, -2))
         if (delta > 1e-2).any():
-            mu = torch.linalg.det(M).abs().pow(-1 / (2 * n))
+            mu = det(M).abs().pow(-1 / (2 * n))
             mu = torch.where(delta > 1e-2, mu, torch.ones_like(mu))
             mu = mu[:, None, None]
         else:
@@ -84,7 +89,7 @@ def sqrtm(mat, tol=None, max_iter=100):
         mu2 = mu * mu
         Y = Y.matmul(eye + Minv / mu2).mul_(mu / 2)
         M = (eye + (mu2 * M + Minv / mu2) / 2) / 2
-        if (M - eye).abs().amax() <= tol:
+        if amax((M - eye).abs()) <= tol:
             converged = True
             break
 
@@ -99,10 +104,10 @@ def sqrtm(mat, tol=None, max_iter=100):
         eye_n = torch.eye(n, dtype=A.dtype, device=A.device)
         for _ in range(2):
             R = A - Y.matmul(Y)
-            K = (torch.kron(Y, eye_n[None]) +
-                 torch.kron(eye_n[None], Y.transpose(-1, -2).contiguous()))
+            K = (kron(Y, eye_n[None]) +
+                 kron(eye_n[None], Y.transpose(-1, -2).contiguous()))
             try:
-                E = torch.linalg.solve(K, R.reshape([-1, n * n, 1]))
+                E = lmdiv(K, R.reshape([-1, n * n, 1]))
             except RuntimeError:
                 break
             Ynew = Y + E.reshape([-1, n, n])
@@ -118,8 +123,8 @@ def sqrtm(mat, tol=None, max_iter=100):
         Y[homog, -1, :] = lastrow
 
     # --- sanity check on the residual ---------------------------------
-    res = (Y.matmul(Y) - A).abs().amax(dim=(-1, -2))
-    nrm = A.abs().amax(dim=(-1, -2)).clamp_min(1e-300)
+    res = amax((Y.matmul(Y) - A).abs(), dim=(-1, -2))
+    nrm = amax(A.abs(), dim=(-1, -2)).clamp_min(1e-300)
     if (res > 1e-8 * nrm).any():
         raise ValueError('sqrtm: inaccurate square root '
                          f'(relative residual {(res / nrm).max().item():.3g})')
