@@ -129,6 +129,7 @@ class MatchingLoss(Base):
 
 class NoLoss(MatchingLoss):
     """Additional image to warp -- not involved in the loss"""
+    name: str = 'other'
     fixed: FixedImageFile = None    # There may be no fixed image
 
 
@@ -371,6 +372,25 @@ class NonLinear(Transformation):
 class FFD(NonLinear):
     name = 'ffd'
     grid: list or int = 10          # Number of nodes in the FFD grid
+
+    def free(self):
+        """Free the next batch/ladder of parameters
+
+        The grid of nodes (`dat`) keeps its size across pyramid levels;
+        only the dense field (`shape`, `affine`) is upsampled.
+        """
+        if not self.freeable():
+            return
+        print('Free nonlin')
+        if hasattr(self, 'optdat'):
+            *self.pyramid, pre_level = self.pyramid
+            factor = 2 ** (pre_level - self.pyramid[-1])
+            self.affine, self.shape = spatial.affine_resize(
+                self.affine, self.shape, factor)
+            self.shape = list(self.shape)
+            self.dat = self.dat.detach()
+        self.optdat = torch.nn.Parameter(self.dat, requires_grad=True)
+        self.dat = self.optdat
 
 
 class Diffeo(NonLinear):

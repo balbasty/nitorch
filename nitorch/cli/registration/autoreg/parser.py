@@ -175,8 +175,18 @@ optim = (*adam, *gd, *ogm, *lbfgs)
 # ----------------------------------------------------------------------
 #                     PARSE COMMANDLINE ARGUMENTS
 # ----------------------------------------------------------------------
+def _isnumber(x):
+    try:
+        float(x)
+        return True
+    except (ValueError, TypeError):
+        return False
+
+
 def istag(x):
-    return x.startswith('-')
+    # A dash-prefixed argument that parses as a number (e.g., `-1`,
+    # `-.5`, `-1e-3`) is a value, not a tag (same rule as nitorch.core.cli)
+    return x.startswith('-') and not _isnumber(x)
 
 
 def isvalue(x):
@@ -559,6 +569,11 @@ def parse(args):
 
     # This is the object that we will populate
     options = struct.AutoReg()
+
+    # Empty command line -> help
+    if not args:
+        print(help)
+        return {}
 
     while args:
         if next_isvalue(args):

@@ -169,3 +169,84 @@ def test_autoreg_help_example_runs(images, timeout):
     # first example of the help (with -mi)
     _run('-mi', '-fix', 'fix.nii', '-mov', 'mov.nii', '-rig')
     assert os.path.exists('rigid.lta')
+
+
+# --- follow-up fixes -------------------------------------------------
+
+def test_autoreg_negative_numbers_are_values():
+    opt = parse(['-mse', '-.5', '-fix', 'f.nii', '-mov', 'm.nii',
+                 '-rig', '-1'])
+    assert opt.losses[0].factor == -0.5
+    assert opt.losses[0].fixed.files == ['f.nii']
+    assert opt.transformations[0].factor == -1.
+    opt = parse(['-dice', '-fix', 'f.nii', '-mov', 'm.nii',
+                 '-w', '-1', '2', '-rig'])
+    assert opt.losses[0].weights == [-1., 2.]
+    opt = parse(['-mi', '-t', '-1e-3', '-fix', 'f.nii', '-mov', 'm.nii',
+                 '-rig'])
+    assert opt.losses[0].threshold == -1e-3
+
+
+def test_autoreg_empty_argv_does_not_read_sys_argv(monkeypatch, capsys):
+    import sys
+    from nitorch.cli.registration.autoreg.main import autoreg
+    monkeypatch.setattr(sys, 'argv', ['nitorch', '-mse', '-fix', 'nofile.nii',
+                                      '-mov', 'nofile.nii', '-rig'])
+    # an empty list is an empty command line -> help, not sys.argv
+    assert not autoreg([])
+    assert 'AUTOgrad REGistration' in capsys.readouterr().out
+    _autoreg([])
+    assert 'AUTOgrad REGistration' in capsys.readouterr().out
+
+
+def test_autoreg_missing_file_returns_1(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    rc = commands['autoreg'](['-mse', '-fix', 'nofile.nii',
+                              '-mov', 'nofile.nii', '-rig', '-v', '0'])
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert '[ERROR]' in err
+    assert 'Traceback' not in err
+
+
+def test_autoreg_parse_error_returns_1(capsys):
+    rc = commands['autoreg'](['-mse', '-fix', 'f.nii', '-mov', 'm.nii'])
+    assert rc == 1
+    assert '[ERROR]' in capsys.readouterr().err
+
+
+def test_autoreg_oth_default_verbosity(images, timeout, capsys):
+    _autoreg(['-mse', '-fix', 'fix.nii', '-mov', 'mov.nii',
+              '-oth', '-mov', 'lmov.nii',
+              '-rig', '-all', '-nit', '2'])
+    assert os.path.exists('lmov.registered.nii')
+    assert 'Losses:' in capsys.readouterr().out
+
+
+def test_autoreg_ffd_grid(images, timeout, monkeypatch):
+    from nitorch.cli.registration.autoreg import main
+    shapes = []
+    ffd_exp = main.ffd_exp
+
+    def spy(prm, shape, *a, **k):
+        shapes.append((list(prm.shape[:-1]), list(shape)))
+        return ffd_exp(prm, shape, *a, **k)
+
+    monkeypatch.setattr(main, 'ffd_exp', spy)
+    _run('-mse', '-fix', 'fix.nii', '-mov', 'mov.nii',
+         '-ffd', '-g', '5', '4', '3', '-o', 'ffd.nii.gz')
+    assert shapes
+    assert all(p == [5, 4, 3] and s == [12, 12, 12] for p, s in shapes)
+    assert list(io.volumes.map('ffd.nii.gz').shape[:3]) == [5, 4, 3]
+    # a single value is used for all dimensions
+    shapes.clear()
+    _run('-mse', '-fix', 'fix.nii', '-mov', 'mov.nii', '-ffd', '-g', '6')
+    assert all(p == [6, 6, 6] for p, _ in shapes)
+
+
+def test_autoreg_ffd_grid_pyramid(images, timeout):
+    # the grid of nodes keeps its size; the dense field is upsampled
+    _run('-mse', '-fix', 'fix.nii', '-mov', 'mov.nii',
+         '-ffd', '-g', '5', '-pyr', '1', '2', '-o', 'ffd.nii.gz')
+    assert list(io.volumes.map('ffd.nii.gz').shape[:3]) == [5, 5, 5]
+    assert os.path.exists('mov.registered.nii')

@@ -15,16 +15,22 @@ from . import struct
 
 
 def autoreg(argv=None):
+    """Command-line interface for `autoreg`.
 
-    argv = argv or sys.argv[1:]
+    Returns 1 on failure (parsing error or any other exception, which is
+    printed as `[ERROR] ...`), None on success.
+    """
+    argv = sys.argv[1:] if argv is None else list(argv)
 
     try:
         _autoreg(argv)
     except ParseError as e:
         print(help)
         print(f'[ERROR] {str(e)}', file=sys.stderr)
-    # except Exception as e:
-    #     print(f'[ERROR] {str(e)}', file=sys.stderr)
+        return 1
+    except Exception as e:
+        print(f'[ERROR] {str(e)}', file=sys.stderr)
+        return 1
 
 
 commands['autoreg'] = autoreg
@@ -37,8 +43,8 @@ def _autoreg(argv=None):
     """
 
     # parse arguments
-    argv = argv or list(sys.argv)
-    options = parse(list(argv))
+    argv = sys.argv[1:] if argv is None else list(argv)
+    options = parse(argv)
     if not options:
         return
 
@@ -67,6 +73,11 @@ def _autoreg(argv=None):
         print('Losses:')
         for loss in options.losses:
             print(f' - {loss.name}')
+            if not loss.fixed:
+                # -oth: moving image only (not loaded, not in the loss)
+                for fname in loss.moving.files:
+                    print(f'   -| {fname}')
+                continue
             for f, m in zip(loss.fixed.dat, loss.moving.dat):
                 print(f'   -| {list(m[0].shape)}, {spatial.voxel_size(m[1]).tolist()}')
                 print(f'   -> {list(f[0].shape)}, {spatial.voxel_size(f[1]).tolist()}')
@@ -75,9 +86,11 @@ def _autoreg(argv=None):
             print(f' - {trf.name}')
             if isinstance(trf, struct.NonLinear):
                 pyramid0 = trf.pyramid[-1]
+                if isinstance(trf, struct.FFD):
+                    print(f'   - grid: {list(trf.dat.shape[:-1])}')
                 for pyramid in reversed(trf.pyramid):
                     factor = 2**(pyramid0 - pyramid)
-                    shape = [s*factor for s in trf.dat.shape]
+                    shape = [s*factor for s in trf.shape]
                     vx = spatial.voxel_size(trf.affine) / factor
                     print(f'   - {list(shape)}, {vx.tolist()}')
 
@@ -319,10 +332,21 @@ def load_transforms(s):
                 trf.affine = init_affine
                 trf.shape = list(shape)
             else:
-                trf.dat = torch.zeros([*shape, trf.dim], dtype=torch.float32,
-                                      device=device)
+                if isinstance(trf, struct.FFD):
+                    # The parameters live on a coarse grid of nodes;
+                    # `shape`/`affine` describe the dense field
+                    grid = trf.grid
+                    grid = list(grid) if isinstance(grid, (list, tuple)) \
+                        else [grid]
+                    grid = [int(g) for g in grid] or [10]
+                    grid = grid + grid[-1:] * max(0, trf.dim - len(grid))
+                    datshape = grid[:trf.dim]
+                else:
+                    datshape = shape
+                trf.dat = torch.zeros([*datshape, trf.dim],
+                                      dtype=torch.float32, device=device)
                 trf.affine = affine
-                trf.shape = shape
+                trf.shape = list(shape)
 
 
 def init_optimizers(options):
@@ -395,7 +419,7 @@ def init_optimizers(options):
             if optim.first_iter:
                 optim.first_iter = False
             else:
-                scheduler.step(loss)
+                scheduler.step(float(loss))
             return loss
 
         def current_lr():
@@ -603,8 +627,11 @@ def write_transforms(options):
         affine = nonlin.affine
         shape = nonlin.shape
         if isinstance(nonlin, struct.FFD):
-            factor = [s/g for s, g in zip(shape, nonlin.dat.shape[:-1])]
-            affine, _ = spatial.affine_resize(affine, shape, factor)
+            # orientation matrix of the grid of nodes
+            grid = list(nonlin.dat.shape[:-1])
+            factor = [g/s for s, g in zip(shape, grid)]
+            affine, _ = spatial.affine_resize(affine, shape, factor,
+                                              shape_out=grid)
         io.volumes.savef(nonlin.dat.cpu(), nonlin.output, affine=affine.cpu())
 
 
