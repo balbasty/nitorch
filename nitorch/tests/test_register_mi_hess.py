@@ -158,7 +158,7 @@ def test_gn_term_nsd(norm, fwhm):
 
 
 @pytest.mark.parametrize('order', [2, 3])
-@pytest.mark.parametrize('fwhm', [0, 2])
+@pytest.mark.parametrize('fwhm', [0, pytest.param(2, marks=pytest.mark.slow)])
 @pytest.mark.parametrize('norm', NORMS)
 def test_mi_hess_is_abs_newton_term(norm, fwhm, order):
     """The returned Hessian is |true diagonal - diag(J^T F J)|, i.e. the
