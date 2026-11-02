@@ -65,8 +65,9 @@ def per_slice_reference(mov, fix, mn, mx, fwhm, norm, order):
     fixf = fix.reshape(-1)
 
     def p_of(m):
-        return hist.forward(torch.stack([m, fixf], -1)[None],
-                            min=mn, max=mx)[0] / n
+        h = hist.forward(torch.stack([m, fixf], -1)[None],
+                         min=mn, max=mx)[0]
+        return h / h.sum()
 
     m0 = mov.reshape(-1).clone()
     J = torch.autograd.functional.jacobian(p_of, m0).reshape(BINS**2, n)
@@ -177,7 +178,11 @@ def test_mi_hess_is_abs_newton_term(norm, fwhm, order):
     # Hessian jumps and finite differences average both sides.
     m = mov.reshape(-1)
     keep = (m > m.min()) & (m < m.max())
-    assert relerr(h[keep], ref[keep]) < 10 * TOL, relerr(h[keep], ref[keep])
+    # With smoothing, the histogram mass S depends (slightly) on the moving
+    # image, and the cross term -2 (dS/dx) / S * grad of the normalisation
+    # p = h / S is not included in the preconditioner.
+    tol = 10 * TOL if fwhm == 0 else 30 * TOL
+    assert relerr(h[keep], ref[keep]) < tol, relerr(h[keep], ref[keep])
 
 
 @pytest.mark.parametrize('order', [1, 3])
