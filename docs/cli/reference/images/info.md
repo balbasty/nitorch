@@ -47,8 +47,9 @@ from the header:
 
 `center`
 :   The position, in millimetres in world (RAS) space, of the voxel at index
-    `shape / 2` along each spatial axis, that is, the centre of the field of
-    view. It is obtained by applying the orientation matrix to that index.
+    `(shape - 1) / 2` along each spatial axis, that is, the centre of the
+    field of view. It is obtained by applying the orientation matrix to that
+    (possibly fractional) index.
 
 The metadata fields that can be requested with `-m` are listed below. What a
 file provides depends on its format: for instance, `slope` and `inter` exist
@@ -82,8 +83,8 @@ time series gives one value per volume. Computing statistics reads all the
 voxels, which is slower than reading the header alone; the statistics are
 shown in the standard report only, not when you use `-m`.
 
-`-s` takes an optional boolean, so `-s`, `-s 1` and `-s true` turn statistics
-on and `-s 0` and `-s false` turn them off. Because the option swallows the
+`-s` takes an optional boolean, so `-s`, `-s 1`, `-s true` and `-s yes` turn
+statistics on and `-s 0`, `-s false` and `-s no` turn them off. Because the option swallows the
 next argument when that is not a tag, put it after the file names. See
 [Flags, optional values and booleans](../../conventions.md#flags-optional-values-and-booleans).
 
@@ -113,7 +114,7 @@ nitorch info T1w.nii.gz
 filename        : T1w.nii.gz
 shape           : (20, 24, 16)
 layout          : RAS
-center          : (10.0, 4.0, -14.0) mm (RAS)
+center          : (9.0, 3.0, -15.0) mm (RAS)
 format          : Nifti1
 affine          : [[  2.   0.   0. -10.]
                    [  0.   2.   0. -20.]

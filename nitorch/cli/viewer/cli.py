@@ -25,7 +25,7 @@ commands['view'] = cli
 
 
 def _cli(args):
-    """Command-line interface for `denoise_mri` without exception handling"""
+    """Command-line interface for `view` without exception handling"""
     args = args or sys.argv[1:]
 
     options = parse(args)

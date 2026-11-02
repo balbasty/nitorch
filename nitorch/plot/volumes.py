@@ -442,9 +442,6 @@ def show_orthogonal_slices(image, index=None, affine=None, fig=None,
         transpose_sagittal=not layout.startswith('orth'), **kwargs)
     ndim = mat[0].shape[-1] - 1
 
-    print('index', index)
-    print('shape', [s.shape for s in slices])
-
     # process intensities
     if mode == 'intensity':
         cmin, cmax = py.make_list(clim, 2)
