@@ -96,7 +96,7 @@ tiny = 1e-16
 def align_tpm(dat, tpm=None, weights=None, spacing=(8, 4), device=None,
               basis='affine', progressive=False, bins=256,
               fwhm=None, max_iter_gn=100, max_iter_em=32, max_line_search=6,
-              tolerance=1e-6, flexi=False, verbose=1):
+              tolerance=1e-6, flexi=False, samples_per_param=8, verbose=1):
     r"""Align a Tissue Probability Map to an image
 
     Input Parameters
@@ -126,7 +126,18 @@ def align_tpm(dat, tpm=None, weights=None, spacing=(8, 4), device=None,
     progressive : bool, default=False
         Fit prameters progressively (translation then rigid then affine)
     flexi : bool, default=False
-        Assume that the header can be wrong and try all possible orientations
+        Assume that the header can be wrong and try all possible orientations.
+        Each orientation (and the header) is fitted, and the one with the
+        largest 𝓛/N is kept. They are compared at the coarsest sampling
+        distance in `spacing` whose (weighted) number of voxels is
+        N ≥ c (F + J K), with c = `samples_per_param`, F the number of
+        parameters of 𝜙 (12 for `'affine'` in 3D), and J K the size of 𝑯
+        (J = `bins` image bins, K TPM classes); or at the finest one if
+        none qualifies. This does not change the sampling distances at
+        which the selected orientation is then fitted.
+    samples_per_param : float, default=8
+        Minimum number of voxels per estimated parameter (c above) at
+        the level where `flexi` compares orientations.
 
     Optimization parameters
     -----------------------
@@ -246,9 +257,24 @@ def align_tpm(dat, tpm=None, weights=None, spacing=(8, 4), device=None,
         opt1 = dict(opt)
         opt1['verbose'] = 0
 
-        # first: trust header
-        sp = spacing[0] * 2
+        # All candidates are fitted, and compared (on 𝓛/N), at the
+        # coarsest sampling distance with at least `samples_per_param`
+        # (weighted) voxels per estimated parameter (𝜙 and 𝑯). On
+        # coarser data, 𝑯 (J × K) and 𝜙 overfit, so that wrong
+        # orientations can reach a larger 𝓛/N than the right one.
+        # This only chooses where orientations are compared: the final
+        # fit below still runs on `spacing`.
+        nb_vox = [do_spacing(sp)[2].sum(list(range(1, dim+2))).min().item()
+                  for sp in spacing]
+        level = flexi_level(nb_vox, bins, tpm.shape[0],
+                            len(make_basis(basis, dim)), samples_per_param)
+        sp = spacing[level]
         dat, affine_dat1, weights = do_spacing(sp)
+        if verbose:
+            print(f'flexi: compare orientations at spacing {sp} '
+                  f'(N = {nb_vox[level]:.0f})')
+
+        # first: trust header
         dat_com1 = torch.as_tensor(dat.shape[2:]).to(affine_dat1).sub_(1).div_(2)
         dat_com1 = mv(affine_dat1[:-1, :-1], dat_com1).add_(affine_dat1[:-1, -1])
         best_name = spatial.volume_layout_to_name(spatial.affine_to_layout(affine_dat0))
@@ -968,6 +994,42 @@ def scatter_prior_soft(prior, fixed, z):
     fixed = fixed.unsqueeze(-2)     # [*B, J, 1, N]
     prior = linalg.dot(z, fixed, out=prior)
     return prior
+
+
+def flexi_level(nb_vox, nb_bins, nb_classes, nb_prm=12,
+                samples_per_param=8):
+    """Choose the level at which `flexi` compares orientations
+
+    The coarsest level with N ≥ c (F + J K) (weighted) voxels, i.e., at
+    least c voxels per estimated parameter: F parameters of 𝜙 and the
+    J × K entries of 𝑯. If no level qualifies, the finest one.
+
+    Parameters
+    ----------
+    nb_vox : list[float]
+        Number of (weighted) voxels N of each level of the pyramid.
+        The coarsest level is the one with the fewest voxels.
+    nb_bins : int
+        Number of image bins J.
+    nb_classes : int
+        Number of TPM classes K.
+    nb_prm : int, default=12
+        Number of parameters F of 𝜙.
+    samples_per_param : float, default=8
+        Minimum number of voxels per parameter c.
+
+    Returns
+    -------
+    level : int
+        Index into `nb_vox`.
+
+    """
+    min_vox = samples_per_param * (nb_prm + nb_bins * nb_classes)
+    order = sorted(range(len(nb_vox)), key=lambda i: nb_vox[i])
+    for i in order:
+        if nb_vox[i] >= min_vox:
+            return i
+    return order[-1]
 
 
 def convert_basis(name):
