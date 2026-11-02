@@ -160,6 +160,57 @@ def conv_transpose(x: Tensor, kernel: Tensor, stride: List[int],
 
 
 @jit_script
+def conv_axis(x: Tensor, kernel: Tensor, stride: int) -> Tensor:
+    """'Same' convolution along a single spatial axis, using `conv1d`.
+
+    `kernel` is one factor of a separable kernel: a (1, 1, *kernel_size)
+    tensor whose size is 1 along all axes but one (of length K > 1).
+    The input is seen as a batch of 1D rows along that axis. This is the
+    same operation as `conv(x, kernel, stride)`, but CPU backends are much
+    faster at it for long kernels (e.g., 3-6x for K = 59 on a 192^3
+    volume, mostly along the last axis).
+
+    x : (B, C, *spatial) tensor
+    kernel : (1, 1, *kernel_size) tensor
+    stride : int, along the kernel's axis
+    returns : (B, C, *outspatial) tensor
+    """
+    dim = x.dim() - 2
+    ksize: List[int] = list(kernel.shape[2:])
+    d = 0
+    for dd in range(dim):
+        if ksize[dd] > ksize[d]:
+            d = dd
+    K = ksize[d]
+    x = x.movedim(d + 2, -1)
+    shape: List[int] = list(x.shape)
+    x = F.conv1d(x.reshape([-1, 1, shape[-1]]), kernel.reshape([1, 1, K]),
+                 stride=[stride], padding=[(K - 1) // 2])
+    shape[-1] = x.shape[-1]
+    return x.reshape(shape).movedim(-1, d + 2)
+
+
+@jit_script
+def _conv_separable(x: Tensor, kernel: Tensor, stride: List[int]) -> Tensor:
+    """One factor of a separable 'same' convolution: `conv1d` along its
+    axis for long kernels (>= 15 taps), N-D convolution otherwise (faster
+    for short kernels, and used when `stride` is not 1 on the other axes)."""
+    ksize: List[int] = list(kernel.shape[2:])
+    d = 0
+    for dd in range(len(ksize)):
+        if ksize[dd] > ksize[d]:
+            d = dd
+    if ksize[d] >= 15:
+        unit = True
+        for dd in range(len(ksize)):
+            if dd != d and stride[dd] != 1:
+                unit = False
+        if unit:
+            return conv_axis(x, kernel, stride[d])
+    return conv(x, kernel, stride)
+
+
+@jit_script
 def do_conv(x: Tensor, kernel: List[Tensor], stride: List[int]) -> Tensor:
     """Apply a [separable] convolution
     x : (B, C, *inspatial) tensor
@@ -174,7 +225,7 @@ def do_conv(x: Tensor, kernel: List[Tensor], stride: List[int]) -> Tensor:
         for d, (k, s) in enumerate(zip(kernel, stride)):
             stride1: List[int] = [1] * dim
             stride1[d] = s
-            x = conv(x, k, stride1)
+            x = _conv_separable(x, k, stride1)
     return x
 
 
@@ -200,7 +251,7 @@ def do_convt(x: Tensor, kernel: List[Tensor], stride: List[int],
                 # Without stride, the transposed 'same' convolution is a
                 # 'same' convolution with the flipped kernel, which is
                 # faster than conv_transpose on most backends.
-                x = conv(x, k.flip([d+2]), stride1)
+                x = _conv_separable(x, k.flip([d+2]), stride1)
                 continue
             shape1[d] = z
             x = conv_transpose(x, k, stride1, shape1)

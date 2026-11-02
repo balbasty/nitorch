@@ -1,7 +1,11 @@
-"""Local means (LCC, LGMMH): shared mask normaliser (#158).
+"""Local means (LCC, LGMMH): faster separable convolution and shared mask
+normaliser (#158).
 
-The normaliser of a masked local mean (conv(mask)) can be computed once
-(`local_mean_norm`) and shared by all calls that use the same mask.
+- Long separable kernels are applied with `conv1d` along their axis
+  (`conv_axis`) instead of an N-D convolution: same operation, much
+  faster on CPU;
+- the normaliser of a masked local mean (conv(mask)) can be computed once
+  (`local_mean_norm`) and shared by all calls that use the same mask.
 """
 import torch
 import pytest
@@ -19,10 +23,44 @@ def _data(dim, n=20, seed=0):
     return x, y, mask
 
 
+@pytest.mark.parametrize('dim', [1, 2, 3])
+@pytest.mark.parametrize('stride', [1, 2])
+def test_conv_axis_matches_nd_convolution(dim, stride):
+    g = torch.Generator().manual_seed(0)
+    x = torch.rand([2, 3] + [23] * dim, dtype=dt, generator=g)
+    for d in range(dim):
+        K = 17
+        shape = [1] * dim
+        shape[d] = K
+        k = torch.rand([1, 1, *shape], dtype=dt, generator=g)
+        strides = [1] * dim
+        strides[d] = stride
+        ref = U.conv(x, k, strides)
+        out = U.conv_axis(x, k, stride)
+        assert out.shape == ref.shape
+        assert torch.allclose(out, ref, rtol=1e-12, atol=1e-14)
+
+
+def test_conv_separable_dispatch(monkeypatch):
+    calls = []
+    orig = U.conv_axis
+    monkeypatch.setattr(U, 'conv_axis',
+                        lambda *a: calls.append(1) or orig(*a))
+    x = torch.rand([1, 1, 20, 20, 20], dtype=dt)
+    long_k = torch.rand([1, 1, 1, 15, 1], dtype=dt)
+    short_k = torch.rand([1, 1, 1, 13, 1], dtype=dt)
+    U._conv_separable(x, long_k, [1, 1, 1])
+    assert len(calls) == 1
+    U._conv_separable(x, short_k, [1, 1, 1])           # N-D convolution
+    U._conv_separable(x, long_k, [2, 1, 1])            # stride on another axis
+    assert len(calls) == 1
+
+
 @pytest.mark.parametrize('dim', [2, 3])
 @pytest.mark.parametrize('kernel_fwhm', [[6.], [6., 0.]])
 def test_backward_is_adjoint(dim, kernel_fwhm):
-    # <fwd(x), y> == <x, bwd(y)>, also with an unsmoothed axis
+    # <fwd(x), y> == <x, bwd(y)>, with long kernels (conv_axis path),
+    # also with an unsmoothed axis
     x, y, mask = _data(dim)
     kernel_fwhm = kernel_fwhm[:dim]
     fwd = U.local_mean(x, kernel_fwhm, dim=dim, mask=mask)
@@ -32,8 +70,8 @@ def test_backward_is_adjoint(dim, kernel_fwhm):
 
 
 @pytest.mark.parametrize('mode,fwhm,stride', [
-    ('g', [6.], [1]),
-    ('g', [1.], [1]),
+    ('g', [6.], [1]),       # long kernel (conv1d)
+    ('g', [1.], [1]),       # short kernel (N-D convolution)
     ('g', [6.], [2]),       # strided
     ('s', [4.], [1]),       # square patches
     ('s', [4.], [2]),
