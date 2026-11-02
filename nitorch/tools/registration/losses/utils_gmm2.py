@@ -520,22 +520,59 @@ class Bwd:
 
 
 @torch.jit.script
+class LocalMask:
+    """Weights of a masked local fit.
+
+    The (pushed) log-likelihood of a voxel is a convex combination of
+    the log-Gaussians of the patches it belongs to, where each patch is
+    weighted by its in-mask fraction `frac`: patches that are entirely
+    masked out do not contribute, and in-mask voxels only see patches
+    whose statistics were computed from in-mask voxels. The M-step
+    weights (`weight`) are the matching adjoint weights, so that EM
+    minimises the in-mask average nll.
+    """
+    def __init__(self, fwd: Fwd, bwd: Bwd, mask: Tensor):
+        # mask : (..., 1, *spatial)
+        self.mask = mask
+        self.frac = fwd(mask, None)                       # (..., 1, *patches)
+        ibwd = bwd(self.frac, None, None).clamp_min_(1e-10).reciprocal_()
+        self.ibwd = ibwd                                  # (..., 1, *spatial)
+        self.weight = mask * ibwd
+        self.nvox = mask.sum().clamp_min(1e-10)
+
+    def push(self, bwd: Bwd, x: Tensor) -> Tensor:
+        """Push patch-wise quantities to voxels (weighted average)"""
+        return bwd(x * self.frac, None, None).mul_(self.ibwd)
+
+    def average(self, x: Tensor) -> Tensor:
+        """In-mask average of a (..., 1, *spatial) voxel-wise map"""
+        return (x * self.mask).sum() / self.nvox
+
+
+@torch.jit.script
 def make_moments(x, y):
     return torch.stack([x, y, x*x, y*y, x*y])
 
 
 @torch.jit.script
 def m_step_local(fwd: Fwd, buf: Tensor, moments: Tensor,
-                 prior_weight: float = 1e-8)\
+                 prior_weight: float = 1e-8,
+                 weight: Optional[Tensor] = None)\
         -> Tuple[Tensor, Tensor, Tensor, Tensor, Tensor, Tensor]:
     """
     buf : (6, ..., K, *spatial) tensor
         On input, `buf[0]` contains the responsibilities.
         `buf[1:]` is overwritten with `moments * buf[0]`.
+        If `weight` is provided, `buf` is then multiplied (in place)
+        by `weight`.
     moments : (5, ..., 1, *spatial) tensor
+    weight : (..., 1, *spatial) tensor, optional
+        Voxel weights (masked fit, see `LocalMask`)
     """
     # a single local mean of [z, z*moments]
     torch.mul(moments, buf[0], out=buf[1:])
+    if weight is not None:
+        buf.mul_(weight)
     stats = fwd(buf, None)
     # weak prior towards the pooled local statistics (see `m_step`)
     stats = stats.add_(stats.sum(-fwd.dim-1, keepdim=True), alpha=prior_weight)
@@ -550,12 +587,16 @@ def m_step_local(fwd: Fwd, buf: Tensor, moments: Tensor,
 
 @torch.jit.script
 def e_step_local(bwd: Bwd, moments: Tensor, xmean, ymean, xvar, yvar,
-                 cov, prior, out: Optional[Tensor] = None):
+                 cov, prior, out: Optional[Tensor] = None,
+                 lmask: Optional[LocalMask] = None):
     """
     moments : (5, ..., 1, *spatial) tensor
         [x, y, x*x, y*y, x*y]
     out : (..., K, *spatial) tensor, optional
         Output buffer for the responsibilities
+    lmask : LocalMask, optional
+        Masked fit: patches are weighted by their in-mask fraction and
+        the nll is averaged over in-mask voxels.
     """
     x, y, x2, y2, xy = moments.unbind(0)
 
@@ -575,21 +616,30 @@ def e_step_local(bwd: Bwd, moments: Tensor, xmean, ymean, xvar, yvar,
     Ay = yprec * ymean + icov * xmean  # (A * mu)[fixed]
 
     suffstat = torch.stack([mAm, Ax, Ay, xprec, yprec, icov])
-    suffstat = bwd(suffstat, None, None)
+    if lmask is None:
+        suffstat = bwd(suffstat, None, None)
+    else:
+        suffstat = lmask.push(bwd, suffstat)
     mAm, Ax, Ay, xprec, yprec, icov = suffstat.unbind(0)
 
     # E-step: update responsibilities (in place)
     lz = mAm.addcmul_(xprec, x2).addcmul_(yprec, y2).addcmul_(icov, xy, value=2)
     lz = lz.addcmul_(Ax, x, value=-2).addcmul_(Ay, y, value=-2).mul_(-0.5)
     z, ll = softmax_lse_(lz, -bwd.dim - 1, out)
+    if lmask is not None:
+        return -lmask.average(ll), z
     return -ll.mean(), z
 
 
 @torch.jit.script
 def em_loop_local(fwd: Fwd, bwd: Bwd, moments: Tensor, max_iter: int,
                   z: Optional[Tensor] = None,
-                  theta: Optional[Dict[str, Tensor]] = None
+                  theta: Optional[Dict[str, Tensor]] = None,
+                  lmask: Optional[LocalMask] = None,
                   ) -> Dict[str, Tensor]:
+    weight: Optional[Tensor] = None
+    if lmask is not None:
+        weight = lmask.weight
 
     if theta is not None:
         xmean = theta.pop('xmean')
@@ -599,7 +649,8 @@ def em_loop_local(fwd: Fwd, bwd: Bwd, moments: Tensor, max_iter: int,
         cov = theta.pop('corr') * yvar.sqrt() * xvar.sqrt()
         pi = theta.pop('prior')
         # initial E-step
-        nll, z = e_step_local(bwd, moments, xmean, ymean, xvar, yvar, cov, pi)
+        nll, z = e_step_local(bwd, moments, xmean, ymean, xvar, yvar, cov, pi,
+                              lmask=lmask)
     elif z is None:
         raise ValueError('theta or z should be provided')
     else:
@@ -618,12 +669,13 @@ def em_loop_local(fwd: Fwd, bwd: Bwd, moments: Tensor, max_iter: int,
     for nit in range(max_iter):
 
         # M-step: update Gaussian parameters
-        xmean, ymean, xvar, yvar, cov, pi = m_step_local(fwd, buf, moments)
+        xmean, ymean, xvar, yvar, cov, pi = m_step_local(fwd, buf, moments,
+                                                     weight=weight)
         xvar, yvar, cov = load_cov(xvar, yvar, cov, alpha=1e-6)
 
         # E-step
         nll, z = e_step_local(bwd, moments, xmean, ymean, xvar, yvar, cov,
-                              pi, out=buf[0])
+                              pi, out=buf[0], lmask=lmask)
 
         # Same guarded criterion as `em_loop`. When EM starts from
         # responsibilities, nll_max is +inf: inf/inf = NaN at the first
@@ -654,7 +706,11 @@ def em_loop_local(fwd: Fwd, bwd: Bwd, moments: Tensor, max_iter: int,
 
 
 def fit_lgmm2(x, y, bins=3, max_iter=20, dim=None,
-              patch=None, stride=None, mode='g', theta=None, cache=None):
+              patch=None, stride=None, mode='g', theta=None, cache=None,
+              mask=None, return_mask=False):
+    """Fit a local GMM. If `mask` ((..., *spatial)) is provided, masked-out
+    voxels do not contribute (see `LocalMask`). If `return_mask`, the
+    `LocalMask` object (or None) is also returned."""
 
     dim = dim or (x.dim() - 1)
     shape = x.shape[-dim:]
@@ -664,7 +720,7 @@ def fit_lgmm2(x, y, bins=3, max_iter=20, dim=None,
     # initialize parameters globally
     z = None
     if theta is None:
-        gmmfit = fit_gmm2(x, y, bins, dim=dim, theta=theta)
+        gmmfit = fit_gmm2(x, y, bins, dim=dim, theta=theta, mask=mask)
         z = gmmfit.pop('resp')
         del gmmfit
         z = utils.fast_movedim(z, -1, -dim-1)  # [nmom(=1), k, *spatial]
@@ -674,5 +730,14 @@ def fit_lgmm2(x, y, bins=3, max_iter=20, dim=None,
     bwd = Bwd(patch, stride, dim, mode, shape, cache)
     moments = make_moments(x, y)
     moments = moments.unsqueeze(-dim-1)  # [nmom, k(=1), *spatial]
-    gmmfit = em_loop_local(fwd, bwd, moments, max_iter, z=z, theta=theta)
+    lmask = None
+    if mask is not None:
+        mask = mask.to(moments.dtype)
+        mask = mask.expand(torch.broadcast_shapes(
+            mask.shape, x.shape, y.shape)).unsqueeze(-dim-1)
+        lmask = LocalMask(fwd, bwd, mask)
+    gmmfit = em_loop_local(fwd, bwd, moments, max_iter, z=z, theta=theta,
+                           lmask=lmask)
+    if return_mask:
+        return gmmfit, lmask
     return gmmfit
