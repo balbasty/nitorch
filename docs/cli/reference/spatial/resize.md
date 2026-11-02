@@ -22,7 +22,7 @@ Unlike [`reslice`](reslice.md), `resize` has no target space and applies no tran
 
 ### Choosing the size
 
-The three options are used in this order of precedence:
+At least one of `-f`, `-v` and `-s` is required. Without one, `resize` prints its usage followed by an `[ERROR]` line and writes nothing. The three options are used in this order of precedence:
 
 - `-v` gives the voxel size of the output, in millimetres (the units of the orientation matrix). The zoom factor is the input voxel size divided by this value, axis by axis. It cannot be combined with `-f`: using both is an error.
 - `-f` gives the zoom factor directly. A factor above 1 yields more, smaller voxels; a factor below 1 yields fewer, larger voxels. Fractions such as `1/2` are accepted.
@@ -67,7 +67,7 @@ Resizing works on a floating-point version of the data. The result is written ba
 
 ### Size
 
-Exactly one of the following is needed. `-f` and `-v` are mutually exclusive.
+At least one of the following is required. `-f` and `-v` are mutually exclusive.
 
 | Option                 | Value         | Description                                                                                          | Default |
 | ---------------------- | ------------- | ---------------------------------------------------------------------------------------------------- | ------- |

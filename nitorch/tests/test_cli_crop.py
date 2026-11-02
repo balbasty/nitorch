@@ -115,3 +115,60 @@ def test_crop_transform_roundtrip(tmp_path, volume):
     assert dat1.shape == (4, 6, 2)
     np.testing.assert_array_equal(dat1, dat2)
     np.testing.assert_allclose(aff1, aff2)
+
+
+@pytest.mark.parametrize('opts', [
+    ['-s', '4', '-k', 'REF'],
+    ['-s', '4', '-b'],
+    ['-k', 'REF', '-b', '0'],
+    ['-b', '-s', '4', '-k', 'REF'],
+    ['-s', '4', '-b', '-t', 'T'],
+])
+def test_crop_exclusive_options(tmp_path, volume, capsys, opts):
+    from nitorch.cli.misc.crop.cli import cli
+    from nitorch.cli.misc.crop.parser import parse, ParseError
+    ref = str(tmp_path / 'ref.nii.gz')
+    crop([volume, '-s', '4', '-o', ref])
+    capsys.readouterr()
+    opts = [ref if o == 'REF' else str(tmp_path / 't.lta') if o == 'T'
+            else o for o in opts]
+    out = str(tmp_path / 'out.nii.gz')
+    args = [volume] + opts + ['-o', out]
+    with pytest.raises(ParseError):
+        parse(list(args))
+    cli(list(args))  # clean error, no traceback
+    captured = capsys.readouterr()
+    assert '[ERROR]' in captured.err
+    assert 'Only one of' in captured.err
+    assert 'usage:' in captured.out
+    assert not os.path.exists(out)
+    assert not os.path.exists(tmp_path / 't.lta')
+
+
+def test_crop_center_with_size_still_allowed(tmp_path, volume):
+    out = str(tmp_path / 'out.nii.gz')
+    crop([volume, '-s', '4', '6', '2', '-c', '3', '5', '4', '-o', out])
+    dat, aff = load(out)
+    assert dat.shape == (4, 6, 2)
+
+
+@pytest.mark.parametrize('axcodes', [('L', 'P', 'S'), ('A', 'S', 'R'),
+                                     ('L', 'I', 'A')])
+def test_crop_like_other_layout(tmp_path, volume, axcodes):
+    ref = str(tmp_path / 'ref.nii.gz')
+    crop([volume, '-s', '4', '6', '2', '-c', '3', '5', '4', '-o', ref])
+    rdat, raff = load(ref)
+    # same world FOV, stored in another voxel layout
+    img = nib.Nifti1Image(rdat, raff)
+    xform = nib.orientations.ornt_transform(
+        nib.io_orientation(raff), nib.orientations.axcodes2ornt(axcodes))
+    img = img.as_reoriented(xform)
+    ref2 = str(tmp_path / 'ref2.nii.gz')
+    nib.save(img, ref2)
+    out = str(tmp_path / 'out.nii.gz')
+    crop([volume, '-k', ref2, '-o', out])
+    f = nib.load(out)
+    assert f.shape == img.shape
+    np.testing.assert_allclose(f.affine, img.affine)
+    np.testing.assert_array_equal(np.asarray(f.dataobj),
+                                  np.asarray(img.dataobj))

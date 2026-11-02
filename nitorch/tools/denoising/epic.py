@@ -482,7 +482,7 @@ def load(dat, rand=True, missing=0, **backend):
 
 def movedim(x, *a, **k):
     if torch.is_tensor(x):
-        return torch.movedim(x, *a, **k)
+        return utils.movedim(x, *a, **k)
     elif isinstance(x, io.MappedArray):
         return x.movedim(*a, **k)
     else:

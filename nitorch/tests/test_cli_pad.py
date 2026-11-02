@@ -90,3 +90,27 @@ def test_pad_size_ras_anisotropic_permuted(tmp_path):
     # world position of voxel 0 of the input is preserved
     assert np.allclose(np.linalg.inv(out.affine) @ aff @ [0, 0, 0, 1],
                        [2, 2, 2, 1])
+
+
+@pytest.mark.parametrize('value', ['-1', '-1.5', '-.5', '-1e-3', '2.5'])
+def test_pad_bound_negative_constant(tmp_path, volume, value):
+    pad([volume, '-s', '2', '-b', value])
+    out = load(tmp_path)
+    dat = np.asarray(nib.load(volume).dataobj)
+    assert out.shape == (8, 10, 12)
+    assert np.allclose(out[2:-2, 2:-2, 2:-2], dat)
+    mask = np.ones(out.shape, dtype=bool)
+    mask[2:-2, 2:-2, 2:-2] = False
+    assert np.allclose(out[mask], float(value))
+
+
+@pytest.mark.parametrize('value', ['-1', '-.5', '-inf'])
+def test_pad_bound_negative_parse(value):
+    opt = parse(['img.nii', '-s', '1', '-b', value, '-o', 'out.nii'])
+    assert opt.bound == float(value)
+    assert opt.output == ['out.nii']
+
+
+def test_pad_bound_missing_value():
+    with pytest.raises(ParseError):
+        parse(['img.nii', '-s', '1', '-b', '-o', 'out.nii'])

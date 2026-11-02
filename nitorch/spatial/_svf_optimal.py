@@ -2,6 +2,7 @@ __all__ = ["optimal_svf"]
 import torch
 from nitorch.core.py import prod
 from nitorch.core.linalg import lmdiv, sym_matvec
+from nitorch.core.utils import fast_movedim
 from nitorch.spatial import solve_grid_fmg
 
 
@@ -124,7 +125,7 @@ def optimal_svf(svf, weights=None, squared=True, **prm):
         # reshape and zero-center
         z = z.reshape(z.shape[:-1] + (N, D))
         z -= torch.mean(z, dim=-2, keepdim=True)
-        z = torch.movedim(z, -2, 0)
+        z = fast_movedim(z, -2, 0)
 
         # Build absolute matrix
         w = torch.zeros([N, *shape[:2], (D*(D+1))//2])
@@ -161,7 +162,7 @@ def optimal_svf(svf, weights=None, squared=True, **prm):
         z = lmdiv(w.to(x), x.unsqueeze(-1), method='pinv', rcond=1e-5)
         z = z.squeeze(-1)
         z -= torch.mean(z, dim=-1, keepdim=True)  # zero-center
-        z = torch.movedim(z, -1, 0)
+        z = fast_movedim(z, -1, 0)
         w = w.abs().sum(0)
         return z, w
 

@@ -19,6 +19,161 @@ else:
     _solve_lu = lambda A, b: torch.solve(b, A)[0]
 
 
+# ----------------------------------------------------------------------
+#                  COMPATIBILITY WITH OLDER PYTORCH
+# ----------------------------------------------------------------------
+# nitorch supports torch >= 1.4, but `torch.linalg` only appeared in
+# torch 1.8/1.9 and some of the older functions (`torch.symeig`,
+# `torch.eig`) were removed in torch 2.0. The wrappers below use
+# `torch.linalg` when available and the older functions otherwise.
+# The feature flags are read at call time so that tests can exercise the
+# fallbacks by monkeypatching them.
+# Other wrappers that already exist in this module:
+#   - `inv(a)`                    -> torch.inverse
+#   - `lmdiv(a, b)`               -> torch.linalg.solve(a, b) / torch.solve
+#   - `cholesky(a)`               -> torch.linalg.cholesky / torch.cholesky
+
+def _torch_linalg_has(name):
+    return hasattr(torch, 'linalg') and hasattr(torch.linalg, name)
+
+
+_torch_has_linalg_eigh = _torch_linalg_has('eigh')          # torch >= 1.8
+_torch_has_linalg_eigvalsh = _torch_linalg_has('eigvalsh')  # torch >= 1.8
+_torch_has_linalg_eigvals = _torch_linalg_has('eigvals')    # torch >= 1.9
+_torch_has_linalg_det = _torch_linalg_has('det')            # torch >= 1.8
+_torch_has_kron = hasattr(torch, 'kron')                    # torch >= 1.8
+
+
+def eigh(a, UPLO='L'):
+    """Eigendecomposition of a (batch of) symmetric matrices.
+
+    Wraps `torch.linalg.eigh` (torch >= 1.8) or `torch.symeig`.
+
+    Parameters
+    ----------
+    a : (..., N, N) tensor
+        Symmetric matrices. Only one triangular part is used.
+    UPLO : {'L', 'U'}, default='L'
+        Use the lower ('L') or upper ('U') triangular part of `a`.
+        Note that `torch.symeig` used the upper part by default.
+
+    Returns
+    -------
+    eigenvalues : (..., N) tensor
+        Eigenvalues, in ascending order.
+    eigenvectors : (..., N, N) tensor
+        Eigenvectors, stored in columns.
+    """
+    if _torch_has_linalg_eigh:
+        return torch.linalg.eigh(a, UPLO=UPLO)
+    upper = UPLO.upper() == 'U'
+    return torch.symeig(a, eigenvectors=True, upper=upper)
+
+
+def eigvalsh(a, UPLO='L'):
+    """Eigenvalues of a (batch of) symmetric matrices.
+
+    Wraps `torch.linalg.eigvalsh` (torch >= 1.8) or `torch.symeig`.
+
+    Parameters
+    ----------
+    a : (..., N, N) tensor
+        Symmetric matrices. Only one triangular part is used.
+    UPLO : {'L', 'U'}, default='L'
+        Use the lower ('L') or upper ('U') triangular part of `a`.
+        Note that `torch.symeig` used the upper part by default.
+
+    Returns
+    -------
+    eigenvalues : (..., N) tensor
+        Eigenvalues, in ascending order.
+    """
+    if _torch_has_linalg_eigvalsh:
+        return torch.linalg.eigvalsh(a, UPLO=UPLO)
+    upper = UPLO.upper() == 'U'
+    return torch.symeig(a, eigenvectors=False, upper=upper)[0]
+
+
+def eigvals(a):
+    """Eigenvalues of a (batch of) general square matrices.
+
+    Wraps `torch.linalg.eigvals` (torch >= 1.9) or `torch.eig`.
+    The output is always complex, so the fallback requires complex
+    support (`torch.view_as_complex`, torch >= 1.6).
+
+    Parameters
+    ----------
+    a : (..., N, N) tensor
+        Real square matrices.
+
+    Returns
+    -------
+    eigenvalues : (..., N) complex tensor
+        Eigenvalues (in no particular order).
+    """
+    if _torch_has_linalg_eigvals:
+        return torch.linalg.eigvals(a)
+    if not hasattr(torch, 'view_as_complex'):
+        raise NotImplementedError('eigvals requires complex tensors, '
+                                  'which need torch >= 1.6')
+    batch, n = a.shape[:-2], a.shape[-1]
+    a = a.reshape([-1, n, n])
+    # torch.eig is not batched and returns (N, 2) [real, imag] pairs
+    vals = [torch.eig(a1, eigenvectors=False)[0] for a1 in a]
+    vals = torch.stack(vals) if vals else a.new_empty([0, n, 2])
+    vals = torch.view_as_complex(vals.contiguous())
+    return vals.reshape([*batch, n])
+
+
+def det(a):
+    """Determinant of a (batch of) square matrices.
+
+    Wraps `torch.linalg.det` (torch >= 1.8) or `torch.det`.
+
+    Parameters
+    ----------
+    a : (..., N, N) tensor
+
+    Returns
+    -------
+    det : (...) tensor
+    """
+    if _torch_has_linalg_det:
+        return torch.linalg.det(a)
+    return torch.det(a)
+
+
+def kron(a, b):
+    """Kronecker product of two tensors, with the semantics of `torch.kron`.
+
+    Wraps `torch.kron` (torch >= 1.8). If the inputs have different
+    numbers of dimensions, the smaller one is left-padded with
+    singleton dimensions, so that a batched product can be computed
+    with `kron(A, B[None])` for `A` of shape `(B, M, N)`.
+
+    .. note:: `kron2(x, y)` (defined below) computes `kron(y, x)`
+              over the last two dimensions only, with broadcasting.
+
+    Parameters
+    ----------
+    a : (*a_shape) tensor
+    b : (*b_shape) tensor
+
+    Returns
+    -------
+    ab : (*[a_shape * b_shape]) tensor
+    """
+    if _torch_has_kron:
+        return torch.kron(a, b)
+    ndim = max(a.dim(), b.dim())
+    ashape = [1] * (ndim - a.dim()) + list(a.shape)
+    bshape = [1] * (ndim - b.dim()) + list(b.shape)
+    # interleave dimensions: a -> (a0, 1, a1, 1, ...), b -> (1, b0, 1, b1, ...)
+    a = a.reshape([s for sa in ashape for s in (sa, 1)])
+    b = b.reshape([s for sb in bshape for s in (1, sb)])
+    return (a * b).reshape([sa * sb for sa, sb in zip(ashape, bshape)])
+
+
 def meanm(mats, max_iter=1024, tol=1e-20):
     r"""Compute the exponential barycentre of a set of matrices.
 

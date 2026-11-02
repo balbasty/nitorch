@@ -92,6 +92,25 @@ def _autoreg(argv=None):
     write_data(options)
 
 
+def linear_matrix(trf, q, basis, dim=3):
+    """Build the affine matrix of a linear transformation.
+
+    Includes the shift of the center of rotation and the (fixed)
+    initial matrix, if any.
+    """
+    A = linalg.expm(q, basis.to(q))
+    if torch.is_tensor(trf.shift):
+        # include shift
+        shift = trf.shift.to(q)
+        eye = torch.eye(dim, dtype=q.dtype, device=q.device)
+        A = A.clone()  # needed because expm is a custom autograd.Function
+        A[:-1, -1] += torch.matmul(A[:-1, :-1] - eye, shift)
+    init = getattr(trf, 'init_matrix', None)
+    if init is not None:
+        A = A.matmul(init.to(q))
+    return A
+
+
 def collapse_losses(losses):
     """Collapse losses on dense fields into a GridLoss"""
     gridloss = struct.GridLoss()
@@ -127,10 +146,12 @@ def load_data(s):
             dat = dat.reshape([*file.shape, file.channels])
             dat = dat[..., file.subchannels]
             dat = utils.movedim(dat, -1, 0)
-            dim = dat.dim() - 1
-            qt = utils.quantile(dat, (0.01, 0.95), dim=range(-dim, 0), keepdim=True)
-            mn, mx = qt.unbind(-1)
-            dat = dat.sub_(mn).div_(mx-mn)
+            if not is_label:
+                dim = dat.dim() - 1
+                qt = utils.quantile(dat, (0.01, 0.95), dim=range(-dim, 0),
+                                    keepdim=True)
+                mn, mx = qt.unbind(-1)
+                dat = dat.sub_(mn).div_(mx-mn)
             dats.append(dat)
             del dat
         dats = torch.cat(dats, dim=0)
@@ -141,13 +162,14 @@ def load_data(s):
         return dats
 
     def split(dat, labels):
-        # transforming labels into probabilities
+        # transforming labels into (one-hot) probabilities
         if not labels:
             labels = torch.unique(dat, sorted=True)
             labels = labels[labels != 0].tolist()
-        out = dat.new_empty(dtype=torch.float32)
+        out = dat.new_zeros([len(labels), *dat.shape[1:]],
+                            dtype=torch.float32)
         for i, l in enumerate(labels):
-            out[labels == l] = 1
+            out[i] = (dat[0] == l)
         return out, labels
 
     def pyramid(dat, affine, levels):
@@ -178,12 +200,12 @@ def load_data(s):
         loss.moving.dat = load(loss.moving.files, loss.moving.type == 'labels')
         if loss.moving.type == 'labels':
             loss.moving.dat, loss.labels = split(loss.moving.dat, loss.labels)
-        lvl = (list(sorted(set(loss.fixed.pyramid)))
-               if loss.fixed.type != 'labels' else [1])
+        if loss.fixed.type == 'labels':
+            loss.fixed.dat, loss.labels = split(loss.fixed.dat, loss.labels)
+        lvl = list(sorted(set(loss.fixed.pyramid)))
         loss.fixed.dat = pyramid(loss.fixed.dat,
                                  loss.fixed.affine.to(device), lvl)
-        lvl = (list(sorted(set(loss.moving.pyramid)))
-               if loss.moving.type != 'labels' else [1])
+        lvl = list(sorted(set(loss.moving.pyramid)))
         loss.moving.dat = pyramid(loss.moving.dat,
                                   loss.moving.affine.to(device), lvl)
         if isinstance(loss, struct.JTVLoss):
@@ -248,12 +270,20 @@ def load_transforms(s):
                 reg.factor = reg.factor * trf.factor
         if isinstance(trf, struct.Linear):
             # Affine
+            # The initial matrix (if any) is kept fixed and the optimized
+            # transform is composed on its left: A = expm(q) @ A0
+            trf.dat = torch.zeros(trf.nb_prm(3), dtype=torch.float32,
+                                  device=device)
+            trf.init_matrix = None
             if isinstance(trf.init, str):
-                trf.dat = io.transforms.loadf(trf.init, dtype=torch.float32,
-                                              device=device)
-            else:
-                trf.dat = torch.zeros(trf.nb_prm(3), dtype=torch.float32,
-                                      device=device)
+                init = io.transforms.loadf(trf.init, dtype=torch.float32,
+                                           device=device)
+                init = init.reshape([-1, *init.shape[-2:]])[-1]
+                if tuple(init.shape) != (trf.dim + 1, trf.dim + 1):
+                    raise ValueError(f'Initial affine should be a '
+                                     f'{trf.dim+1}x{trf.dim+1} matrix but '
+                                     f'got shape {tuple(init.shape)}')
+                trf.init_matrix = init
             if trf.shift:
                 shift = torch.as_tensor(shapef, **backend) * 0.5
                 trf.shift = -spatial.affine_matvec(affinef, shift)
@@ -268,13 +298,26 @@ def load_transforms(s):
 
             # FFD/Diffeo
             if isinstance(trf.init, str):
+                # The field keeps its own space (orientation matrix and
+                # field of view) and is downsampled to the coarsest level.
                 f = io.volumes.map(trf.init)
-                trf.dat = reshape3d(f.loadf(dtype=torch.float32, device=device),
-                                    'last')
-                if len(trf.dat) != trf.dim:
-                    raise ValueError('Field should have 3 channels')
-                factor = [int(s//g) for g, s in zip(trf.shape[:-1], shape)]
-                trf.affine, trf.shape = affine_resize(trf.affine, trf.shape[:-1], factor)
+                dat = reshape3d(f.fdata(dtype=torch.float32, device=device),
+                                'last')
+                if dat.dim() != trf.dim + 1 or dat.shape[-1] != trf.dim:
+                    raise ValueError(f'Initial field should have {trf.dim} '
+                                     f'channels but got shape '
+                                     f'{tuple(dat.shape)}')
+                init_affine = f.affine.to(dtype=torch.float32, device=device)
+                init_shape = dat.shape[:-1]
+                _, shape = affine_resize(init_affine, init_shape, 1/factor)
+                if list(shape) != list(init_shape):
+                    dat, init_affine = spatial.resize_grid(
+                        dat[None], shape=shape, type='displacement',
+                        affine=init_affine[None])
+                    dat, init_affine = dat[0], init_affine[0]
+                trf.dat = dat
+                trf.affine = init_affine
+                trf.shape = list(shape)
             else:
                 trf.dat = torch.zeros([*shape, trf.dim], dtype=torch.float32,
                                       device=device)
@@ -386,9 +429,15 @@ def add_freedom(options):
                 trf.free()
                 return
     else:
+        # Free all parameters at once. Nonlinear transformations with
+        # several pyramid levels then move to the next (finer) level at
+        # each subsequent call.
         for trf in options.transformations:
-            trf.optdat = torch.nn.Parameter(trf.dat, requires_grad=True)
-            trf.dat = trf.optdat
+            if not trf.isfree():
+                trf.optdat = torch.nn.Parameter(trf.dat, requires_grad=True)
+                trf.dat = trf.optdat
+            elif trf.freeable():
+                trf.free()
 
 
 def optimize(options):
@@ -414,15 +463,7 @@ def optimize(options):
             trf.update()
             if isinstance(trf, struct.Linear):
                 q = trf.optdat.to(**backend)
-                # print(q.tolist())
-                B = trf.basis.to(**backend)
-                A = linalg.expm(q, B)
-                if torch.is_tensor(trf.shift):
-                    # include shift
-                    shift = trf.shift.to(**backend)
-                    eye = torch.eye(options.dim, **backend)
-                    A = A.clone()  # needed because expm is a custom autograd.Function
-                    A[:-1, -1] += torch.matmul(A[:-1, :-1] - eye, shift)
+                A = linear_matrix(trf, q, trf.basis, options.dim)
                 for loss1 in trf.losses:
                     loss += loss1.call(q)
                 break
@@ -555,14 +596,7 @@ def write_transforms(options):
             affine = trf
 
     if affine:
-        q = affine.dat
-        B = affine.basis
-        lin = linalg.expm(q, B)
-        if torch.is_tensor(affine.shift):
-            # include shift
-            shift = affine.shift.to(dtype=lin.dtype, device=lin.device)
-            eye = torch.eye(3, dtype=lin.dtype, device=lin.device)
-            lin[:-1, -1] += torch.matmul(lin[:-1, :-1] - eye, shift)
+        lin = linear_matrix(affine, affine.dat, affine.basis, affine.dim)
         io.transforms.savef(lin.cpu(), affine.output, type=2)
 
     if nonlin:
@@ -798,13 +832,7 @@ def write_data(options):
     for trf in options.transformations:
         if isinstance(trf, struct.Linear):
             q = trf.dat.to(**backend)
-            B = trf.basis.to(**backend)
-            lin = linalg.expm(q, B)
-            if torch.is_tensor(trf.shift):
-                # include shift
-                shift = trf.shift.to(**backend)
-                eye = torch.eye(3, **backend)
-                lin[:-1, -1] += torch.matmul(lin[:-1, :-1] - eye, shift)
+            lin = linear_matrix(trf, q, trf.basis, trf.dim)
             break
 
     # non-linear displacement field

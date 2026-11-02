@@ -8,6 +8,7 @@ import torch
 from torch.nn import functional as F
 from typing import Optional, List, Dict, Tuple
 import math
+from nitorch.core.jit import movedim1
 Tensor = torch.Tensor
 
 
@@ -182,12 +183,12 @@ def conv_axis(x: Tensor, kernel: Tensor, stride: int) -> Tensor:
         if ksize[dd] > ksize[d]:
             d = dd
     K = ksize[d]
-    x = x.movedim(d + 2, -1)
+    x = movedim1(x, d + 2, -1)
     shape: List[int] = list(x.shape)
     x = F.conv1d(x.reshape([-1, 1, shape[-1]]), kernel.reshape([1, 1, K]),
                  stride=[stride], padding=[(K - 1) // 2])
     shape[-1] = x.shape[-1]
-    return x.reshape(shape).movedim(-1, d + 2)
+    return movedim1(x.reshape(shape), -1, d + 2)
 
 
 @jit_script

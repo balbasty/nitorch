@@ -2084,10 +2084,10 @@ class Nonlin2dModel(NonLinModel):
         for d in range(dim):
             R = R.unsqueeze(-2)
         R = R.expand([dim, *hess.shape[-dim-1:-1], dim])
-        hess = hess.movedim(-1, -dim-1)
+        hess = utils.movedim(hess, -1, -dim-1)
         hess = regutils.jhj(R.transpose(0, -1), hess)
         hess[..., self.plane] += hess[..., :dim].abs().max(-1).values
-        hess = hess.movedim(-1, -dim-1)
+        hess = utils.movedim(hess, -1, -dim-1)
         hess = regutils.jhj(R, hess)
         return hess
 
