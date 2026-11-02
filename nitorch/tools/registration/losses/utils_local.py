@@ -221,48 +221,70 @@ def patcht_output_shape(input_shape: List[int],
 
 
 @jit_script
-def patcht_output_padding(output_shape: List[int],
-                          input_shape: List[int],
-                          kernel_size: List[int],
-                          stride: List[int]) -> List[int]:
-    output_shape_nopad = patcht_output_shape(input_shape, kernel_size, stride)
-    opad: List[int] = [l - l0 for l, l0
-                       in zip(output_shape, output_shape_nopad)]
-    return opad
-
-
-@jit_script
 def do_patch(x: Tensor, kernel_size: List[int], stride: List[int]) -> Tensor:
-    """Convolution by a constant square kernel of shape `kernel_size`"""
+    """Convolution by a constant square kernel of shape `kernel_size`
+
+    The box kernel is separable: we extract (strided, possibly overlapping)
+    windows along one dimension at a time and average them. This uses
+    views and reductions only (no convolution), and costs sum(kernel_size)
+    rather than prod(kernel_size) operations per voxel.
+
+    x : (B, C, *inspatial) tensor
+    kernel_size : List{dim}[int]
+    stride : List{dim}[int]
+    returns : (B, C, *outspatial) tensor
+    """
     dim = x.dim() - 2
     for d in range(dim):
-        x = x.unfold(d+2, kernel_size[d], stride[d])
-    dims = [d for d in range(-dim, 0)]
-    x = x.mean(dim=dims)
+        if kernel_size[d] == 1 and stride[d] == 1:
+            continue
+        x = x.unfold(d+2, kernel_size[d], stride[d]).mean(-1)
     return x
 
 
 @jit_script
 def do_patcht(x: Tensor, kernel_size: List[int], stride: List[int],
               oshape: List[int]) -> Tensor:
-    """Transposed convolution by a constant square kernel of shape `kernel_size`"""
+    """Transposed convolution by a constant square kernel of shape `kernel_size`
+
+    This is the exact adjoint of `do_patch`: overlapping patches (when
+    `stride < kernel_size`) accumulate their contributions, and voxels
+    that are not covered by any patch (trailing voxels, when
+    `(oshape - kernel_size) % stride != 0`) are zero.
+
+    Like `do_patch`, it is applied separably and uses views only
+    (no convolution).
+
+    x : (B, C, *inspatial) tensor
+    kernel_size : List{dim}[int]
+    stride : List{dim}[int]
+    oshape : List{dim}[int]
+    returns : (B, C, *oshape) tensor
+    """
     dim = x.dim() - 2
-    # allocate output
-    ishape = x.shape[-dim:]
-    opad = patcht_output_padding(oshape, ishape, kernel_size, stride)
-    if list_all([p == 0 for p in opad]):
-        y = torch.empty(oshape, dtype=x.dtype, device=x.device)
-    else:
-        y = torch.zeros(oshape, dtype=x.dtype, device=x.device)
-    # unfold output
-    z = y
     for d in range(dim):
-        z = z.unfold(d+2, kernel_size[d], stride[d])
-        x = x.unsqueeze(-1)
-    # copy values
-    z = z.copy_(x)
-    z = z.div_(prod(kernel_size))
-    return y
+        k = kernel_size[d]
+        s = stride[d]
+        n = x.shape[d+2]
+        if k == 1 and s == 1 and n == oshape[d]:
+            continue
+        yshape: List[int] = list(x.shape)
+        yshape[d+2] = oshape[d]
+        y = torch.zeros(yshape, dtype=x.dtype, device=x.device)
+        # (B, C, ..., n, ..., k) view of the output: window i covers
+        # output voxels [i*s, i*s + k)
+        z = y.narrow(d+2, 0, (n - 1) * s + k).unfold(d+2, k, s)
+        x = x.div(k)
+        if s >= k:
+            # non-overlapping windows: broadcast each value to its window
+            z.copy_(x.unsqueeze(-1))
+        else:
+            # overlapping windows: accumulate one window offset at a time.
+            # Each `z[..., j]` is a strided view without self-overlap.
+            for j in range(k):
+                z.select(-1, j).add_(x)
+        x = y
+    return x
 
 # ----------------------------------------------------------------------
 #                              LOCAL MEAN
@@ -458,8 +480,13 @@ def local_mean(x: Tensor,
     if mode == 'g':
         kernel_size = [int(math.ceil(k*3)) for k in kernel_fwhm]
     else:
+        # Patches cannot be larger than the (forward) input image.
+        # In the backward pass, the forward input shape is `shape`.
+        fwd_shape: List[int] = list(x.shape[-dim:])
+        if backward and shape is not None:
+            fwd_shape = shape
         kernel_size = [min(int(math.ceil(k)), d)
-                       for k, d in zip(kernel_fwhm, x.shape[-dim:])]
+                       for k, d in zip(kernel_fwhm, fwd_shape)]
     if stride is None:
         stride = [1]
     stride = pad_list_int(stride, dim)

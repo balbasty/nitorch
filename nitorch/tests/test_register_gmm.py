@@ -317,19 +317,33 @@ def test_gmm_hessian_mi_one_class():
     ([20, 17], [4.], [1], 'g'),
     ([20, 17, 9], [5.], [2, 1, 1], 'g'),      # mixed: conv + conv_transpose
     ([31], [6.], [1], 'g'),
-    pytest.param([12, 10], [4.], [2], 'c', marks=pytest.mark.xfail(
-        reason='square-kernel backward: output buffer lacks batch dims and '
-               'overlapping patches are copied instead of accumulated',
-        strict=True)),
+    # square kernel (patches): stride 1, 2, == kernel (0), mixed
+    ([31], [5.], [1], 'c'),
+    ([31], [5.], [2], 'c'),
+    ([31], [5.], [0], 'c'),
+    ([12, 10], [4.], [1], 'c'),
+    ([12, 10], [4.], [2], 'c'),
+    ([12, 10], [4., 3.], [0], 'c'),
+    ([11, 9, 7], [3.], [1], 'c'),
+    ([11, 9, 7], [4., 3., 2.], [2], 'c'),
+    ([11, 9, 7], [3.], [0], 'c'),
+    ([11, 9, 7], [5., 3., 4.], [3, 1, 2], 'c'),
+    ([6, 5], [8.], [1], 's'),                 # kernel clamped to image size
 ])
-def test_local_mean_backward_is_adjoint(shape, fwhm, stride, mode):
+@pytest.mark.parametrize('masked', [False, True])
+def test_local_mean_backward_is_adjoint(shape, fwhm, stride, mode, masked):
     from nitorch.tools.registration.losses.utils_local import local_mean
     g = torch.Generator().manual_seed(0)
     d = len(shape)
     a = torch.randn([2, 3, *shape], dtype=torch.double, generator=g)
-    fa = local_mean(a, fwhm, stride, mode, d)
+    mask = None
+    if masked:
+        mask = torch.rand([2, 3, *shape], dtype=torch.double, generator=g)
+    fa = local_mean(a, fwhm, stride, mode, d, mask=mask)
     b = torch.randn(fa.shape, dtype=torch.double, generator=g)
-    bb = local_mean(b, fwhm, stride, mode, d, backward=True, shape=shape)
+    bb = local_mean(b, fwhm, stride, mode, d, backward=True, shape=shape,
+                    mask=mask)
+    assert bb.shape == a.shape
     assert torch.allclose((fa * b).sum(), (a * bb).sum(), rtol=1e-10)
 
 
