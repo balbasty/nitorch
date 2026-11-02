@@ -263,7 +263,7 @@ class ModelTrainer:
 
         if self.load_model:
             print('load model')
-            self.model.load_state_dict(torch.load(self.load_model))
+            self.model.load_state_dict(torch.load(self.load_model, weights_only=True))
         if optimizer is None:
             optimizer = torch.optim.Adam
         if isinstance(optimizer, type):  # Optimizer class
@@ -765,7 +765,7 @@ class ModelTrainer:
                 .format('max' if arg_max else 'min', 
                     dataset, metric, epoch + 1, metric, results[dataset][metric][epoch]))
         file = self._formatfile(self.save_model, epoch + 1)
-        self.model.load_state_dict(torch.load(file))
+        self.model.load_state_dict(torch.load(file, weights_only=True))
         self.model.to(self.device)
         return self.model
 
