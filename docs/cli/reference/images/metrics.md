@@ -96,7 +96,9 @@ a precision for a label that the prediction never uses, are written as `NaN`.
 
 If anything goes wrong, for example a shape mismatch between the prediction and
 the reference, `metrics` prints a single `[ERROR] ...` line to the standard error
-stream and exits with status 1.
+stream, without a Python traceback, and exits with status 1 (see
+[Errors](../../conventions.md#errors)). The message is the text of the underlying
+exception, so it can be terse.
 
 ## Label metrics
 

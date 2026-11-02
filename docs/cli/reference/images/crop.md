@@ -78,23 +78,21 @@ centre is the position of the reference's centre in the voxel grid of the
 input. This is a way to cut the same region out of images that were
 acquired in the same space, or to reproduce a crop made on another image. The
 command does not resample, so if the reference has a different voxel size from
-the input, you still obtain a box with the shape of the reference. If the
-reference is stored with a different layout (axis order or flips) from the
-input, the input is first reoriented to the layout of the reference, and the
-output is stored in that layout.
+the input, you still obtain a box with the shape of the reference. The reference may be stored in any voxel layout (axis order or flips). The
+input is first reoriented to that layout, so the output has the grid of the
+reference (shape and orientation) and is stored in the reference's layout.
 
 **Bounding box, `-b`.** The size and centre are those of the smallest box that
 contains every voxel whose value is strictly greater than `THRESH` (0 if you
 give no value). For volumes with more than three dimensions, a voxel counts if
 the condition holds in any of the extra channels.
 
-**Combining them.** The built-in help says that only one of `-s`, `-k` and
-`-b` may be used, but the command does not check this. When several are given,
-an explicit `-s` or `-c` always takes precedence over the size or the centre
-that would be derived from `-k` or `-b`, and `-k` takes precedence over `-b`.
-An explicit `-c` likewise overrides the centre read from a `-t` file. (`-s`
-cannot do the same: it turns `-t` into an output, see
-[Transformation files](#transformation-files).)
+**Combining them.** `-s`, `-k` and `-b` are mutually exclusive: giving more
+than one is an error, the command prints its usage and an `[ERROR]` line, and
+nothing is written. `-c` can be combined with any of them, or used alone, and
+an explicit `-c` replaces the centre that would otherwise be derived from `-k`,
+`-b` or a `-t` file. (`-s` cannot do the same with `-t`: it turns `-t` into an
+output, see [Transformation files](#transformation-files).)
 
 ### How the orientation matrix changes
 

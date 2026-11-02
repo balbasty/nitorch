@@ -15,7 +15,8 @@ from nitorch import io, spatial
 from nitorch.core.py import fileparts
 from nitorch.cli.registration.register.cli import _cli as register
 from nitorch.cli.registration.meanspace.cli import _cli as meanspace
-from nitorch.cli.registration.reslice.main import reslice
+# raising variant: errors must propagate to this command
+from nitorch.cli.registration.reslice.main import _reslice as reslice
 from .parser import steps as all_steps
 
 # basis used by `optimal_affine` for each affine model of `register`

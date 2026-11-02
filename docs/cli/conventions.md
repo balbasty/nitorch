@@ -54,11 +54,13 @@ A few things are worth knowing about how commands behave.
   prints `nitorch uses its non-compiled backend (TS). Some algorithms may be
   slow.` on standard error. The warning is harmless. Set the environment
   variable `NI_CHECK_BACKEND=0` to silence it.
-- **Exit status is not a reliable success signal.** An unknown command makes
-  `nitorch` exit with status 1. However, when most commands fail to parse
-  their arguments or hit an error while working, they print an `[ERROR]`
-  message on standard error and still exit with status 0. In scripts, check
-  that the output files exist rather than relying on the exit status alone.
+- **The exit status tells whether a command succeeded.** A command that
+  completes, or that prints its help with `-h`, exits with status 0. A command
+  that fails, whether because of its arguments or while working, prints an
+  `[ERROR]` message on standard error and exits with status 1. This makes
+  commands easy to chain in shell scripts, for example
+  `nitorch reslice ... || echo failed`. Called from Python, a command's
+  `cli([...])` returns 1 instead of raising an exception.
 
 !!! note "`register2`"
     `register2` appears in the list of commands. It is a hidden, backward
@@ -112,15 +114,17 @@ interchangeable.
 
 ### What counts as a tag, and what counts as a value
 
-An argument is a tag when it starts with a dash and its second character is
-**not** a digit. Everything else is a value. This has three consequences.
+An argument is a tag when it starts with a dash and is not a number, where
+"number" means anything Python's `float()` accepts. Everything else is a
+value. This has three consequences.
 
-- **Negative numbers are values.** `-2.5`, `-10` and `-1e-3` can be written
-  as is wherever a number is expected, for example `-c -12.4 6.4 3.2`.
-- **`-.5` is not a number to the parser.** A dash followed by a dot starts a
-  tag, and the command reports `Unknown tag -.5`. Write `-0.5` instead.
+- **Negative numbers are values.** `-2.5`, `-10`, `-.5`, `-1e-3`, `-inf` and
+  `-nan` can be written as is wherever a number is expected, for example
+  `-c -12.4 6.4 3.2`.
 - **A file name that starts with a dash and a letter cannot be used directly.**
   Prefix it with a directory to hide the dash, as in `./-odd-name.nii.gz`.
+- **`autoreg` is stricter.** It still treats any argument that starts with a
+  dash as a tag, so negative numbers cannot be given to it as values.
 
 A lone `-` is a value.
 
@@ -174,9 +178,9 @@ text, followed by a line of the form
 ```
 
 on standard error. Errors raised while the command works (a missing file, a
-value of the wrong type) are reported in the same `[ERROR] ...` form by most
-commands, and as a Python traceback by the others. See [Running
-commands](#running-commands) about the exit status.
+value of the wrong type) are reported in the same `[ERROR] ...` form, without
+a Python traceback. In both cases the command exits with status 1; see
+[Running commands](#running-commands).
 
 ## File formats
 
