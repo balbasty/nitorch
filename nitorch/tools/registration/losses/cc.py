@@ -1,6 +1,6 @@
 from nitorch.core import utils, py
 import torch
-from .utils_local import local_mean, cache as local_cache
+from .utils_local import local_mean, local_mean_norm, cache as local_cache
 from .base import OptimizationLoss
 
 
@@ -299,8 +299,6 @@ def lcc(moving, fixed, dim=None, patch=20, stride=1, lam=1, kernel='g',
     shape = fixed.shape[-dim:]
     if mask is not None:
         mask = mask.to(**utils.backend(fixed))
-    else:
-        mask = fixed.new_ones(fixed.shape[-dim:])
 
     if lam.dim() <= 2:
         if lam.dim() == 0:
@@ -310,11 +308,19 @@ def lcc(moving, fixed, dim=None, patch=20, stride=1, lam=1, kernel='g',
     patch = list(map(float, py.ensure_list(patch)))
     stride = py.ensure_list(stride)
     stride = [s or 0 for s in stride]
+    # The normaliser of the masked local means (conv(mask)) is the same
+    # for all forward and backward calls: compute it once. Without a mask,
+    # `local_mean` uses its cached conv(ones).
+    norm = None
+    if mask is not None:
+        norm = _robust(lambda m: local_mean_norm(
+            m, patch, stride, dim=dim, mode=kernel, dtype=fixed.dtype))(mask)
     fwd = lambda x: local_mean(x, patch, stride, dim=dim, mode=kernel, mask=mask,
-                               cache=local_cache)
+                               cache=local_cache, norm=norm)
     fwd = _robust(fwd)
     bwd = lambda x: local_mean(x, patch, stride, dim=dim, mode=kernel, mask=mask,
-                               backward=True, shape=shape, cache=local_cache)
+                               backward=True, shape=shape, cache=local_cache,
+                               norm=norm)
     bwd = _robust(bwd)
     sumall = lambda x: x.sum(list(range(-dim, 0)), keepdim=True)
 
