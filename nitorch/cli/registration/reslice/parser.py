@@ -123,7 +123,7 @@ def parse_transform(args, options):
             cli.check_next_isvalue(args, tag)
             opt.order, *args = args
             opt.order = int(opt.order)
-        if isinstance(opt, struct.Displacement) and tag in ('-u', '--unit'):
+        elif isinstance(opt, struct.Displacement) and tag in ('-u', '--unit'):
             cli.check_next_isvalue(args, tag)
             opt.unit, *args = args
         else:

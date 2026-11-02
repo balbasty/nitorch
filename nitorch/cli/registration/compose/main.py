@@ -140,8 +140,8 @@ def write_data(options):
             trf.shape = trf.shape[:3]
             if trf.unit == 'mm':
                 # convert mm displacement to vox displacement
-                trf.dat = spatial.affine_lmdiv(trf.affine, trf.dat[..., None])
-                trf.dat = trf.dat[..., 0]
+                lin = trf.affine[:3, :3].to(trf.dat)
+                trf.dat = trf.dat.matmul(lin.inverse().transpose(-1, -2))
                 trf.unit = 'vox'
 
     def build_from_target(target):
