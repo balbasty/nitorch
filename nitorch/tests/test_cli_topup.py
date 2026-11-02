@@ -215,6 +215,15 @@ def test_cli_no_args_prints_help(capsys, monkeypatch):
     assert '[ERROR]' not in out.err
 
 
+def test_cli_no_args_via_nitorch_entry_point(capsys, monkeypatch):
+    # `nitorch topup` calls cli([]) while sys.argv still holds 'topup'
+    monkeypatch.setattr('sys.argv', ['nitorch', 'topup'])
+    topup_main.cli([])
+    out = capsys.readouterr()
+    assert 'usage:' in out.out
+    assert '[ERROR]' not in out.err
+
+
 def test_cli_unknown_subcommand(capsys):
     topup_main.cli(['frobnicate', 'field.nii'])
     out = capsys.readouterr()

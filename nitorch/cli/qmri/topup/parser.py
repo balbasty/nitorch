@@ -65,18 +65,48 @@ def number_or_str(type=float):
 
 
 def bool_or_str(x):
-    if x.lower() in ('true', 'yes'):
+    """Strict boolean conversion for optional-value flags.
+
+    Only boolean words are accepted. Any other token raises ValueError,
+    which makes `cli.Option.parse` leave the token unconsumed (so that it
+    can be parsed as a positional) and treat the flag as bare.
+    """
+    x = x.lower()
+    if x in ('true', 'yes', 'on', '1'):
         return True
-    if x.lower() in ('false', 'no'):
+    if x in ('false', 'no', 'off', '0'):
         return False
-    try:
-        return bool(int(x))
-    except ValueError:
-        return x
+    raise ValueError(f'Not a boolean value: {x!r}')
+
+
+class CommandParser(cli.CommandParser):
+    """CommandParser that also accepts options placed before positionals.
+
+    `cli.CommandParser` parses positionals first, so options must come
+    after them. Here, leading options (with the values they consume) are
+    moved after the positionals before parsing. An optional-value flag
+    (nargs='?') only consumes the next token if its converter accepts it
+    (e.g., a boolean word for `bool_or_str`), so `-d pos.nii neg.nii`
+    leaves `pos.nii` for the positionals.
+    """
+
+    def parse(self, args):
+        args = list(args)
+        tags = list(self.options.tags)
+        leading = []
+        while args and args[0] in tags:
+            tag = args.pop(0)
+            option = next(o for o in self.options if tag in o.tags)
+            remaining = list(args)
+            option.parse(remaining, stops=tags)
+            nb_consumed = len(args) - len(remaining)
+            leading += [tag] + args[:nb_consumed]
+            del args[:nb_consumed]
+        return super().parse(args + leading)
 
 
 # Fit command
-parser_fit = cli.CommandParser('fit', help=help)
+parser_fit = CommandParser('fit', help=help)
 parser_fit.add_positional('pos_file', nargs=1, help='Positive readout')
 parser_fit.add_positional('neg_file', nargs=1, help='Negative readout')
 parser_fit.add_option('mask', ('-m', '--mask'), nargs=1, help='Mask file')
@@ -122,8 +152,8 @@ parser_fit.add_option('gpu', '--cpu', nargs=0,
                       action=cli.Actions.store_value('cpu'),
                       help='Use CPU')
 
-# Fit command
-parser_apply = cli.CommandParser('apply', help=help)
+# Apply command
+parser_apply = CommandParser('apply', help=help)
 parser_apply.add_positional('dist_file', nargs=1, help='Distortion field')
 parser_apply.add_option('file_pos', ('-p', '--pos'), nargs='*',
                         help='Positive readout files')

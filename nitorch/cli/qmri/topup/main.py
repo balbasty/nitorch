@@ -33,17 +33,20 @@ commands['topup'] = cli
 
 def _cli(args):
     """Command-line interface for `topup` without exception handling"""
-    args = args or sys.argv[1:]
+    args = sys.argv[1:] if args is None else list(args)
 
-    if args[0] == '-h':
+    if not args or args[0] in ('-h', '--help'):
         print(help)
         return
 
     mode, *args = args
     if mode == 'fit':
         options = parser_fit.parse(args)
-    else:
+    elif mode == 'apply':
         options = parser_apply.parse(args)
+    else:
+        raise ParseError(f'Unknown subcommand {mode!r}: '
+                         f'topup subcommand should be fit or apply')
     if not options:
         return
     if options.help:
@@ -56,11 +59,8 @@ def _cli(args):
 
     if mode == 'fit':
         main_fit(options)
-    elif mode == 'apply':
-        main_apply(options)
     else:
-        raise ParseError('topup subcommand should be fit or apply but got ',
-                         mode)
+        main_apply(options)
 
 
 def downsample(x, aff_in, vx_out):
@@ -122,11 +122,17 @@ def get_readout(readout, affine, shape):
     if readout is None:
         readout = py.argmax(shape)
     else:
+        readout_name = readout
         readout = readout.lower()
         for i, l in enumerate(layout):
             if l in readout:
                 readout = i
                 break
+        else:
+            raise ValueError(
+                f'Readout direction {readout_name!r} (-r) does not match '
+                f'any axis of the image layout {layout.upper()}. '
+                f'Use one of the letters L/R, A/P, I/S (e.g. -r lr, ap, is).')
     print(f'Layout: {layout.upper()} | readout direction: {layout[readout].upper()}')
     if readout > 0:
         readout = readout - dim
@@ -257,7 +263,8 @@ def main_fit(options):
             prm0, _ = estimate_noise(d0)
             prm1, _ = estimate_noise(d1)
             sd = ((prm0['sd'].log() + prm1['sd'].log())/2).exp()
-            print(sd.item())
+            if options.verbose > 1:
+                print(f'Noise SD: {sd.item()}')
             loss = MSE(lam=1/(sd*sd), dim=dim)
         elif options.loss == 'lncc':
             loss = LNCC(dim=dim, patch=kernel)
