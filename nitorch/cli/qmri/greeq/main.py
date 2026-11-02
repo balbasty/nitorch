@@ -85,10 +85,10 @@ def _main(options):
     greeq_opt.optim.max_iter_cg = subiter_max
     greeq_opt.penalty.norm = options.regularization
     greeq_opt.penalty.factor = {
-        'pd': options.lam_pd if options.lam_pd else options.lam,
-        'r1': options.lam_t1 if options.lam_t1 else options.lam,
-        'r2s': options.lam_t2 if options.lam_t2 else options.lam,
-        'mt': options.lam_mt if options.lam_mt else options.lam,
+        'pd': options.lam if options.lam_pd is None else options.lam_pd,
+        'r1': options.lam if options.lam_t1 is None else options.lam_t1,
+        'r2s': options.lam if options.lam_t2 is None else options.lam_t2,
+        'mt': options.lam if options.lam_mt is None else options.lam_mt,
     }
     # greeq_opt.distortion.enable = options.meetup
     # greeq_opt.distortion.bending = options.lam_meetup
@@ -201,20 +201,20 @@ def _main(options):
         files, *mag = files
         if mag:
             meta['magnitude'] = mag[0]
-        for i in len(receives):
+        for i in range(len(receives)):
             if receives[i] is None:
                 receives[i] = qio.PrecomputedFieldMap(files, **meta)
 
     if options.b0:
         files = options.b0
         meta = {}
-        if files[-1] in ('%', 'pct', 'p.u.', 'a.u.'):
+        if files[-1].lower() in ('hz', '1/s', 'vox'):
             *files, unit = files
             meta['unit'] = unit
         files, *mag = files
         if mag:
             meta['magnitude'] = mag[0]
-        for i in len(b0s):
+        for i in range(len(b0s)):
             if b0s[i] is None:
                 b0s[i] = qio.PrecomputedFieldMap(files, **meta)
 

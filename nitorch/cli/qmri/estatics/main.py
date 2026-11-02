@@ -121,7 +121,7 @@ def _main(options):
             bw = c.bandwidth
             b0, *unit = c.b0
             unit = unit[-1] if unit else 'vx'
-            fb0 = b0.map(b0)
+            fb0 = io.map(b0)
             b0 = fb0.fdata(device=device)
             b0 = spatial.reslice(b0, fb0.affine, contrasts[-1][0].affine,
                                  contrasts[-1][0].shape)
