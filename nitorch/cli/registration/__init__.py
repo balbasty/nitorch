@@ -9,5 +9,6 @@ from . import register
 from . import reorient
 from . import reslice
 from . import resize
+from . import simplereg
 from . import vopt
 from . import vexp

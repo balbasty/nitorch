@@ -3,65 +3,50 @@ from nitorch.core import cli
 
 help = r"""[nitorch] simplereg
 
-Pairwise affine + nonlinear registration.
-This command is merely a wrapper around nitorch register, that exposes 
-fewer parameters and uses a more classical syntax.
-
-note:
-    Multiple pairs of images can be provided, using multiple -m/-f options.
-    Similarly, multiple preprocessing, output, and losses options can be provided.
-    If only one of these options is provided, it applies to all pairs of images.
-    If multiple options are provided, they are applied in order (e.g., 
-    the first occurrence of -l is applied to the first occurrence of -m/-f)
-    Options that can appear multiple times are marked by [m].
+Pairwise affine (rigid or full) registration with a classical syntax.
+This command is merely a wrapper around nitorch register, that exposes
+fewer parameters. It registers a single pair of images and does not
+estimate a nonlinear transformation (use nitorch register for that).
 
 usage: 
-    nitorch simplereg -m MOVING -f FIX [options]
+    nitorch simplereg -m MOVING -f FIXED [options]
     
 Input options:
-[m] -m, --moving PATH               Moving image
-[m] -f, --fixed PATH                Fixed image
-[m] -i, --init PATH                 Initial affine to apply to `moving`.
-[m]     --fwhm [0]                  Smoothing applied to the moving image.
-[m]     --bound [dct2]              Boundary condition: {dct2,dct1,dst2,dst1,dft,zero,nearest}
-[m]     --order [1]                 Interpolation order: {1..7}
-[m]     --pad [0]                   Pad image before using it.
-[m]     --rescale [[0], 95]         Rescale image so that its percentiles match (0, 1).
-[m]     --discretize [256]          Discretize image into N bins (default: no)     
-        
-    
+    -m, --moving PATH               Moving image
+    -f, --fixed PATH                Fixed image
+    -i, --init PATH                 Initial affine to apply to `moving`.
 
 Output options:
     -o, --output PATH               Output path to transform [{dir}/{name}.lta]
-[m] -x, --moved PATH                Output path to moved image [{dir}/{base}.moved{ext}]
-[m] -r, --resliced PATH             Output path to resliced image [{dir}/{base}.resliced{ext}]
+    -x, --moved PATH                Output path to moved image [{dir}/{base}.moved{ext}]
+    -r, --resliced PATH             Output path to resliced image [false: not written]
     
-Loss options: multiple options (one per -p) can be provided
-[m] -l, --loss                      Objective function. 
+Loss options:
+    -l, --loss                      Objective function
        [nmi]                            Normalized mutual information
         mse                             Mean squared error
         mad                             Median absolute deviation
         tuk                             Tukey's biweight function
         cc                              Correlation coefficient
         lcc                             Local correlation coefficient
-        gmm                             Gaussian mixture likelihood
-        lgmm                            Local Gaussian mixture likelihood
-        emmi                            EM mutual information
-[m] -k, --kernel [SIZE] [UNIT]      Kernel size (for lcc/lgmm). Unit can be {vox,mm,pct} [10 pct]
-[m] -s, --symmetric                 Use a symmetric loss [false]
+        gmm                             Gaussian Mixture likelihood
+        lgmm                            Local Gaussian Mixture likelihood
+    -k, --kernel [SIZE] [UNIT]      Kernel size (for lcc/lgmm). Unit can be {vox,mm,pct} [10 pct]
+    -s, --symmetric                 Use a symmetric loss [false]
     
 Optimization options:
     -a, --affine                    12-param affine [default is 6-param rigid]
     -p, --pyramid [LEVELS]          Pyramid levels to process [0:3]
-    -z, --optimizer [OPT]           Optimizer {gn,powell,lbfgs} [auto]
+        --no-pyramid                Do not use a pyramid
+    -z, --optimizer [OPT]           Optimizer {gn,powell,lbfgs} [auto: powell for nmi, else gn]
     -n, --max-iter VAL              Max number of iterations [50]
     -t, --tolerance VAL             Tolerance for early stopping [1e-5]
         --line-search VAL           Number of line search iterations [wolfe]
     
 Other options:
-    -h, --help [LEVEL]              Display this help
-    -v, --verbose [LVL]             Level of verbosity [1=print], 2=print more, 3=plot
-    --cpu [THREADS], --gpu          Device to use [cpu]
+    -h, --help                      Display this help
+    -v, --verbose [LVL]             Level of verbosity [0], 1=print, 2=print more, 3=plot
+    --cpu [THREADS], --gpu [ID]     Device to use [cpu]
 
 """
 
@@ -107,7 +92,7 @@ def convert_device(device):
     return _convert
 
 
-parser = cli.CommandParser('affreg', help=help)
+parser = cli.CommandParser('simplereg', help=help)
 
 # Input options:
 #     -m, --moving PATH               Moving image

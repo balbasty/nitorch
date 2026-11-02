@@ -338,8 +338,8 @@ common case of aligning one image to another:
   options named `-m` (moving), `-f` (fixed), `-l` (loss), `-r` (resliced
   output), and `-a` for a full affine instead of the default rigid model.
 - [`simplereg`](../reference/registration/simplereg.md) takes the same options.
-  Despite its description in the built-in help, it performs an affine
-  registration only. Use `register` for a nonlinear one.
+  It performs an affine registration only. Use `register` for a nonlinear
+  one.
 
 For example, the affine registration of step 1 can be written:
 
