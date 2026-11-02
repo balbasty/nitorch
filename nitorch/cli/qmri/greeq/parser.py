@@ -14,12 +14,12 @@ Acquisition options:
     -fa, --flip-angle FA [UNIT]         (default: try to read from file)
     -tr, --repetition-time TR [UNIT]    (default: try to read from file)
     -te, --echo-time TE [UNIT]          (default: try to read from file)
-    -sp, --echo-spacing DELTA [UNIT]    (default: unused)      
+    -es, --echo-spacing DELTA [UNIT]    (default: unused)
     -mt, --mt-pulse {yes,no}            (default: try to read from file, else `no`)
     -bw, --bandwidth [BW] [UNIT]        (default: unused)
     -e,  --echo *FILES                  Path to individual echoes
-    -tf, --transmit FIELD [MAG] [UNIT]  Transmit fieldmap (unit: {[a.u.], pct}) 
-    -rf, --receive FIELD [MAG] [UNIT]   Receive fieldmap (unit: {[a.u.], pct}) 
+    -tf, --transmit FIELD [MAG] [UNIT]  Transmit fieldmap (unit: {[%], pct, p.u., a.u.})
+    -rf, --receive FIELD [MAG] [UNIT]   Receive fieldmap (unit: {[%], pct, p.u., a.u.})
    [-b0, --b0-field FIELD [MAG] [UNIT]  B0 fieldmap] NOT IMPLEMENTED YET
 
 Reconstruction options:

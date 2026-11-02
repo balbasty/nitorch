@@ -34,12 +34,11 @@ def inpaint(*inputs, missing='nan', output=None, device=None, verbose=1,
         non-finite values are assumed missing.
     output : [sequence of] str, optional
         Output filename(s).
-        If the input is not a path, the unstacked data is not written
+        If the input is not a path, the inpainted data is not written
         on disk by default.
         If the input is a path, the default output filename is
-        '{dir}/{base}.pool{ext}', where `dir`, `base` and `ext`
-        are the directory, base name and extension of the input file,
-        `i` is the coordinate (starting at 1) of the slice.
+        '{dir}/{base}.inpaint{ext}', where `dir`, `base` and `ext`
+        are the directory, base name and extension of the input file.
     verbose : int, default=1
     device : torch.device, optional
     max_iter_rls : int, default=10
@@ -51,7 +50,7 @@ def inpaint(*inputs, missing='nan', output=None, device=None, verbose=1,
     -------
     *output : str or (tensor, tensor)
         If the input is a path, the output path is returned.
-        Else, the pooled data and orientation matrix are returned.
+        Else, the inpainted data and orientation matrix are returned.
 
     """
     # Preprocess

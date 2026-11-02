@@ -6,7 +6,7 @@ import sys
 
 
 def cli(args=None):
-    f"""Command-line interface for `nireorient`
+    f"""Command-line interface for `nitorch reorient`
     
     {help}
     

@@ -4,7 +4,7 @@ from nitorch.core.struct import Structure
 
 
 class Orient(Structure):
-    """Structure that holds parameters of the `nireorient` command"""
+    """Structure that holds parameters of the `nitorch orient` command"""
     files: list = []
     affine: list = 'like'
     layout: str = 'like'
@@ -20,7 +20,8 @@ help = r"""[nitorch] Orient volumes
 !! This command assumes that the orientation matrix in the input file is !!
 !! INCORRECT and must be OVERWRITTEN. The original vox2ras mapping will  !!
 !! be LOST. If you wish to simply change the on-disk layout of the data  !!
-!! and preserve the original world mapping, use `nireorient` instead.    !!
+!! and preserve the original world mapping, use `nitorch reorient`       !!
+!! instead.                                                              !!
 
 The on-disk layout (or orientation) of a volume is the order in which 
 dimensions are stored. A layout can be encoded by a permutation of three 
@@ -51,7 +52,7 @@ usage:
 
     To overwrite the affine with a default RAS orientation and a voxel 
     size of [2, 2, 2], use:
-        niorient broken_file.nii.gz -l RAS -c 0 -o 2
+        nitorch orient broken_file.nii.gz -l RAS -c 0 -v 2
 """
 
 
