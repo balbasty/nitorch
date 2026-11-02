@@ -70,8 +70,8 @@ Three kinds of files can be written:
 
 - **The transformation**, an affine matrix in LTA format, written to
   `{dir}/{name}.lta`: `rigid.lta` or `affine.lta`, in the directory of the
-  fixed image. Use `-o` to choose another path. The transformation is always
-  written; `-o false` falls back to the default path.
+  fixed image. Use `-o` to choose another path, or `-o false` to not write
+  it.
 - **The moved images**, `{base}.moved{ext}`, in the directory of each input.
   With the symmetric affine, the moving image is brought halfway to the fixed
   image, and the fixed image halfway to the moving image, by changing only
@@ -119,7 +119,7 @@ transformation.
 
 | Option                | Value           | Description                                                                                      | Default                          |
 | --------------------- | --------------- | ------------------------------------------------------------------------------------------------ | -------------------------------- |
-| `-o`, `--output`      | `PATH`          | Where to write the affine matrix. `{dir}` is the directory of the fixed image.                   | `{dir}/{name}.lta`               |
+| `-o`, `--output`      | `PATH` &vert; `false` | Where to write the affine matrix. `{dir}` is the directory of the fixed image. `false` disables it. | `{dir}/{name}.lta`               |
 | `-x`, `--moved`       | `PATH` &vert; `false` | Where to write the moved moving image (header change only). `false` disables it.          | `{dir}/{base}.moved{ext}`        |
 | `-r`, `--resliced`    | `PATH`          | Where to write the moving image resliced on the fixed image grid.                                | not written                      |
 
@@ -141,7 +141,7 @@ transformation.
 | `-n`, `--max-iter`      | `N`                         | Maximum number of iterations at each pyramid level.                                                                                          | `50`                                       |
 | `-t`, `--tolerance`     | `TOL`                       | Tolerance of the stopping criterion.                                                                                                         | `1e-5`                                     |
 | `--line-search`         | `N` &vert; `wolfe`          | Backtracking line search with at most `N` steps, or a line search until the Wolfe conditions hold.                                           | `wolfe`                                    |
-| `--no-pyramid`          |                             | Currently fails with a `TypeError`; use `-p 0` instead.                                                                                       |                                            |
+| `--no-pyramid`          |                             | Process a single level, at full resolution (same as `-p 0`).                                                                                  |                                            |
 
 ### Other
 
