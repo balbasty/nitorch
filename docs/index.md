@@ -6,7 +6,7 @@ icon: octicons/home-24
 
 ![NITorch](images/nitorch_logo_v0.1.png){ width="50%" }
 
-**N**euro**I**maging in Py**Torch
+**N**euro**I**maging in Py<b>Torch</b>
 
 </div>
 

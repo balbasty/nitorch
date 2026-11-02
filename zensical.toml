@@ -92,7 +92,6 @@ nav = [
 [project.theme]
 
 language = "en"
-logo = "images/nitorch_logo_v0.1.png"
 favicon = "images/nitorch_logo_v0.1.png"
 
 features = [
@@ -120,8 +119,11 @@ scheme = "slate"
 toggle.icon = "lucide/moon"
 toggle.name = "Switch to light mode"
 
+# The full logo contains the name, which is too wide for the header.
 [project.theme.icon]
+logo = "lucide/brain-circuit"
 repo = "fontawesome/brands/github"
+
 
 # ----------------------------------------------------------------------------
 # Markdown extensions
