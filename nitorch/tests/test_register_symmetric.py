@@ -243,3 +243,63 @@ def test_affreg_symmetric_translation(shifted_pair):
             '-m', mov, '-o', lta, '-x', 'false', '-r', 'false', '-p', '1'])
     t = recovered_translation(lta)
     assert all(abs(a - b) < 0.1 for a, b in zip(t, SHIFT)), t
+
+
+def _penalised_affine(basis, optim, pos='m'):
+    affine = objects.AffineModel(basis, penalty=[2.] * 12, optim=optim,
+                                 position=pos)
+    affine.set_dat(dim=3, dtype=dt)
+    g = torch.Generator().manual_seed(3)
+    affine.dat.dat.copy_(0.05 * torch.randn([12], dtype=dt, generator=g))
+    return affine
+
+
+@pytest.mark.parametrize('optim', ['rigid', 'similitude'])
+@pytest.mark.parametrize('step_name', ['do_affine_only', 'do_affine'])
+def test_affine_penalty_progressive(optim, step_name):
+    """Affine penalty with `-g`: grad/hess in the optimised sub-basis"""
+    fix, mov = make_images([8, 8, 8])
+    affine = _penalised_affine('affine', optim)
+    nonlin = make_svf(fix) if step_name == 'do_affine' else None
+    step = PairwiseRegisterStep(make_sim(mov, fix, 'fwd'), affine, nonlin,
+                                verbose=0)
+    fn = getattr(step, step_name)
+    par = affine.parameters()
+    x0 = affine.dat.dat.clone()
+    _, g, h = fn(x0, grad=True, hess=True, in_line_search=True)
+    n = len(par)
+    assert g.shape == (n,) and h.shape == (n, n)
+    # finite differences along the optimised parameters
+    M = par._gram(x0)                     # model = M @ optim
+    fd = torch.zeros(n, dtype=dt)
+    eps = 1e-5
+    for i in range(n):
+        fd[i] = (fn(x0 + eps * M[:, i], in_line_search=True) -
+                 fn(x0 - eps * M[:, i], in_line_search=True)) / (2 * eps)
+    assert (fd - g).norm() / fd.norm() < 1e-3
+    # the penalty part alone is exact
+    P = affine.penalty
+    gp, hp = torch.zeros(n, dtype=dt), torch.zeros(n, n, dtype=dt)
+    val = step._affine_penalty(x0, gp, hp)
+    assert torch.allclose(val, 0.5 * (P * x0 * x0).sum())
+    assert torch.allclose(gp, M.T @ (P * x0))
+    assert torch.allclose(hp, M.T @ torch.diag(P) @ M)
+
+
+def test_affine_penalty_full_basis_unchanged():
+    """Without `-g`, the penalty is added as before (bitwise)"""
+    fix, mov = make_images([8, 8, 8])
+    affine = _penalised_affine('affine', None)
+    step = PairwiseRegisterStep(make_sim(mov, fix, 'fwd'), affine, verbose=0)
+    x0 = affine.dat.dat.clone()
+    ll, g, h = step.do_affine_only(x0, grad=True, hess=True,
+                                   in_line_search=True)
+    P = affine.penalty
+    affine._penalty = None
+    ll0, g0, h0 = step.do_affine_only(x0, grad=True, hess=True,
+                                      in_line_search=True)
+    lla = x0 * P
+    g0 += lla
+    h0.diagonal(0, -1, -2).add_(P)
+    ll0 += 0.5 * lla.dot(x0)   # added once (not twice)
+    assert torch.equal(g, g0) and torch.equal(h, h0) and torch.equal(ll, ll0)
