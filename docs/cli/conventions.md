@@ -440,8 +440,7 @@ omit the keyword differs between commands and is stated on each command page.
 
 ## Hardware
 
-NITorch commands run on the CPU by default (`denoise_mri` is the exception: it
-defaults to the GPU, and needs `-cpu` to run without one). Most commands that
+NITorch commands run on the CPU by default. Most commands that
 do heavy computation can use a CUDA GPU through PyTorch:
 
 | Option         | Meaning                                                                     |
