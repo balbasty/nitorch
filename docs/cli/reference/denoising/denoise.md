@@ -28,7 +28,7 @@ each channel, which weights the data term; the weight of the prior is set by a
 regularisation factor $\lambda$. The problem is solved by iteratively
 reweighted least squares: each iteration turns the total variation into a
 weighted membrane (first-derivative) penalty and solves the resulting linear
-system with conjugate gradients.
+system with conjugate gradients (or another solver, see `--optim`).
 
 ### Channels and joint total variation
 
@@ -75,7 +75,7 @@ line with the value of the objective at each iteration.
 
 | Name | Description |
 | ---- | ----------- |
-| `FILE` | One or more input volumes. Each can be 3D or 4D (channels last). All must have the same shape. |
+| `FILE` | One or more input volumes. Each can be 3D or 4D (channels last); singleton dimensions beyond the fourth are dropped. All must have the same spatial shape. |
 
 ## Options
 
@@ -99,7 +99,7 @@ line with the value of the objective at each iteration.
 | ------ | ----- | ----------- | ------- |
 | `-n`, `--max-iter` | `ITER...` | Maximum number of reweighting iterations, then of conjugate-gradient iterations per reweighting. A single value is used for both. | `10 32` |
 | `-t`, `--tolerance` | `TOL...` | Stopping tolerance of the reweighting iterations, then of the conjugate-gradient iterations. A single value is used for both. | `1e-4` |
-| `-x`, `--optim` | `OPTIM` | Solver: `cg`, `relax`, `fmg`, `fmg+cg` or `fmg+relax`. This option is parsed and checked but not passed to the solver, which always uses `cg`. | `cg` |
+| `-x`, `--optim` | `OPTIM` | Solver of the linear system at each reweighting: conjugate gradients (`cg`), relaxation (`relax`), or either one preceded by a full multigrid initialisation (`fmg+cg`, `fmg+relax`; `fmg` alone means `fmg+cg`). The first nine reweighting iterations always use conjugate gradients, so `relax` only takes effect from the tenth one (with the default `-n 10`, only in the last one). | `cg` |
 
 ### Interface and hardware
 
@@ -107,7 +107,7 @@ line with the value of the objective at each iteration.
 | ------ | ----- | ----------- | ------- |
 | `-v`, `--verbose` | `[LEVEL]` | A bare `-v` means 1. Levels above 2 plot the intermediate images (needs `matplotlib`). The progress line is printed whatever the level. | `0` |
 | `--cpu` | `[THREADS]` | Run on the CPU, optionally with this number of threads. | CPU |
-| `--gpu` | `[DEVICE]` | Run on a GPU, optionally the one with this index. | |
+| `--gpu` | `[DEVICE]` | Run on a GPU, optionally the one with this index. If CUDA is not available, a warning is shown and the CPU is used. | |
 | `-h`, `--help` | | Print the built-in help and exit. | |
 
 See [Hardware](../../conventions.md#hardware) for the shared conventions.

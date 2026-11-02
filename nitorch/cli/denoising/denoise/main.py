@@ -8,11 +8,13 @@ import torch
 
 def ensure_4d(f):
     while len(f.shape) > 4:
-        for d in reversed(range(len(f.shape))):
+        # squeeze a singleton non-spatial dimension
+        for d in reversed(range(3, len(f.shape))):
             if f.shape[d] == 1:
-                f.squeeze(d)
-                continue
-        raise ValueError('Too many channel dimensions')
+                f = f.squeeze(d)
+                break
+        else:
+            raise ValueError('Too many channel dimensions')
     while len(f.shape) < 4:
         f = f.unsqueeze(-1)
     return f
