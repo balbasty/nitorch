@@ -67,10 +67,10 @@ data on the third axis. Square brackets work as well, and `'(0,' '16)'` or
 `'(0, 16)'` are read the same way. A pair whose closing bracket is missing, or
 that does not hold exactly two numbers, is rejected with an error.
 
-With the keyword `ras` after the sizes, the amounts are in millimetres and
-are given along the world axes (x, y, z) rather than the stored axes: the
-command maps each one to the stored axis that points along it, swaps lower and
-upper on axes that are flipped, divides by the voxel size and rounds up to a
+Followed by the keyword `ras`, the amounts are read in millimetres and along
+the world axes (x, y, z) rather than the stored ones. The command maps each
+amount to the stored axis that points along it, swaps the lower and upper
+values on axes that are flipped, divides by the voxel size and rounds up to a
 whole number of voxels.
 
 Negative amounts remove voxels. They are only dependable with the boundary
@@ -90,9 +90,9 @@ prefer [`crop`](crop.md).
 | `dct2`        | The image mirrored about its edge, with the edge voxel repeated.             |
 | `dft`         | The image wrapped around, as if it were periodic.                            |
 
-The other names and aliases that NITorch uses for boundary conditions are
-accepted too: `dct` (same as `dct2`), `dct1`, `dst1`, `dst2`, and the SciPy
-and PyTorch names such as `reflect`, `mirror`, `wrap`, `nearest`, `border` or
+The other boundary names and aliases used throughout NITorch are accepted as
+well: `dct` (an alias of `dct2`), `dct1`, `dst1`, `dst2`, and the SciPy and
+PyTorch spellings such as `reflect`, `mirror`, `wrap`, `nearest`, `border` or
 `constant`. Any other word that is not a number is rejected with an error.
 
 The padded values are written in the data type of the input, with no checks, so

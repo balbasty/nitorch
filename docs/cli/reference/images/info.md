@@ -84,8 +84,9 @@ voxels, which is slower than reading the header alone; the statistics are
 shown in the standard report only, not when you use `-m`.
 
 `-s` takes an optional boolean, so `-s`, `-s 1`, `-s true` and `-s yes` turn
-statistics on and `-s 0`, `-s false` and `-s no` turn them off. Because the option swallows the
-next argument when that is not a tag, put it after the file names. See
+statistics on, and `-s 0`, `-s false` and `-s no` turn them off. Because the
+option swallows the next argument when that is not a tag, put it after the file
+names. See
 [Flags, optional values and booleans](../../conventions.md#flags-optional-values-and-booleans).
 
 ## Arguments

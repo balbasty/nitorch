@@ -238,8 +238,9 @@ hand it to another program that expects a displacement field. For resampling in
 NITorch, you do not need it: `reslice` and `compose` take the velocity field
 directly (`-v`) and exponentiate it themselves.
 
-Add `-inv` to get the inverse transformation (the exponential of $-v$), and
-`-u mm` to get the output in millimetres of world space instead of voxels.
+Two further options are worth knowing. `-inv` writes the inverse transformation
+instead, that is, the exponential of $-v$. And `-u mm` expresses the output in
+millimetres of world space rather than in voxels.
 
 ## Step 5: combine a matrix and a field into one dense field
 

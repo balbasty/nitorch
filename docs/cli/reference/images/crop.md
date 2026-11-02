@@ -92,9 +92,9 @@ the condition holds in any of the extra channels.
 `-b` may be used, but the command does not check this. When several are given,
 an explicit `-s` or `-c` always takes precedence over the size or the centre
 that would be derived from `-k` or `-b`, and `-k` takes precedence over `-b`.
-An explicit `-c` also takes precedence over the centre read from a `-t` file
-(`-s` cannot, since it turns `-t` into an output, see
-[Transformation files](#transformation-files)).
+An explicit `-c` likewise overrides the centre read from a `-t` file. (`-s`
+cannot do the same: it turns `-t` into an output, see
+[Transformation files](#transformation-files).)
 
 ### How the orientation matrix changes
 
@@ -188,8 +188,8 @@ nitorch crop sub-01_FLAIR.nii.gz -k T1w_roi.nii.gz \
     -o FLAIR_roi.nii.gz -t FLAIR_roi.lta
 ```
 
-Crop to the bounding box of the non-zero voxels of a mask, recording the crop
-so that it can be applied to other images later:
+Crop a mask to the bounding box of its non-zero voxels, and record the crop so
+that it can be applied to other images later:
 
 ```shell
 nitorch crop brain_mask.nii.gz -b -t mask_bbox.lta
