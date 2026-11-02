@@ -104,7 +104,7 @@ def crop(inp, size=None, center=None, space='vox', like=None, bbox=False,
     has_center = torch.is_tensor(center) or center == 0 or bool(center)
     # `transform` is read only if nothing else defines the crop
     transform_in = bool(transform) and not (has_size or like or use_bbox)
-    if (has_size or bool(like)) and bool(bbox or isinstance(bbox, float)) > 1:
+    if sum([bool(has_size), bool(like), use_bbox]) > 1:
         raise ValueError('Can only use one of `size`, `like` and `bbox`.')
 
     space_size, space_center = py.make_list(space, 2)

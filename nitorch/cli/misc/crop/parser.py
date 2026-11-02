@@ -109,5 +109,14 @@ def parse(args):
         else:
             raise ParseError(f'Unknown tag {tag}')
 
+    used = [name for name, ok in (('-s/--size', bool(struct.size)),
+                                  ('-k/--like', bool(struct.like)),
+                                  ('-b/--bounding-box',
+                                   struct.bbox is not False))
+            if ok]
+    if len(used) > 1:
+        raise ParseError(f'Only one of -s, -k and -b can be used '
+                         f'(got {" and ".join(used)}).')
+
     return struct
 
