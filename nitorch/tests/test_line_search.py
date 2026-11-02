@@ -154,6 +154,7 @@ def test_register_affine_gn_line_search(tmp_path, search):
     assert torch.allclose(shift.abs(), expected, atol=0.1), shift
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize('verbose', [2, 3])
 def test_register_verbose_headless(tmp_path, verbose):
     pytest.importorskip('matplotlib')

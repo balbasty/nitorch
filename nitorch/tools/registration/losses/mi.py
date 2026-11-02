@@ -39,7 +39,6 @@ def entropy(moving, fixed, dim=None, bins=64, order=3, fwhm=2,
 
     shape = moving.shape
     dim = dim or fixed.dim() - 1
-    nvox = pyutils.prod(shape[-dim:])
     moving = moving.reshape([*moving.shape[:-dim], -1])
     fixed = fixed.reshape([*fixed.shape[:-dim], -1])
     idx = torch.stack([moving, fixed], -1)
@@ -53,13 +52,14 @@ def entropy(moving, fixed, dim=None, bins=64, order=3, fwhm=2,
     else:
         pxy, mn, mx = hist.forward(idx, w=mask, return_minmax=True)
     pxy = pxy.clamp(1e-8)
-    pxy /= nvox
+    nrm = pxy.sum([-1, -2], keepdim=True)  # histogram mass (see `mi`)
+    pxy = pxy / nrm
     hxy = -(pxy * pxy.log()).sum([-1, -2], keepdim=True)
 
     out = []
     if grad or hess:
         g = pxy.log().add_(1).neg_()
-        g = g.div_(nvox)
+        g = g.sub_((g * pxy).sum([-1, -2], keepdim=True)).div_(nrm)
 
     if grad:
         gx = hist.backward(g, idx, min=mn, max=mx, w=mask)[..., 0]
@@ -136,10 +136,6 @@ def mi(moving, fixed, dim=None, bins=64, order=3, fwhm=2, norm='studholme',
     if mask is not None:
         mask = mask.to(fixed.device)
         mask = mask.reshape([*mask.shape[:-dim], -1])
-        nvox = mask.sum(-1, keepdim=True).unsqueeze(-1)  # [*batch, 1, 1, 1]
-        nvox.masked_fill_(nvox == 0, 1)  # empty (e.g., slice) mask -> no NaNs
-    else:
-        nvox = pyutils.prod(shape[-dim:])
     del moving, fixed
 
     if minmax not in (True, False, None):
@@ -147,8 +143,14 @@ def mi(moving, fixed, dim=None, bins=64, order=3, fwhm=2, norm='studholme',
         h, mn, mx = hist.forward(idx, min=mn, max=mx, w=mask, return_minmax=True)
     else:
         h, mn, mx = hist.forward(idx, w=mask, return_minmax=True)
+    # Normalise by the histogram mass, so that pxy is a distribution even
+    # when there is no information (empty mask: uniform after clamping;
+    # constant image: separable). Mutual information is then exactly zero,
+    # i.e. the worst value of every normalisation.
+    # The derivative of h / S with respect to h is (I - p 1^T) / S.
     h = h.clamp(1e-8)
-    h /= nvox
+    nrm = h.sum([-1, -2], keepdim=True)
+    h = h / nrm
 
     pxy = h
     px = pxy.sum(-1, keepdim=True)
@@ -190,7 +192,7 @@ def mi(moving, fixed, dim=None, bins=64, order=3, fwhm=2, norm='studholme',
         else:
             # g = ((1 + px.log()) + (1 + py.log())) - (1 + pxy.log())
             g = pxy.log().neg_().add_(px.log()).add_(py.log()).add_(1)
-        g = g.div_(nvox)
+        g = g.sub_((g * pxy).sum([-1, -2], keepdim=True)).div_(nrm)
 
     if grad:
         gx = hist.backward(g, idx, min=mn, max=mx, w=mask)[..., 0]

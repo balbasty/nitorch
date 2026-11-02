@@ -154,3 +154,48 @@ def test_histcount_backward(order, weighted):
     assert torch.allclose(out, ref)
     # default min/max
     assert hc.backward(gr.clone(), x, w).shape == x.shape
+
+
+def _hist1d_case(seed=0, n=60):
+    g = torch.Generator().manual_seed(seed)
+    x = torch.rand([1, n], dtype=torch.double, generator=g)
+    x[0, :5] = 0                       # on the min edge
+    x[0, 5:10] = 1                     # on the max edge
+    x[0, 10:15] = 0.02 * x[0, 10:15]   # inside the lower half-bin
+    w = torch.rand([1, n], dtype=torch.double, generator=g)
+    return g, x, w
+
+
+@pytest.mark.parametrize('fwhm', [0, 2])
+def test_histcount_backward2_exact(fwhm):
+    """HistCount.backward/backward2 (smoothing, mask weights, samples on
+    and near the histogram edges) == autograd J^T g / diag(J^T diag(h) J)."""
+    g, x, w = _hist1d_case()
+    n = x.shape[-1]
+    hd = torch.rand([1, BINS], dtype=torch.double, generator=g) + 0.5
+    hc = HistCount(bins=BINS, order=1, **({"fwhm": fwhm} if fwhm else {}))
+    mn, mx = x.min(-1).values, x.max(-1).values
+    jac = torch.autograd.functional.jacobian(
+        lambda x: hc.forward(x, w=w, min=mn, max=mx), x).reshape(BINS, n)
+    ref = (hd[0, :, None] * jac.square()).sum(0)
+    out = hc.backward2(hd, x, w=w, min=mn, max=mx)[0]
+    assert torch.allclose(out, ref, rtol=1e-10, atol=1e-12), (out - ref).abs().max()
+    assert (out >= 0).all()
+    # edge half-bins: the histogram does not depend on the sample
+    if not fwhm:
+        assert (out[:10] == 0).all()
+    # gradient: adjoint smoothing
+    gg = torch.randn([1, BINS], dtype=torch.double, generator=g)
+    ref = gg[0] @ jac
+    out = hc.backward(gg, x, w=w, min=mn, max=mx)[0]
+    assert torch.allclose(out, ref, rtol=1e-10, atol=1e-12)
+
+
+def test_histcount_backward2_interior_unchanged():
+    """Interior samples: same result as the order-1 corner kernel."""
+    x = rand_points(50, 1)
+    h = rand_h([BINS])
+    b = make_bound([_hist.bound_to_nitorch('replicate', 'int')])
+    ref = _hist.iso1_grad2_diag_1d(h.unsqueeze(1), x.unsqueeze(-1), b, 1)
+    out = _histc_backward2(h, x, order=1, bound='replicate', extrapolate=True)
+    assert torch.equal(out, ref.squeeze(1).squeeze(-1))

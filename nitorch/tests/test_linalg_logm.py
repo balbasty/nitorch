@@ -41,6 +41,7 @@ def test_logm_backward():
     assert torch.isfinite(A.grad).all()
 
 
+@pytest.mark.slow
 def test_register_nonlin_svf_runs(tmp_path):
     nib = pytest.importorskip('nibabel')
     rng = np.random.default_rng(0)
