@@ -11,7 +11,7 @@ output is updated so that it stays aligned with the input in world space.
 === ":octicons-terminal-24: Synopsis"
 
     ```shell
-    nitorch pool FILE... [-w WINDOW...] [-s STRIDE...] [-p [BOUND] PAD...]
+    nitorch pool FILE... [-w WINDOW...] [-s STRIDE...] [-p [BOUND] PAD [BOUND] [PAD [BOUND] ...]]
                          [-m METHOD] [-d DIM] [-o FILE...] [-cpu | -gpu [ID]]
     ```
 
@@ -59,7 +59,8 @@ The output is not simply the input with fewer voxels: it is resampled on a
 coarser lattice, and the orientation matrix is updated to describe it. Output
 voxel $i$ is centred on the centre of the window that produced it. In voxel
 coordinates of the input along one axis, with window size $K$, stride $S$ and
-padding $P$, this is the position $S\,i + (K-1)/2 - P$. As a consequence:
+padding $P$ on the low side of the axis (the amount added before the first
+voxel), this is the position $S\,i + (K-1)/2 - P$. As a consequence:
 
 - the voxel size is multiplied by the **stride** (not by the window size) along
   each axis;
@@ -74,13 +75,20 @@ geometry follows the same rule.
 
 ### Padding
 
-`-p` adds voxels around the image before pooling. It takes an optional
-boundary condition, which applies to all axes and must come first, followed by
-the padding sizes:
+`-p` adds voxels around the image before pooling. Each padding size may be
+followed by the boundary condition to use along that axis, and an optional
+boundary condition placed first applies to all the axes that do not specify
+their own:
 
 ```text
--p [BOUND] PAD [PAD [PAD]]
+-p [BOUND] PAD [BOUND] [PAD [BOUND] ...]
 ```
+
+For example, `-p 1 zero 2 dft` pads the first axis by 1 voxel with zeros and
+the remaining axes by 2 voxels with wrap-around, whereas `-p zero 1 2 dft`
+pads the first two axes with zeros and the third one with wrap-around. A
+boundary condition that does not follow a size is an error, unless it comes
+first.
 
 Each `PAD` is a number of voxels added on both sides of an axis, or the word
 `same`. With `same`, the smallest padding is chosen that gives an output of
@@ -88,21 +96,16 @@ $\lfloor L / \text{stride} \rfloor$ voxels along that axis. When the window
 equals the stride, the unpadded output already has that size, so `same` adds
 nothing; it matters for overlapping windows, for instance a window of 3 with a
 stride of 1, which then keeps the size of the image. If the amount of padding
-needed is odd, it cannot be split evenly between both sides, and the command
-currently fails when it updates the orientation matrix; choose an odd window
-in that case. As for the window, the last value is repeated if fewer than three
-are given.
+$P$ needed is odd, it is split unevenly: $\lfloor P / 2 \rfloor$ voxels are
+added before the image and the remaining $\lceil P / 2 \rceil$ after it, and
+the orientation matrix accounts for the voxels added before. As for the window,
+the last value is repeated if fewer than three are given, whether it is a size
+or a boundary condition.
 
 `BOUND` says what values the padding voxels take. The default is `dct2`, which
 mirrors the image at its edge (the edge voxel is repeated, so `a b c d` is padded to `b a a b c d d c`).
 The other values accepted are the boundary conditions listed in
 [Boundary conditions](#boundary-conditions) below.
-
-!!! warning "One boundary condition for all axes"
-    The parser has a branch that would allow a different boundary condition
-    after each padding size, but it always rejects it with the error
-    "Padding type must follow padding size". Give at most one boundary
-    condition, before the sizes.
 
 ### Pooling methods
 
@@ -113,7 +116,7 @@ The other values accepted are the boundary conditions listed in
 | `min`    | The smallest value.                                           |
 | `max`    | The largest value.                                            |
 | `median` | The median.                                                   |
-| `ssq`    | The root of the mean of the squared values (root mean square), despite its name. |
+| `ssq`    | The sum of the squared values.                                |
 
 The method is not validated by the parser: an unknown name is reported as an
 error only once the computation starts.
@@ -145,7 +148,7 @@ The names below can be used with `-p`. Several names exist for most of them
 | ----------------------- | ------------------ | ---------------------------------------------------------------------------------------- | -------------------------------- |
 | `-w`, `--window`        | `WINDOW...`        | Window size, in voxels, per dimension. `0` pools a whole axis. [See below](#window-and-stride). | `3`                              |
 | `-s`, `--stride`        | `STRIDE...`        | Step between windows, in voxels, per dimension.                                          | same as the window               |
-| `-p`, `--padding`       | `[BOUND] PAD...`   | Padding added on both sides, in voxels, or `same`, preceded by an optional boundary condition. [See below](#padding). | `0`                              |
+| `-p`, `--padding`       | `[BOUND] PAD [BOUND] ...` | Padding added on both sides, in voxels, or `same`, each optionally followed by a boundary condition; a leading one applies to all axes. [See below](#padding). | `0`                              |
 | `-m`, `--method`        | `METHOD`           | Pooling function: `mean`, `sum`, `min`, `max`, `median` or `ssq`. [See above](#pooling-methods). | `mean`                           |
 | `-d`, `--dim`, `--dimension` | `DIM`         | Number of spatial dimensions. It has to agree with the orientation matrix of the file, so leave it at `3` for ordinary volumes. `0` takes the value from the file. | `3`                              |
 | `-o`, `--output`        | `FILE...`          | Output file names or templates, one per input. A single template is reused for every input. | `{dir}{sep}{base}.pool{ext}`     |
