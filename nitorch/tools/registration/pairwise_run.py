@@ -6,6 +6,7 @@ from .pairwise_makeobj import make_affine, make_affine_optim, make_nonlin, make_
 from .optim import InterleavedOptimIterator, Optim
 from . import objects
 from nitorch.core.py import make_list
+from functools import partial
 import torch
 import math
 
@@ -17,6 +18,7 @@ def run(
     affine_optim=None,
     nonlin_optim=None,
     pyramid=True,
+    reg_modulation=1,
     interleaved=True,
     progressive=True,
     affine_then_nonlin=True,
@@ -42,6 +44,16 @@ def run(
         Instantiated nonlinear optimizer
     pyramid : bool, default=True
         Optimize pyramid levels in a coarse-to-fine manner
+    reg_modulation : float, default=1
+        Modulation of the nonlinear regularisation across pyramid levels:
+        the regularisation is multiplied by `reg_modulation` each time the
+        voxel size of the nonlinear grid doubles, i.e.,
+        `factor[n] = factor[0] * reg_modulation ** log2(vx[n] / vx[0])`,
+        where `vx[n]` is the voxel size at level `n` (0 = finest).
+        The finest level always uses the user-defined regularisation.
+        `1` (default) disables the modulation. Values > 1 (e.g., 4)
+        compensate for the sharper data term (less noise and fewer
+        unmatchable details) of coarse levels near convergence.
     interleaved : bool, default=False
         Fit the affine and nonlinear components in an interleaved manner
     progressive : bool
@@ -104,7 +116,8 @@ def run(
 
     plotopt = dict(verbose=verbose, framerate=framerate, figure=figure)
 
-    runner = run_pyramid if pyramid else run_single
+    runner = (partial(run_pyramid, reg_modulation=reg_modulation)
+              if pyramid else run_single)
 
     # --- progressive affine initialization ---
     if affine and not affine.frozen and progressive:
@@ -247,8 +260,18 @@ def run_pyramid(
     verbose=True,
     framerate=1,
     figure=None,
+    reg_modulation=1,
 ):
-    """Run sequential pyramid registration"""
+    """Run sequential pyramid registration
+
+    The nonlinear regularisation is scaled at each level by
+    `reg_modulation ** log2(vx[n] / vx[0])`, where `vx[n]` is the voxel
+    size of the nonlinear grid at level `n` (0 = finest). Since the field is shared
+    across levels and fully re-optimised at the finest level, coarse levels
+    only provide an initialisation: making them (slightly) more regularised
+    is safe, and compensates for the data term being sharper (less noise,
+    fewer unmatchable details) at coarse levels.
+    """
     line_size = 89 if nonlin else 74
 
     if verbose:
@@ -271,6 +294,14 @@ def run_pyramid(
     losses = make_list(losses)
     nb_levels = len(losses)
 
+    # regularisation and voxel size of the finest level
+    # (the level that defines the solution)
+    scale_reg = bool(nonlin and not getattr(nonlin, 'frozen', False)
+                     and reg_modulation != 1 and nb_levels > 1)
+    if scale_reg:
+        factor0 = _get_reg_factor(nonlin)
+        vx0, shape0 = nonlin.voxel_size.tolist(), list(nonlin.shape)
+
     n_level = nb_levels - 1
     if nonlin and n_level > 0:
         shapes = [nonlin.shape]
@@ -282,17 +313,22 @@ def run_pyramid(
         else:
             nonlin = nonlin.downsample_(shape=shapes[n_level])
 
-    if nonlin and hasattr(nonlin_optim, 'penalty'):
-        nonlin_optim.penalty = nonlin.penalty
-
     while losses:
         loss_level = losses.pop(0)
         if verbose:
             print('-' * line_size)
             print(f'   PYRAMID LEVEL {n_level}')
             print('-' * line_size)
+        if scale_reg:
+            factor = _get_modulated_factor(
+                nonlin, factor0, vx0, shape0, reg_modulation)
+            _set_reg_factor(nonlin, factor)
+            if verbose:
+                print(f'   (regularisation factor: {factor:.3g})')
         if nonlin and hasattr(nonlin_optim, 'voxel_size'):
             nonlin_optim.voxel_size = nonlin.voxel_size
+        if nonlin and hasattr(nonlin_optim, 'penalty'):
+            nonlin_optim.penalty = nonlin.penalty
         optim.reset_state()
         register = PairwiseRegister(loss_level, affine, nonlin, optim,
                                     verbose=verbose, framerate=framerate,
@@ -315,7 +351,42 @@ def run_pyramid(
                     elif n_level > 0:
                         nonlin.upsample_(shape=shapes[n_level])
 
+    if scale_reg:
+        _set_reg_factor(nonlin, factor0)
+
     return affine, nonlin, figure
+
+
+def _voxel_size_ratio(vx, vx0, shape0):
+    """Geometric mean of the voxel size ratio `vx / vx0`, across the
+    axes that are downsampled by the pyramid (i.e., not singleton axes,
+    such as the through-plane axis of a 2D registration)"""
+    ratios = [v / v0 for v, v0, s0 in zip(vx, vx0, shape0) if s0 > 1]
+    if not ratios:
+        return 1.
+    return math.prod(ratios) ** (1 / len(ratios))
+
+
+def _get_modulated_factor(nonlin, factor0, vx0, shape0, modulation):
+    """Regularisation factor at the current pyramid level:
+    `factor0 * modulation ** log2(vx / vx0)`"""
+    ratio = _voxel_size_ratio(nonlin.voxel_size.tolist(), vx0, shape0)
+    return factor0 * modulation ** math.log2(ratio)
+
+
+def _get_reg_factor(nonlin):
+    model = getattr(nonlin, '_model', nonlin)  # unwrap Nonlin2dModel
+    return model.penalty['factor']
+
+
+def _set_reg_factor(nonlin, factor):
+    """Change the global regularisation factor of a nonlinear model"""
+    model = getattr(nonlin, '_model', nonlin)  # unwrap Nonlin2dModel
+    model.factor = factor
+    model.penalty['factor'] = factor
+    model.clear_cache()
+    if model.kernel is not None:  # shoot: the Greens kernel embeds it
+        model.set_kernel()
 
 
 def build_joint_optim(
