@@ -10,7 +10,7 @@ Overwrite the orientation matrix stored in the header of a volume, leaving the v
 
     ```shell
     nitorch orient FILE... [-a AFFINE...] [-l LAYOUT] [-v VX...] [-c CENTRE...]
-                           [-k FILE] [-o FILE...] [-t FILE...]
+                           [-k FILE] [-o FILE...] [-t [FILE...]]
     ```
 
 !!! warning "This overwrites the orientation matrix"
@@ -41,7 +41,7 @@ With no `-k`, `like` and `self` are the same thing, so that `nitorch orient FILE
 
 ### The transform file
 
-Besides the image, `orient` writes a linear transformation file (`.lta`) next to each output, **even if you do not ask for it**. It contains the matrix $M_\text{new} M_\text{old}^{-1}$, that is, the transformation that takes world coordinates under the old orientation matrix to world coordinates under the new one. It lets you track how far the image was moved. Use `-t` to choose where it is written; there is no option to disable it.
+With `-t`, `orient` also writes a linear transformation file (`.lta`) for each output. It contains the matrix $M_\text{new} M_\text{old}^{-1}$, that is, the transformation that takes world coordinates under the old orientation matrix to world coordinates under the new one. It lets you track how far the image was moved. Give `-t` alone to write it under the default name, or follow it with filenames to choose where it is written. Without `-t`, no transformation file is written.
 
 ## Arguments
 
@@ -59,7 +59,7 @@ Besides the image, `orient` writes a linear transformation file (`.lta`) next to
 | `-c`, `--center`      | `CENTRE...`       | World coordinates (mm) of the centre of the field of view: one value, or one per axis; or `self`, `like`, `standard` (= 0). Note the American spelling of the flag. | `like`                                        |
 | `-k`, `--like`        | `FILE`            | Reference volume that provides every value set to `like`.                                                                                            | the input file                                |
 | `-o`, `--output`      | `FILE...`         | Output filenames, one per input. [Templates](../../conventions.md#output-filenames) are accepted; `{layout}` expands to the name of the output layout, e.g. `RAS`. | `{dir}{sep}{base}.{layout}{ext}`              |
-| `-t`, `--transform`   | `FILE...`         | Output transformation files, one per input. The templates accept `{dir}`, `{sep}`, `{base}` and `{layout}`, but not `{ext}`.                          | `{dir}{sep}{base}_to_{layout}.lta`            |
+| `-t`, `--transform`   | `[FILE...]`       | Write the transformation files, one per input. The templates accept `{dir}`, `{sep}`, `{base}` and `{layout}`, but not `{ext}`. Without a value, the default name is used. | not written; `{dir}{sep}{base}_to_{layout}.lta` if `-t` has no value |
 
 If fewer output names than inputs are given, the last one is repeated (and would be overwritten), so give a template when you process several files. Negative numbers are accepted as values; see [how options are parsed](../../conventions.md#how-options-are-parsed).
 

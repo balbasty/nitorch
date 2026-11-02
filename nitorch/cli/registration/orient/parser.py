@@ -31,7 +31,7 @@ letters:
     - S (inferior to Superior) or I (superior to Inferior)
     
 usage:
-    nitorch orient *FILES [-l LAYOUT] [-v *VX] [-c *CTR] [-k FILE] [-o *FILES]
+    nitorch orient *FILES [-l LAYOUT] [-v *VX] [-c *CTR] [-k FILE] [-o *FILES] [-t [*FILES]]
 
     -a, --affine *AFF      Target affine matrix (default: like)
     -l, --layout LAYOUT    Target orientation (default: like)
@@ -39,7 +39,8 @@ usage:
     -c, --center *CTR      Target coordinates of the FOV center (default: like)
     -k, --like FILE        Reference file from which to copy parameters (default: self)
     -o, --output *FILES    Output filenames (default: {dir}/{base}.{layout}{ext})
-    -t, --transform FILE   Output transformation file (default: {dir}/{base}_to_{layout}.lta)
+    -t, --transform [*FILES] Output transformation files (default: none;
+                           if -t is given without value: {dir}/{base}_to_{layout}.lta)
 
     Options a/l/v/c can either receive a value, or one of {self, like}.
     - If 'self', the value of the input file is preserved.
@@ -115,7 +116,10 @@ def parse(args):
                 val, *args = args
                 struct.output.append(val)
         elif tag in ('-t', '--transform'):
-            struct.transform = []
+            if not cli.next_isvalue(args):
+                struct.transform = ['{dir}{sep}{base}_to_{layout}.lta']
+            else:
+                struct.transform = []
             while cli.next_isvalue(args):
                 val, *args = args
                 struct.transform.append(val)
