@@ -13,10 +13,11 @@ class Info(Structure):
 help = r"""[nitorch] Print volume information
 
 usage:
-    nitorch info *FILES [-m *FIELDS] [-s]
+    nitorch info *FILES [-m *FIELDS] [-s [BOOL]]
 
     -m, --meta             Specific fields that must be printed.
-    -s, --stat             Compute intensity statistics (default: False)
+    -s, --stat [BOOL]      Compute intensity statistics (default: False)
+                           BOOL can be true/false, yes/no or 1/0.
 """
 
 
@@ -56,11 +57,11 @@ def parse(args):
             struct.stat = True
             if cli.next_isvalue(args):
                 val, *args = args
-                if val.lower().startswith('f'):
-                    val = False
-                elif val.lower().startswith('t'):
-                    val = True
-                struct.stat = bool(int(val))
+                stat = cli.Conversions.bool(val)
+                if not isinstance(stat, bool):
+                    raise ParseError(f'Expected a boolean after {tag} '
+                                     f'but got {val}')
+                struct.stat = stat
         elif tag in ('-h', '--help'):
             print(help)
             return None
