@@ -51,6 +51,8 @@ def denoise_mri(*dat_x, affine_x=None, lam_scl=opt.lam_scl, lr=opt.learning_rate
         prefixed 'den_' to 'dir_out'
     dir_out : str, optional
         Directory where to write output, default is same as input.
+        Outputs that would share a path get their 1-based input position
+        before the extension (e.g., 'den_t1.1.nii', 'den_t1.2.nii').
 
     Returns
     ----------
