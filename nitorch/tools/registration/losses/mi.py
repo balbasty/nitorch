@@ -39,7 +39,6 @@ def entropy(moving, fixed, dim=None, bins=64, order=3, fwhm=2,
 
     shape = moving.shape
     dim = dim or fixed.dim() - 1
-    nvox = pyutils.prod(shape[-dim:])
     moving = moving.reshape([*moving.shape[:-dim], -1])
     fixed = fixed.reshape([*fixed.shape[:-dim], -1])
     idx = torch.stack([moving, fixed], -1)
@@ -53,13 +52,14 @@ def entropy(moving, fixed, dim=None, bins=64, order=3, fwhm=2,
     else:
         pxy, mn, mx = hist.forward(idx, w=mask, return_minmax=True)
     pxy = pxy.clamp(1e-8)
-    pxy /= nvox
+    nrm = pxy.sum([-1, -2], keepdim=True)  # histogram mass (see `mi`)
+    pxy = pxy / nrm
     hxy = -(pxy * pxy.log()).sum([-1, -2], keepdim=True)
 
     out = []
     if grad or hess:
         g = pxy.log().add_(1).neg_()
-        g = g.div_(nvox)
+        g = g.sub_((g * pxy).sum([-1, -2], keepdim=True)).div_(nrm)
 
     if grad:
         gx = hist.backward(g, idx, min=mn, max=mx, w=mask)[..., 0]
@@ -79,27 +79,6 @@ def entropy(moving, fixed, dim=None, bins=64, order=3, fwhm=2,
     if minmax is True:
         out.extend([mn, mx])
     return tuple(out) if len(out) > 1 else out[0]
-
-
-def _degenerate(idx, mask=None):
-    """Batch elements without information: empty mask, or constant
-    moving or fixed image, i.e. (numerically) zero intensity range (same
-    criterion as `core._hist._guard_range`, which widens such ranges).
-
-    idx : (..., N, 2) tensor, mask : (..., N) tensor -> (...) bool tensor
-    """
-    if mask is not None:
-        inside = (mask > 0).unsqueeze(-1)
-        mn = idx.masked_fill(~inside, float('inf')).amin(-2)
-        mx = idx.masked_fill(~inside, -float('inf')).amax(-2)
-        empty = ~inside.any(-2).squeeze(-1)
-        mn, mx = mn.masked_fill(empty[..., None], 0), mx.masked_fill(empty[..., None], 0)
-    else:
-        mn, mx = idx.amin(-2), idx.amax(-2)
-        empty = None
-    scale = torch.maximum(mn.abs(), mx.abs()).clamp_min(1)
-    bad = ((mx - mn) <= 4 * torch.finfo(mx.dtype).eps * scale).any(-1)
-    return bad if empty is None else bad | empty
 
 
 def mi(moving, fixed, dim=None, bins=64, order=3, fwhm=2, norm='studholme',
@@ -157,10 +136,6 @@ def mi(moving, fixed, dim=None, bins=64, order=3, fwhm=2, norm='studholme',
     if mask is not None:
         mask = mask.to(fixed.device)
         mask = mask.reshape([*mask.shape[:-dim], -1])
-        nvox = mask.sum(-1, keepdim=True).unsqueeze(-1)  # [*batch, 1, 1, 1]
-        nvox.masked_fill_(nvox == 0, 1)  # empty (e.g., slice) mask -> no NaNs
-    else:
-        nvox = pyutils.prod(shape[-dim:])
     del moving, fixed
 
     if minmax not in (True, False, None):
@@ -168,19 +143,14 @@ def mi(moving, fixed, dim=None, bins=64, order=3, fwhm=2, norm='studholme',
         h, mn, mx = hist.forward(idx, min=mn, max=mx, w=mask, return_minmax=True)
     else:
         h, mn, mx = hist.forward(idx, w=mask, return_minmax=True)
-    # Batch elements (channels, slices) without information: empty mask,
-    # or constant moving or fixed image (whose histogram range is then
-    # widened artificially by `JointHistCount`). Their mutual information
-    # is zero, i.e. the worst possible value, and so are their gradient
-    # and Hessian. Otherwise, the histogram of an empty overlap or of a
-    # constant image is spread over a few central bins by the spline
-    # window, which gives a spuriously *good* value (e.g., when an
-    # optimizer pushes the moving image out of the field of view).
-    empty = _degenerate(idx, mask)
-    empty = empty[..., None, None]
-
+    # Normalise by the histogram mass, so that pxy is a distribution even
+    # when there is no information (empty mask: uniform after clamping;
+    # constant image: separable). Mutual information is then exactly zero,
+    # i.e. the worst value of every normalisation.
+    # The derivative of h / S with respect to h is (I - p 1^T) / S.
     h = h.clamp(1e-8)
-    h /= nvox
+    nrm = h.sum([-1, -2], keepdim=True)
+    h = h / nrm
 
     pxy = h
     px = pxy.sum(-1, keepdim=True)
@@ -222,8 +192,7 @@ def mi(moving, fixed, dim=None, bins=64, order=3, fwhm=2, norm='studholme',
         else:
             # g = ((1 + px.log()) + (1 + py.log())) - (1 + pxy.log())
             g = pxy.log().neg_().add_(px.log()).add_(py.log()).add_(1)
-        g = g.div_(nvox)
-        g = g.masked_fill_(empty, 0)
+        g = g.sub_((g * pxy).sum([-1, -2], keepdim=True)).div_(nrm)
 
     if grad:
         gx = hist.backward(g, idx, min=mn, max=mx, w=mask)[..., 0]
@@ -244,10 +213,6 @@ def mi(moving, fixed, dim=None, bins=64, order=3, fwhm=2, norm='studholme',
         H = hist.backward_hess(g, idx, min=mn, max=mx, w=mask)[..., 0]
         H = H.abs_().reshape(shape)
         out.append(H)
-
-    # zero mutual information where there is no information
-    nmi_zero = {'studholme': 1., 'arithmetic': -1.}.get(norm, 0.)
-    nmi = nmi.masked_fill(empty, nmi_zero)
 
     nmi = -nmi
     if norm == 'studholme':

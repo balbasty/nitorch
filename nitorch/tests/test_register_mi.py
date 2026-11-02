@@ -58,7 +58,8 @@ def test_mi_value(norm):
     ll = mi(mov, fix, dim=2, norm=norm, grad=False, hess=False, **kw)
 
     idx = torch.stack([mov.reshape([1, -1]), fix.reshape([1, -1])], -1)
-    pxy = JointHistCount(**kw).forward(idx).clamp(1e-8) / mov.numel()
+    pxy = JointHistCount(**kw).forward(idx).clamp(1e-8)
+    pxy = pxy / pxy.sum()
     px, py = pxy.sum(-1), pxy.sum(-2)
     hxy = -(pxy * pxy.log()).sum()
     hx = -(px * px.log()).sum()
@@ -186,10 +187,12 @@ WORST = {'studholme': 1., 'arithmetic': 1., 'geometric': 1., None: 0.}
                                   'const_in_mask'])
 def test_mi_no_information_is_worst(norm, case):
     """Batch elements without information (empty mask, constant image)
-    have zero mutual information, i.e. the worst loss value, and zero
-    gradient/Hessian. The histogram range guard used to make them finite
-    but spuriously *good*: `nitorch affreg` (Powell) then pushed the
-    moving image out of the field of view."""
+    have a separable joint histogram, hence zero mutual information, i.e.
+    the worst loss value, and (numerically) zero gradient/Hessian.
+    This follows from normalising the histogram by its mass: dividing by
+    the number of voxels used to give an unnormalised histogram whose
+    "MI" was spuriously *good*, and `nitorch affreg` (Powell) then pushed
+    the moving image out of the field of view."""
     mov, fix = make_data([8, 8, 3], seed=5)
     mov2, fix2 = make_data([8, 8, 3], seed=6)
     mov, fix = torch.cat([mov, mov2]), torch.cat([fix, fix2])  # 2 channels
@@ -209,6 +212,9 @@ def test_mi_no_information_is_worst(norm, case):
     ll, g, h = mi(mov, fix, **kw, mask=mask)
     ll0, g0, h0 = mi(mov[:1], fix[:1], **kw,
                      mask=None if mask is None else mask[:1])
-    assert torch.allclose(ll, ll0 + WORST[norm])
-    assert (g[1] == 0).all() and (h[1] == 0).all()
+    assert torch.allclose(ll, ll0 + WORST[norm], atol=1e-6)
+    # not exactly zero: the 1e-8 clamp makes the histogram only nearly
+    # separable, and spline weights sum to one up to rounding
+    assert g[1].abs().max() < 1e-6 * g0.abs().max()
+    assert h[1].abs().max() < 1e-6 * h0.abs().max()
     assert torch.allclose(g[:1], g0) and torch.allclose(h[:1], h0)
