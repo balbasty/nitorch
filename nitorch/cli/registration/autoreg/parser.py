@@ -114,11 +114,12 @@ examples:
             -dif
 
     # registration using gradient descent with a backtracking line 
-    autoreg -mi -fix target.nii -mov source.nii -gd -ls
+    autoreg -mi -fix target.nii -mov source.nii -rig -gd -ls
 
     # register based on intensity images and use it to warp segments
     autoreg -mi  -fix target.nii  -mov source.nii \
-            -oth -mov segment.nii -inter 0
+            -oth -mov segment.nii -inter 0 \
+            -rig
 """
 
 
