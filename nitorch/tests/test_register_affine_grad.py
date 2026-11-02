@@ -111,9 +111,13 @@ def setup(pos, kind, lattice='same', scale=1., basis='rigid'):
 
 
 def warp(affine, nonlin, sim, logaff):
-    """Reference forward pass of `do_affine` for a forward term"""
+    """Reference forward pass of `do_affine` for one term"""
     pos = affine.position[0].lower()
-    aff = affine.exp(logaff)
+    if sim.backward:
+        pos = {'m': 'f', 'f': 'm'}.get(pos, pos)
+        aff, phi = affine.iexp(logaff), nonlin.iexp()
+    else:
+        aff, phi = affine.exp(logaff), nonlin.exp()
     moving, fixed = sim.moving, sim.fixed
     aff_right = fixed.affine
     if pos in 'fs':
@@ -124,12 +128,27 @@ def warp(affine, nonlin, sim, logaff):
         aff_left = aff @ aff_left
     aff_left = linalg.lmdiv(moving.affine, aff_left)
     right = spatial.affine_grid(aff_right, fixed.shape)
-    psi = regutils.smart_pull_grid(nonlin.exp(), right, bound='zero') + right
+    psi = regutils.smart_pull_grid(phi, right, bound='zero') + right
     psi = spatial.affine_matvec(aff_left, psi)
     return moving.pull(psi, mask=True)
 
 
-def gn_hessian(affine, nonlin, sim, logaff, eps=1e-6):
+def gn_hessian(affine, nonlin, sims, logaff):
+    """Gauss-Newton Hessian of a sum of terms"""
+    return sum(sim.factor * _gn_hessian(affine, nonlin, sim, logaff)
+               for sim in sims)
+
+
+def ref_loss(affine, nonlin, sims, logaff):
+    loss = 0
+    for sim in sims:
+        warped, mask = warp(affine, nonlin, sim, logaff)
+        loss += sim.factor * sim.loss.loss(warped, sim.fixed.dat,
+                                           dim=3, mask=mask)
+    return loss
+
+
+def _gn_hessian(affine, nonlin, sim, logaff, eps=1e-6):
     """Exact Gauss-Newton Hessian sum_x h(x) a(x) a(x)', with
     a = dwarped/dtheta from central finite differences."""
     warped, mask = warp(affine, nonlin, sim, logaff)
@@ -188,32 +207,42 @@ def test_affine_grad_no_deformation(pos, kind):
 #   Hessian
 # ----------------------------------------------------------------------
 
+@pytest.mark.parametrize('pos', ['m', 'f'])
+@pytest.mark.parametrize('kind', ['fwd', 'bwd', 'sym'])
 @pytest.mark.parametrize('lattice', ['same', 'coarse'])
-def test_affine_hess_moving_is_gauss_newton(lattice):
-    """Moving side: the Hessian is the exact Gauss-Newton Hessian."""
-    step, affine, nonlin, sim = setup('m', 'fwd', lattice, 1., 'affine')
+def test_affine_hess_one_side_is_gauss_newton(pos, kind, lattice):
+    """Affine on one side: the Hessian is the exact Gauss-Newton Hessian
+    (up to the fixed-side finite-difference Jacobian, see
+    `test_affine_grad`)."""
+    step, affine, nonlin, sim = setup(pos, kind, lattice, 1., 'affine')
     x = affine.dat.dat.clone()
     ll, _, h = step.do_affine(x, grad=True, hess=True, in_line_search=True)
     # the reference forward pass is the one `do_affine` evaluates
-    warped, mask = warp(affine, nonlin, sim[0], x)
-    assert torch.allclose(ll, sim[0].loss.loss(warped, sim[0].fixed.dat,
-                                               dim=3, mask=mask))
-    ref = gn_hessian(affine, nonlin, sim[0], x)
-    assert (h - ref).norm() / ref.norm() < 1e-6
+    assert torch.allclose(ll, ref_loss(affine, nonlin, sim, x))
+    ref = gn_hessian(affine, nonlin, sim, x)
+    fixed_side_jac = (lattice == 'coarse' and kind != 'bwd' and pos == 'f')
+    tol = 1e-4 if fixed_side_jac else 1e-6
+    assert (h - ref).norm() / ref.norm() < tol
 
 
 @pytest.mark.parametrize('kind', ['fwd', 'bwd', 'sym'])
 @pytest.mark.parametrize('lattice', ['same', 'coarse'])
 def test_affine_hess_symmetric_position(kind, lattice):
-    """Default position: H = H_mov + H_fix, the sum of the Gauss-Newton
-    Hessians of the two halves (cross terms dropped). It is symmetric
-    positive semi-definite, and 2H majorises the full Gauss-Newton
-    Hessian ((a+b)(a+b)' <= 2(aa' + bb'))."""
+    """Default position: H = 2 (H_mov + H_fix), twice the sum of the
+    Gauss-Newton Hessians of the two halves. Since
+    (a+b)(a+b)' <= 2(aa' + bb'), it majorises the full Gauss-Newton
+    Hessian; both halves being nearly equal, it is also tight (the
+    plain sum used to be about half of it)."""
     step, affine, nonlin, sim = setup('s', kind, lattice, 1., 'affine')
     x = affine.dat.dat.clone()
-    _, _, h = step.do_affine(x, grad=True, hess=True, in_line_search=True)
+    ll, _, h = step.do_affine(x, grad=True, hess=True, in_line_search=True)
     assert torch.allclose(h, h.T)
-    assert torch.linalg.eigvalsh(h).min() > -1e-10 * h.diagonal().max()
-    if kind == 'fwd':
-        ref = gn_hessian(affine, nonlin, sim[0], x)
-        assert torch.linalg.eigvalsh(2 * h - ref).min() > -1e-3 * ref.norm()
+    assert torch.allclose(ll, ref_loss(affine, nonlin, sim, x))
+    ref = gn_hessian(affine, nonlin, sim, x)
+    # generalised eigenvalues of (H, H_gn)
+    L = torch.linalg.cholesky(ref)
+    M = torch.linalg.solve_triangular(L, h, upper=False)
+    M = torch.linalg.solve_triangular(L, M.T, upper=False)
+    ev = torch.linalg.eigvalsh((M + M.T) / 2)
+    assert ev.min() > 1 - 1e-6, ev     # majorises
+    assert ev.max() < 1.05, ev         # tight

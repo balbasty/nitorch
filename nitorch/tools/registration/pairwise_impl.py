@@ -1019,6 +1019,15 @@ class PairwiseRegisterStep:
                     g_right, h_right = compose_grad(g_right, h_right, mugrad, gaff_right)
                     g = g_right if g is None else g.add_(g_right)
                     h = h_right if h is None else h.add_(h_right)
+                if pos == 's' and h is not None:
+                    # Both halves of the affine move the same voxels, so
+                    # the Gauss-Newton Hessian has cross terms
+                    # sum(a_mov a_fix'), dropped above. Since
+                    # (a+b)(a+b)' <= 2(aa' + bb'), twice the sum of the
+                    # two halves majorises it. As both halves are nearly
+                    # equal, this is also tight, whereas the plain sum
+                    # is about half the Gauss-Newton Hessian.
+                    h = h.mul_(2)
 
                 if loss.backward:
                     g = g.neg_()
