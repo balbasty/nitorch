@@ -1,5 +1,6 @@
 __all__ = ['preproc_image', 'map_image', 'load_image', 'prepare_pyramid_levels',
-           'rescale_image', 'discretize_image', 'soft_quantize_image']
+           'rescale_image', 'discretize_image', 'soft_quantize_image',
+           'auto_bins']
 
 from nitorch import io
 from nitorch.core.py import make_list, flatten
@@ -382,6 +383,36 @@ def rescale_image(dat, quantiles=0.95):
                             keepdim=True, bins=1024).unbind(-1)
     dat = dat.sub_(mn).div_(mx - mn)
     return dat
+
+
+def auto_bins(nvox, nclasses=16, max_bins=256, min_count=5):
+    """Number of fixed bins J for a joint histogram with K classes
+
+    The joint histogram has J*K cells and is estimated from N voxels.
+    We keep the expected count per cell, N / (J*K), at least `min_count`
+    (the usual rule of thumb for a chi-square/multinomial estimate,
+    default 5), so that it does not overfit when N is small (e.g., on
+    coarse pyramid levels):
+
+        J = clip(floor(N / (min_count * K)), 2, max_bins)
+
+    Parameters
+    ----------
+    nvox : int
+        Number of (valid) voxels N
+    nclasses : int, default=16
+        Number of moving classes K
+    max_bins : int, default=256
+        Upper bound (the user value)
+    min_count : float, default=5
+        Minimum expected count per joint-histogram cell
+
+    Returns
+    -------
+    nbins : int
+    """
+    nbins = int(float(nvox) // (min_count * max(int(nclasses), 1)))
+    return max(2, min(int(max_bins), nbins))
 
 
 def discretize_image(dat, nbins=256):

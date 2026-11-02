@@ -1,4 +1,5 @@
 """Scaling of the nonlinear regularisation across pyramid levels."""
+import math
 import pytest
 import torch
 from nitorch import spatial
@@ -50,7 +51,9 @@ def test_reg_scaling(model, modulation, monkeypatch):
     for r, f in zip(records, expected):
         assert r['factor'] == pytest.approx(f)
         assert r['penalty'] == pytest.approx(f)
-        assert r['optim'] == pytest.approx(f)
+        # the optimiser receives the factor normalised by the number
+        # of voxels, as in the objective
+        assert r['optim'] == pytest.approx(f / math.prod(r['shape']))
     # the finest level and the returned model use the user's factor
     assert records[-1]['factor'] == pytest.approx(2.)
     assert nonlin.factor == 2. and nonlin.penalty['factor'] == 2.

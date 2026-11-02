@@ -373,3 +373,44 @@ def test_verbose_does_not_change_objective(step_name, optim, capsys):
         for a, b in zip(outs[0], out):
             assert torch.allclose(a, b, rtol=1e-12, atol=1e-12 * b.abs().max())
     capsys.readouterr()
+
+
+@pytest.mark.parametrize('step_name', ['do_affine_only', 'do_affine'])
+def test_affine_penalty_accepts_model_parameters(step_name):
+    """Optimisers pass `AffineModel.Parameters` (not a tensor) on their
+    first evaluation: the penalty used to crash on it."""
+    fix, mov = make_images([8, 8, 8])
+    affine = _penalised_affine('affine', None)
+    nonlin = make_svf(fix) if step_name == 'do_affine' else None
+    step = PairwiseRegisterStep(make_sim(mov, fix, 'fwd'), affine, nonlin,
+                                verbose=0)
+    fn = getattr(step, step_name)
+    out1 = fn(affine.parameters(), grad=True, hess=True, in_line_search=True)
+    out0 = fn(affine.dat.dat.clone(), grad=True, hess=True,
+              in_line_search=True)
+    for a, b in zip(out1, out0):
+        assert torch.equal(a, b)
+
+
+def test_nonlin_step_includes_last_affine_penalty():
+    """In a joint model, the objective of the nonlinear step includes the
+    penalty of the last affine step (it used to be dropped: `lla` was
+    never recorded)."""
+    fix, mov = make_images([8, 8, 8], vx_mov=1.)
+    nonlin = make_svf(fix, band=0)
+    vel = nonlin.dat.dat.clone()
+
+    def nonlin_objective(penalised):
+        affine = _penalised_affine('affine', None)
+        if not penalised:
+            affine._penalty = None
+        step = PairwiseRegisterStep(make_sim(mov, fix, 'fwd'), affine,
+                                    nonlin, verbose=0)
+        step.do_affine(affine.dat.dat.clone())
+        return step.do_vel(vel, in_line_search=True), step
+
+    ll1, step = nonlin_objective(True)
+    ll0, _ = nonlin_objective(False)
+    lla = step._affine_penalty(step.affine.dat.dat)
+    assert lla > 0
+    assert torch.allclose(ll1 - ll0, lla)

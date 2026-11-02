@@ -1070,7 +1070,7 @@ def solve_field_fmg(hessian, gradient, weights=None, voxel_size=1, bound='dct2',
     else:
         has_bending = bool(bending)
     if not (has_membrane or has_bending):
-        return solve_field_closedform(hessian, gradient, weights=weights,
+        return solve_field_closedform(hessian, gradient, weights=weights, dim=dim,
                                       absolute=absolute, factor=factor)
 
     dim = dim or (gradient.dim() - 1)
@@ -1167,7 +1167,7 @@ def solve_field(hessian, gradient, weights=None, dim=None,
     else:
         has_bending = bool(bending)
     if not (has_membrane or has_bending):
-        return solve_field_closedform(hessian, gradient, weights=weights,
+        return solve_field_closedform(hessian, gradient, weights=weights, dim=dim,
                                       absolute=absolute, factor=factor)
 
     dim = dim or (gradient.dim() - 1)

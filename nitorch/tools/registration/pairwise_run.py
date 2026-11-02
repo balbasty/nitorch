@@ -240,10 +240,7 @@ def run_single(
             nonlin_optim = optim[1]
         else:
             nonlin_optim = optim
-        if hasattr(nonlin_optim, 'voxel_size'):
-            nonlin_optim.voxel_size = nonlin.voxel_size
-        if hasattr(nonlin_optim, 'penalty'):
-            nonlin_optim.penalty = nonlin.penalty
+        _sync_nonlin_optim(nonlin_optim, nonlin)
     register = PairwiseRegister(losses, affine, nonlin, optim,
                                 verbose=verbose, framerate=framerate,
                                 figure=figure)
@@ -325,10 +322,8 @@ def run_pyramid(
             _set_reg_factor(nonlin, factor)
             if verbose:
                 print(f'   (regularisation factor: {factor:.3g})')
-        if nonlin and hasattr(nonlin_optim, 'voxel_size'):
-            nonlin_optim.voxel_size = nonlin.voxel_size
-        if nonlin and hasattr(nonlin_optim, 'penalty'):
-            nonlin_optim.penalty = nonlin.penalty
+        if nonlin:
+            _sync_nonlin_optim(nonlin_optim, nonlin)
         optim.reset_state()
         register = PairwiseRegister(loss_level, affine, nonlin, optim,
                                     verbose=verbose, framerate=framerate,
@@ -365,6 +360,23 @@ def _voxel_size_ratio(vx, vx0, shape0):
     if not ratios:
         return 1.
     return math.prod(ratios) ** (1 / len(ratios))
+
+
+def _sync_nonlin_optim(nonlin_optim, nonlin):
+    """Copy the current voxel size and regularisation of `nonlin` into
+    its (Gauss-Newton) optimizer.
+
+    The objective (see `objects.py`) divides the regularisation factor
+    by the number of voxels of the transform, so the optimizer receives
+    the same normalised factor. This must be redone at each pyramid
+    level, since the shape changes."""
+    if hasattr(nonlin_optim, 'voxel_size'):
+        nonlin_optim.voxel_size = nonlin.voxel_size
+    if hasattr(nonlin_optim, 'penalty'):
+        penalty = dict(nonlin.penalty)
+        if 'factor' in penalty:
+            penalty['factor'] = penalty['factor'] / math.prod(nonlin.shape)
+        nonlin_optim.penalty = penalty
 
 
 def _get_modulated_factor(nonlin, factor0, vx0, shape0, modulation):
