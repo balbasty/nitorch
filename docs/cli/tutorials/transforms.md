@@ -238,13 +238,8 @@ hand it to another program that expects a displacement field. For resampling in
 NITorch, you do not need it: `reslice` and `compose` take the velocity field
 directly (`-v`) and exponentiate it themselves.
 
-!!! warning "Two things `vexp` does not do (yet)"
-    The `-inv` option is accepted but has no effect, so `vexp` always writes the
-    forward transformation. To get the inverse, use `-iv` in `compose` or
-    `reslice`. And the `-u mm` option, which converts the output to millimetres,
-    applies the whole orientation matrix to displacements, translation included;
-    it is only reliable for `-t transformation`. To get a displacement in
-    millimetres, use `compose -ou mm`, as in the next step.
+Add `-inv` to get the inverse transformation (the exponential of $-v$), and
+`-u mm` to get the output in millimetres of world space instead of voxels.
 
 ## Step 5: combine a matrix and a field into one dense field
 
@@ -312,10 +307,8 @@ approximation.
 !!! note "Fields in millimetres"
     By default, `compose` writes the displacement in voxels of the target grid.
     With `-ou mm`, it writes it in millimetres of world space, which is what
-    other software usually expects. Do not give a millimetre field back to
-    NITorch with `-u mm`: in the current version, the conversion of
-    millimetre displacements by `reslice` and `compose` is not reliable. Keep
-    the voxel-unit field for your own pipeline.
+    other software usually expects. Such a field can be given back to
+    `reslice` or `compose` with `-d FILE -u mm`.
 
 ## Step 6: resample through a chain with `reslice`
 
@@ -366,8 +359,6 @@ A few more things to know about `reslice`:
   grid.
 - **Labels.** Use `-i l` for label maps and `-i 1` (the default, linear) for
   intensity images, as in the registration tutorial.
-- **Always give `-o`.** The default output name of `reslice` makes the command
-  fail for volumes.
 - **Streamlines.** `reslice` also accepts streamline files. It applies the
   inverse of the chain to their points, so that the same transformations take
   images and streamlines alike from the moving space to the fixed space. See

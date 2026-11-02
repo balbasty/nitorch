@@ -12,7 +12,7 @@ large image piece by piece.
 
     ```shell
     nitorch extract_patches FILE [-n SIZE...] [-s STRIDE...] [-o FILE...]
-                                 [--transform [FILE...]]
+                                 [-t [FILE...]]
     ```
 
 ## Description
@@ -57,11 +57,7 @@ file name template can use these numbers, as described in
 | `-n`, `--size`     | `SIZE...`      | Patch size, in voxels. One value is used for all three dimensions; two values are completed by repeating the last one.                                            | `64`                                       |
 | `-s`, `--stride`   | `STRIDE...`    | Step between neighbouring patches, in voxels. Same completion rule as `--size`.                                                                                   | same as the patch size                     |
 | `-o`, `--output`   | `FILE...`      | Output file names or [templates](#output-files). Give one template, or exactly one name per patch.                                                                | `{dir}{sep}{base}.{i}_{j}_{k}{ext}`        |
-| `--transform`      | `[FILE...]`    | Also write, for every patch, a transformation file relating the patch to the original image. Without values, the default template is used. [See below](#transformations). | not written                                |
-
-!!! note "The short form `-t`"
-    The built-in help advertises `-t` as an alias of `--transform`. The parser
-    does not recognise it; use `--transform`.
+| `-t`, `--transform` | `[FILE...]`  | Also write, for every patch, a transformation file relating the patch to the original image. Without values, the default template is used. [See below](#transformations). | not written                                |
 
 ## Output files
 

@@ -9,7 +9,7 @@ Permute and flip the voxel array of a volume so that it is stored in a chosen la
 === ":octicons-terminal-24: Synopsis"
 
     ```shell
-    nitorch reorient FILE... [-l LAYOUT] [-o FILE...] [--transform [FILE...]]
+    nitorch reorient FILE... [-l LAYOUT] [-o FILE...] [-t [FILE...]]
     ```
 
 !!! note "reorient is not orient"
@@ -41,12 +41,9 @@ Many tools assume, or run faster with, a particular storage order, and some igno
 | -------------------- | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------- |
 | `-l`, `--layout`     | `LAYOUT`    | Target layout: a permutation of three letters from `R`/`L`, `A`/`P`, `S`/`I`, such as `RAS`, `LAS`, `LPS` or `RSA`.                                      | `RAS`                              |
 | `-o`, `--output`     | `FILE...`   | Output filenames, one per input. [Templates](../../conventions.md#output-filenames) are accepted; `{layout}` expands to the name of the layout.         | `{dir}{sep}{base}.{layout}{ext}`   |
-| `--transform`        | `[FILE...]` | Intended to write the (identity) transformation between the input and output spaces. **Currently not usable**: see below.                              | none                               |
+| `-t`, `--transform`  | `[FILE...]` | Also write the transformation between the input and output spaces, as an `.lta` file (one name per input). It is the identity in world space, since reorienting does not move the image. [Templates](../../conventions.md#output-filenames) are accepted, including `{layout}`. | none; `{dir}{sep}{base}_2_{layout}.lta` if given with no value |
 
 If fewer output names than inputs are given, the last one is repeated (and would be overwritten), so give a template when you process several files.
-
-!!! warning "The transform option does not work at present"
-    The parser registers the short flag for `--transform` under a mistyped name, so `-t` is rejected as an unknown tag. With the long form `--transform`, the image is written and then the command fails with an error message, because the transform filename is not handled correctly. Avoid the option for now. The reorientation itself is unaffected.
 
 ## Examples
 
