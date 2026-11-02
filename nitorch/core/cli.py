@@ -41,7 +41,7 @@ def isvalue(arg, symbols='-'):
     return not any(istag(arg, s) for s in symbols)
 
 
-def next_istag(args, symbol=''):
+def next_istag(args, symbol='-'):
     """Return true if the next argument starts with a dash ('-')
 
     Parameters
