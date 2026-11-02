@@ -328,8 +328,8 @@ def test_cli_discretize_auto_option():
 @pytest.mark.slow
 def test_register_emmi_translation_auto(tmp_path):
     """`@loss emmi` with `-d auto` and a 3-level pyramid recovers a known
-    translation (with 256 fixed bins at every level, the coarse levels
-    overfit)."""
+    translation (max error 0.05 mm; 0.07 with `-d 256`, 0.15 with
+    `-d 32`, same pyramid)."""
     import os
     from nitorch import io
     from nitorch.cli.registration.register.cli import _cli as register
