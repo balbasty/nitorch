@@ -91,7 +91,7 @@ def make_image(dat, mask=None, affine=None,
     if discretize:
         auto = None
         if isinstance(discretize, str) or isinstance(discretize, (list, tuple)):
-            auto = list(make_list(discretize))
+            auto = make_list(discretize)
             if auto[0] != 'auto':
                 raise ValueError(f'Unknown discretize value: {discretize}')
             auto = auto[1:]

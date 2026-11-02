@@ -146,9 +146,7 @@ usage:
     -f, --fwhm *F                   Smooth image before using it.
     -z, --pad *P                    Pad image before using it.
     -s, --rescale [[MN], MX]        Rescale image so that its MN/MX percentiles match (0, 1). [0, 95]
-    -d, --discretize [N]            Discretize the image into N [default: 256] bins. [False]
-                                    N=auto[:MX]: per pyramid level, N = clip(nvox / (5*K), 2, MX)
-                                    (K = moving classes with emmi, else 16; MX default 256)
+    -d, --discretize [auto]:[N]      Discretize the image into N [default: 256] bins. [False]
     -l, --label *VAL                Specifies that the file is a label map [False]
                                     If no argument given, labels are [all but zero]
     -m, --mask FILE                 Path to a mask of voxels to *include* [all]
