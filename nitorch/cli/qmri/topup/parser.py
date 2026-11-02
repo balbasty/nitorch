@@ -18,12 +18,12 @@ usage:
     -m, --mask                          Path to a mask in which to compute the loss
     -o, --output                        Path to output displacement field [{dir}/{base}_topup_b0{ext}]
     -r, --readout  {lr,is,ap}           Readout direction (default: largest dim)
-    -bw, --bandwidth                    Readout bandwidth in Hz/pixel (1)
+    -bw, --bandwidth                    Readout bandwidth in Hz/pixel [1]
     -l, --loss {mse,ncc,lncc,gmm,lgmm}  Matching term [mse]
     -k, --kernel VAL [{vox,mm,%}]       LNCC kernel size [10 %] 
     -b, --bins VAL                      Number of (L)GMM classes [3]
-    -m, --modulation {yes,no}           Jacobian modulation [yes]
-    -d, --diffeo                        Use diffeomorphic model [no]
+    -j, --modulation [{yes,no}]         Jacobian modulation [yes]
+    -d, --diffeo [{yes,no}]             Use diffeomorphic model [no]
     -p, --penalty VAL [{memb,bend}]     Penalty on bending energy [100 bend]
     -w, --downsample *VX                Coarse-to-fine voxel sizes (mm) [8 4 1]
     -n, --max-iter                      Maximum number of iterations [50]
@@ -40,8 +40,9 @@ usage:
     -n, --neg *NEG                      Files with negative polarity readout
     -o, --output                        Path to output files [{dir}/{base}_topup_unwarped{ext}]
     -r, --readout  {lr,is,ap}           Readout direction (default: largest dim)
-    -m, --modulation {yes,no}           Jacobian modulation [yes]
-    -d, --diffeo                        Field is diffeomorphic [no]
+    -bw, --bandwidth                    Readout bandwidth in Hz/pixel [1]
+    -m, --modulation [{yes,no}]         Jacobian modulation [yes]
+    -d, --diffeo [{yes,no}]             Field is diffeomorphic [no]
     --cpu, --gpu                        Device to use [cpu]
     -h, --help [LEVEL]                  Display this help
     -v, --verbose [LVL]                 Level of verbosity [1=print], 2=plot
@@ -85,7 +86,7 @@ parser_fit.add_option('output', ('-o', '--output'), nargs=1,
 parser_fit.add_option('readout', ('-r', '--readout'), nargs=1,
                       help='Readout direction')
 parser_fit.add_option('bandwidth', ('-bw', '--bandwidth'), nargs=1,
-                      convert=float, help='Readout bandwidth')
+                      default=1., convert=float, help='Readout bandwidth')
 losses = ['mse', 'ncc', 'lncc', 'gmm', 'lgmm']
 parser_fit.add_option('loss', ('-l', '--loss'), nargs=1, default='mse',
                       validation=cli.Validations.choice(losses),
@@ -94,10 +95,10 @@ parser_fit.add_option('kernel', ('-k', '--kernel'), nargs='+', default=[10],
                       convert=number_or_str(float), help='Kernel size')
 parser_fit.add_option('bins', ('-b', '--bins'), nargs=1, default=3,
                       convert=int, help='Number of classes')
-parser_fit.add_option('modulation', ('-m', '--modulation'), nargs=1, default=True,
+parser_fit.add_option('modulation', ('-j', '--modulation'), nargs='?', default=True,
                       convert=bool_or_str, action=cli.Actions.store_true,
                       help='Jacobian modulation')
-parser_fit.add_option('diffeo', ('-d', '--diffeo'), nargs=1, default=False,
+parser_fit.add_option('diffeo', ('-d', '--diffeo'), nargs='?', default=False,
                       convert=bool_or_str, action=cli.Actions.store_true,
                       help='Diffeomorphic transform')
 parser_fit.add_option('penalty', ('-p', '--penalty'), nargs='+', default=[100],
@@ -134,11 +135,11 @@ parser_apply.add_option('output', ('-o', '--output'), nargs=1,
 parser_apply.add_option('readout', ('-r', '--readout'), nargs=1,
                         help='Readout direction')
 parser_apply.add_option('bandwidth', ('-bw', '--bandwidth'), nargs=1,
-                        convert=float, help='Readout bandwidth')
-parser_apply.add_option('modulation', ('-m', '--modulation'), nargs=1, default=True,
+                        default=1., convert=float, help='Readout bandwidth')
+parser_apply.add_option('modulation', ('-m', '--modulation'), nargs='?', default=True,
                         convert=bool_or_str, action=cli.Actions.store_true,
                         help='Jacobian modulation')
-parser_apply.add_option('diffeo', ('-d', '--diffeo'), nargs=1, default=False,
+parser_apply.add_option('diffeo', ('-d', '--diffeo'), nargs='?', default=False,
                         convert=bool_or_str, action=cli.Actions.store_true,
                         help='Diffeomorphic transform')
 # generic options
