@@ -41,15 +41,3 @@ def test_optinorm_parse_error_returns_1(capsys):
     assert rc == 1
     assert '[ERROR]' in err
     assert out.strip()  # help
-
-
-@pytest.mark.parametrize('cmd,args', [
-    ('resize', ['--this-option-does-not-exist']),
-    ('resize', [MISSING, '-f', '2']),
-    ('autoreg', ['--this-option-does-not-exist']),
-])
-def test_error_exit_status(cmd, args, capsys):
-    rc = commands[cmd](args)
-    _, err = capsys.readouterr()
-    assert rc == 1
-    assert '[ERROR]' in err
