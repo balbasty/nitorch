@@ -14,13 +14,14 @@ peak signal-to-noise ratio, and so on).
     ```shell
     nitorch metrics -p FILE... -r FILE... -m METRIC... [-s AVERAGE...]
                     [-x LABEL...] [-o FILE] [-a [BOOL]]
-                    [--ssim-fwhm FWHM... [UNIT]] [--ssim-gauss] [--range [MIN] MAX]
+                    [--ssim-fwhm FWHM... [UNIT] | full] [--ssim-gauss]
+                    [--range [[MIN=0] MAX]]
                     [--cpu [N] | --gpu [ID]]
     ```
 
 ## Description
 
-`metrics` has two families of scores, and a single call computes one of them:
+`metrics` has two families of scores:
 
 - **label metrics** treat the images as label maps, in which every voxel holds
   an integer class. They are computed for each label separately, by asking how
@@ -29,8 +30,10 @@ peak signal-to-noise ratio, and so on).
 - **image metrics** treat the images as continuous intensities and measure the
   voxel-wise difference between them.
 
-The command decides which family to use from the metrics you ask for with
-`-m`. Do not mix the two in the same call.
+You choose the metrics with `-m`, and a single call can mix both families. The
+groups `labels` and `images` stand for every label metric and every image metric,
+respectively, and can be combined with each other and with individual metrics, as
+in `-m labels mse`. The data are loaded once per family.
 
 ### Inputs
 
@@ -47,13 +50,14 @@ voxels for the [SSIM window](#ssim).
 
 For label metrics, the data are read as stored (not rescaled) and converted to
 integers. For image metrics they are read as floating-point values, with the
-scaling stored in the file applied.
+scaling stored in the file applied. A call that asks for both families therefore
+reads each image twice, once in each way.
 
 ### Output
 
 The scores are written to a JSON file. Its name is built from the output
 template, which by default is `{dir}{sep}{base}.metrics.json`; the placeholders
-refer to the first file given to `--pred`. The file contains an object with one
+refer to the first file given to `--pred` (see [Options](#inputs-and-outputs)). The file contains an object with one
 entry per requested metric. Each entry is itself an object that maps either a
 label (label metrics) or a channel number starting at 0 (image metrics) to the
 score, and that carries one more entry for every averaging mode you asked for
@@ -79,6 +83,13 @@ writes `seg.metrics.json` with a content of the form
     }
 }
 ```
+
+If the output file already exists, it is overwritten, unless you pass `--append`:
+the new scores are then merged into the existing file, metric by metric. Entries
+of a metric that are not recomputed (other labels, or averages you did not ask
+for this time) are kept, and entries that are recomputed are replaced. Metrics that
+the file does not contain yet are added, and the file is created if it does not
+exist.
 
 The values above only illustrate the layout. Ratios that are undefined, such as
 a precision for a label that the prediction never uses, are written as `NaN`.
@@ -110,15 +121,12 @@ The labels listed with `-x` are never scored and never count as foreground
 | `fdr`         | False discovery rate                | $FP / (TP + FP)$                     |
 | `tpr`         | True positive rate (sensitivity, recall) | $TP / P$                        |
 | `fpr`         | False positive rate                 | $FP / N$                             |
+| `fnr`         | False negative rate (miss rate)     | $FN / P$                             |
 | `tnr`         | True negative rate (specificity)    | $TN / N$                             |
 | `plr`         | Positive likelihood ratio           | $\text{TPR} / \text{FPR}$            |
 | `nlr`         | Negative likelihood ratio           | $\text{FNR} / \text{TNR}$            |
 | `hausdorff`   | Hausdorff distance                  | [See below](#hausdorff-distance)     |
 | `hausdorff95` | Hausdorff distance, 95th percentile | [See below](#hausdorff-distance)     |
-
-The false negative rate, $\text{FNR} = FN / P$, appears in the built-in help as
-`fnr`, but the parser does not accept it as a metric; see
-[Known limitations](#known-limitations).
 
 ### Hausdorff distance
 
@@ -146,35 +154,42 @@ between prediction and reference, then optionally averaged.
 | `rmse` | Root mean squared error, the square root of `mse`.                           |
 | `mrse` | Mean of the absolute difference, $\text{mean}\,\lvert \text{pred} - \text{ref} \rvert$. The built-in help calls it "mean root squared error". |
 | `mad`  | Median of the absolute difference, $\text{median}\,\lvert \text{pred} - \text{ref} \rvert$. The built-in help calls it "median absolute deviation", but it is the median *error* between the two images, not the deviation from their own median. |
-| `psnr` | Peak signal-to-noise ratio in decibels, $10 \log_{10}(\text{peak}^2 / \text{mse})$. |
+| `psnr` | Peak signal-to-noise ratio in decibels, $10 \log_{10}(L^2 / \text{mse})$, where $L$ is the width of the [dynamic range](#dynamic-range). |
 | `ssim` | Structural similarity index. [See below](#ssim).                             |
 
-For `psnr`, the peak value is the upper end of `--range`. If you do not give a
-range, it is the maximum of the *prediction* over all channels (the built-in help
-says that the default range is that of the reference; the code uses the
-prediction).
+### Dynamic range
+
+`psnr` and `ssim` need the dynamic range of the data, whose width is
+$L = \text{max} - \text{min}$. It is set with `--range [[MIN=0] MAX]`: a single
+number is taken as `MAX`, with `MIN` equal to 0. Without `--range`, the range
+is that of the reference, from its minimum to its maximum. It is measured
+in each channel separately, or over all channels together for the `micro` score.
 
 ### SSIM
 
-The structural similarity index compares, in a local window, the mean, variance and
-covariance of the two images, with stabilising constants proportional to the dynamic
-range $L$ of the data ($k_1 = 0.01$ and $k_2 = 0.03$). The result is the average of
-the local indices. $L$ is the width of `--range`, that is `MAX - MIN`, or `MAX`
-if you give a single number; without `--range` it is the maximum of the
-prediction.
+The structural similarity index compares, in a local window, the mean ($\mu$),
+variance ($\sigma^2$) and covariance ($\sigma_{xy}$) of the prediction $x$ and the
+reference $y$ (Wang et al., 2004):
 
-Three variants exist: a window of `--ssim-fwhm` voxels (rounded up to an integer,
-one value or one per axis, with the default 3 voxels), a Gaussian window
-(`--ssim-gauss`), and a global index over the whole image (`--ssim-fwhm full`).
-The unit of the window size is voxels by default; the word `mm` after the numbers
-converts millimetres to voxels using the voxel size of the reference.
+$$
+\text{SSIM} =
+\frac{(2\mu_x\mu_y + C_1)(2\sigma_{xy} + C_2)}
+     {(\mu_x^2 + \mu_y^2 + C_1)(\sigma_x^2 + \sigma_y^2 + C_2)},
+\qquad C_1 = (0.01\,L)^2,\quad C_2 = (0.03\,L)^2 .
+$$
 
-!!! warning "SSIM is not usable in the current release"
-    In the version documented here the default window variant stops with a
-    `TypeError`, `--ssim-fwhm full` stops because the window size is empty, and the
-    Gaussian variant ignores `--ssim-fwhm` (it always uses 3 voxels) and divides its
-    local statistics by the number of voxels, so its values are not meaningful.
-    Prefer `mse`, `rmse` and `psnr` until this is fixed.
+The score is the mean of the local indices over the image. `--ssim-fwhm` sets
+the size of the window, as one value, or one per axis, optionally followed by
+a unit, `vox` (voxels, the default) or `mm` (millimetres, converted to voxels
+with the voxel size of the reference). Three variants exist:
+
+- by default, a **sliding square window** whose side is the window size, rounded up
+  to an integer number of voxels (3 by default). The statistics are computed
+  where the window fits entirely inside the image;
+- with `--ssim-gauss`, a **Gaussian window** whose full width at half maximum is
+  the window size;
+- with `--ssim-fwhm full`, **global statistics**: the whole image is a single
+  window.
 
 ## Averaging
 
@@ -207,24 +222,24 @@ errors.
 | ------------------ | ---------------------- | ------------------------------------------------------------------------------------------------- | ------------------------------- |
 | `-p`, `--pred`     | `FILE...`              | Predicted image(s). Files are stacked as channels. [See above](#inputs).                          | *required*                      |
 | `-r`, `--ref`      | `FILE...`              | Reference image(s), with the same total shape as the prediction.                                  | *required*                      |
-| `-m`, `--metrics`  | `METRIC...`            | Metrics to compute: `dice`, `jaccard`, `accuracy`, `ppv`, `npv`, `fdr`, `tpr`, `fpr`, `tnr`, `plr`, `nlr`, `hausdorff`, `hausdorff95` (label metrics); `mse`, `rmse`, `mrse`, `mad`, `psnr`, `ssim` (image metrics). | *required*                      |
+| `-m`, `--metrics`  | `METRIC...`            | Metrics to compute: `dice`, `jaccard`, `accuracy`, `ppv`, `npv`, `fdr`, `tpr`, `fpr`, `fnr`, `tnr`, `plr`, `nlr`, `hausdorff`, `hausdorff95` (label metrics, or `labels` for all of them); `mse`, `rmse`, `mrse`, `mad`, `psnr`, `ssim` (image metrics, or `images` for all of them). The two families can be mixed. [See above](#description). | *required*                      |
 | `-s`, `--average`  | `AVERAGE...`           | Summary scores to add: `micro`, `macro`, `weighted`. [See above](#averaging).                     | none                            |
 | `-x`, `--exclude`  | `LABEL...`             | Labels that are never scored as foreground. Use `none` to exclude nothing. Label metrics only.    | `0`                             |
 | `-o`, `--output`   | `FILE`                 | Name or template of the JSON file. Only one value is accepted.                                    | `{dir}{sep}{base}.metrics.json` |
-| `-a`, `--append`   | `[BOOL]`               | Meant to add the scores to an existing output file. [See Known limitations](#known-limitations).   | off                             |
+| `-a`, `--append`   | `[BOOL]`               | Merge the scores, metric by metric, into the output file if it exists, instead of overwriting it. [See above](#output). | off                             |
 
 The output template accepts `{dir}` (directory of the first prediction, `.` if none),
-`{base}` (its name without extension; `.nii.gz` counts as one extension) and `{sep}`
-(the path separator). `{ext}` is not available. See
+`{base}` (its name without extension; `.nii.gz` counts as one extension), `{ext}`
+(its extension) and `{sep}` (the path separator). See
 [Output filenames](../../conventions.md#output-filenames).
 
 ### Image metric parameters
 
 | Option           | Value               | Description                                                                                                | Default                                  |
 | ---------------- | ------------------- | ---------------------------------------------------------------------------------------------------------- | ---------------------------------------- |
-| `--range`        | `[MIN] MAX`         | Dynamic range of the data, used by `psnr` and `ssim`. A single value is taken as `MAX`, with `MIN` equal to 0. `psnr` uses only `MAX`. | `0` to the maximum of the prediction |
-| `--ssim-fwhm`    | `FWHM... [UNIT]`    | Window size for `ssim`, one or more numbers and an optional unit, `vox` (default) or `mm`. [See above](#ssim). | `3`                                      |
-| `--ssim-gauss`   | `[BOOL]`            | Use a Gaussian window for `ssim`.                                                                          | off                                      |
+| `--range`        | `[[MIN=0] MAX]`     | Dynamic range of the data, used by `psnr` and `ssim`. A single value is taken as `MAX`, with `MIN` equal to 0. [See above](#dynamic-range). | min and max of the reference |
+| `--ssim-fwhm`    | `FWHM... [UNIT]` or `full` | Window size for `ssim`, one or more numbers and an optional unit, `vox` (default) or `mm`; or `full` for global statistics. [See above](#ssim). | `3`                                      |
+| `--ssim-gauss`   | `[BOOL]`            | Use a Gaussian window with the given FWHM for `ssim`, instead of a sliding square window.                  | off                                      |
 
 ### Hardware
 
@@ -235,23 +250,16 @@ The output template accepts `{dir}` (directory of the first prediction, `.` if n
 
 See [Hardware](../../conventions.md#hardware) for the general behaviour of device options.
 
-## Known limitations
+## Known issues
 
-The scoring code has several problems at the time of writing. This list reflects
-the implementation, so check it against a newer release.
-
-- `fnr` is documented but is not accepted by `-m`. Compute it as `1 - tpr`.
-- `labels` and `images`, which should select every label or every image metric,
-  are accepted by the parser but stop with a `KeyError`. List the metrics
-  explicitly.
-- `rmse` fails if `-s micro` is requested.
-- `ssim` does not work, [as described above](#ssim).
-- `--append` does not append. It expects the output file to exist, and then
-  replaces its content with `null`. Write each result to its own file instead.
+- `-s weighted` is ignored by the image metrics and by the Hausdorff distances.
+- `mad` is the median absolute *error*, not the median absolute deviation that
+  its name and the built-in help suggest.
 - Errors other than a bad command line, for example a shape mismatch, are not
   caught and are reported as a Python traceback.
 - Only the first prediction file names the output, so a call with several
-  prediction files writes a single JSON file.
+  prediction files writes a single JSON file, and `--append` has no per-file key
+  to tell their results apart.
 
 ## Examples
 
@@ -297,6 +305,21 @@ mean over the contrasts:
 nitorch metrics -p pred_T1w.nii.gz pred_T2w.nii.gz \
                 -r ref_T1w.nii.gz ref_T2w.nii.gz \
                 -m mse mrse -s macro
+```
+
+Compute SSIM with a Gaussian window of 5 mm FWHM, and with global statistics,
+using the range of the reference:
+
+```shell
+nitorch metrics -p denoised.nii.gz -r clean.nii.gz -m ssim --ssim-fwhm 5 mm --ssim-gauss
+nitorch metrics -p denoised.nii.gz -r clean.nii.gz -m ssim --ssim-fwhm full
+```
+
+Compute all the label metrics, then add an image metric to the same file:
+
+```shell
+nitorch metrics -p seg.nii.gz -r manual_seg.nii.gz -m labels -s macro -o scores.json
+nitorch metrics -p seg.nii.gz -r manual_seg.nii.gz -m mse -a -o scores.json
 ```
 
 ## See also
