@@ -69,11 +69,12 @@ def vexp(inp, type='displacement', unit='voxel', inverse=False,
     dat = spatial.exp(dat[None], inverse=inverse, steps=steps, bound=bound,
                       displacement=displacement)[0]
     if unit == 'mm':
-        # if type.lower()[0] == 'd':
-        #     vx = spatial.voxel_size(aff)
-        #     dat *= vx
-        # else:
-        dat = spatial.affine_matvec(aff, dat)
+        if displacement:
+            # displacements are vectors: only the linear part applies
+            lin = aff[:3, :3].to(dat)
+            dat = dat.matmul(lin.transpose(-1, -2))
+        else:
+            dat = spatial.affine_matvec(aff, dat)
 
     if output:
         if is_file:

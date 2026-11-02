@@ -58,15 +58,13 @@ def parse(args):
             struct.nb_steps, *args = args
             struct.nb_steps = int(struct.nb_steps)
         elif tag in ('-inv', '--inverse'):
-            val = False
+            val = True
             if cli.next_isvalue(args):
                 val, *args = args
-                if val[0] == 'f':
-                    val = False
-                elif val[0] == 't':
-                    val = True
-                else:
-                    val = bool(int(val))
+                val = cli.Conversions.bool(val)
+                if not isinstance(val, bool):
+                    raise ParseError(f'Expected a boolean after {tag}, '
+                                     f'got {val}')
             struct.inv = val
         elif tag in ('-o', '--output'):
             struct.output = []
