@@ -119,6 +119,10 @@ class Optim:
     def reset_state(self):
         pass
 
+    def after_step(self):
+        """Hook called by `OptimIterator` after each completed step"""
+        pass
+
     def update(self, step, param=None):
         """Apply a step to the current parameters"""
         if param is None:
@@ -344,10 +348,15 @@ class OptimIterator(OptimWrapper):
         for n_iter in range(1, self.max_iter+1):
 
             # perform step
-            step = optim.step if optim.iter is self else optim.iter
-            param, loss, *derivatives = step(
-                param, closure,
-                **self.derivatives_to_dict(loss, *derivatives))
+            if optim.iter is self:
+                param, loss, *derivatives = optim.step(
+                    param, closure,
+                    **self.derivatives_to_dict(loss, *derivatives))
+                optim.after_step()
+            else:  # `optim.iter` calls `after_step` itself
+                param, loss, *derivatives = optim.iter(
+                    param, closure,
+                    **self.derivatives_to_dict(loss, *derivatives))
 
             # check convergence
             stop = abs(loss_prev-loss)
@@ -408,8 +417,13 @@ class InterleavedOptimIterator(OptimIterator):
         for n_iter in range(1, self.max_iter+1):
             outputs0, outputs = outputs, []
             for opt, cls, out in zip(optim, closure, outputs0):
-                step = opt.step if opt.iter is self else opt.iter
-                out = step(out[0], cls, **self.derivatives_to_dict(*out[1:]))
+                if opt.iter is self:
+                    out = opt.step(out[0], cls,
+                                   **self.derivatives_to_dict(*out[1:]))
+                    opt.after_step()
+                else:  # `opt.iter` calls `after_step` itself
+                    out = opt.iter(out[0], cls,
+                                   **self.derivatives_to_dict(*out[1:]))
                 outputs.append(out)
 
             # check convergence

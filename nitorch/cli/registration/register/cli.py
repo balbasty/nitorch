@@ -6,7 +6,7 @@ from nitorch.tools.registration.pairwise_preproc import (
     map_image, load_image, preproc_image
 )
 from nitorch.tools.registration.pairwise_postproc import (
-    warp_images
+    warp_images, MomentumWriter
 )
 from nitorch.tools.registration.pairwise_pyramid import (
     pyramid_levels, concurrent_pyramid, sequential_pyramid
@@ -168,12 +168,21 @@ def _main(options):
     order = min(loss.order for loss in first_level.losses())
     interleaved = options.optim.name[0] == 'i'
 
+    odir = options.odir or py.fileparts(options.loss[0].fix.files[0])[0] or '.'
+
     affine_optim = None
     if affine and options.affine.optim.name != 'none':
         if not options.affine.optim.max_iter:
             options.affine.optim.max_iter = 50 if interleaved else 100
+        optim_kwargs = dict(options.affine.optim)
+        if optim_kwargs.pop('output', None):
+            # The momentum of an affine optimizer is a vector of a few
+            # Lie-algebra coefficients, not a map.
+            warnings.warn('@affine @@optim -o/--output: momentum maps are '
+                          'only written for the nonlinear component; '
+                          'ignored.')
         affine_optim = make_affine_optim(options.affine.optim.name, order,
-                                         **options.affine.optim)
+                                         **optim_kwargs)
     elif affine and options.affine.optim.name == 'none':
         affine_optim = 'none'
 
@@ -181,8 +190,14 @@ def _main(options):
     if nonlin and options.nonlin.optim.name != 'none':
         if not options.nonlin.optim.max_iter:
             options.nonlin.optim.max_iter = 10 if interleaved else 50
+        optim_kwargs = dict(options.nonlin.optim)
+        momentum = optim_kwargs.pop('output', None)
+        if momentum:
+            optim_kwargs['output'] = MomentumWriter(
+                momentum, nonlin, odir=odir, name=options.nonlin.name,
+                verbose=options.verbose > 1)
         nonlin_optim = make_nonlin_optim(options.nonlin.optim.name, order,
-                                         **options.nonlin.optim, nonlin=nonlin)
+                                         **optim_kwargs, nonlin=nonlin)
     elif nonlin and options.nonlin.optim.name == 'none':
         nonlin_optim = 'none'
 
@@ -197,7 +212,6 @@ def _main(options):
         try:
             import matplotlib  # noqa: F401
         except ImportError:
-            import warnings
             warnings.warn('matplotlib is not installed: live plotting is '
                           'disabled.')
 
@@ -224,8 +238,6 @@ def _main(options):
     # ------------------------------------------------------------------
     #                           WRITE RESULTS
     # ------------------------------------------------------------------
-    odir = options.odir or py.fileparts(options.loss[0].fix.files[0])[0] or '.'
-
     if affine:
         if options.affine.output:
             fname = options.affine.output.format(

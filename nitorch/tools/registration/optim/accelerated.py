@@ -7,10 +7,23 @@ class AcceleratedFirstOrder(FirstOrder):
 
     Accelerated methods store the previous step taken and use it
     when computing the next step.
+
+    Their momentum state (`delta`) can be written after each step by
+    passing `output`, a callable that takes the state as input
+    (e.g., `pairwise_postproc.MomentumWriter`).
     """
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, output=None, **kwargs):
         super().__init__(*args, **kwargs)
         self.delta = 0
+        output = output or None  # '' (the CLI default) == no output
+        if output is not None and not callable(output):
+            raise TypeError('`output` must be a callable (got '
+                            f'{type(output).__name__})')
+        self.output = output
+
+    def after_step(self):
+        if self.output is not None and torch.is_tensor(self.delta):
+            self.output(self.delta)
 
     def update_lr(self, lr):
         if torch.is_tensor(self.delta):

@@ -221,12 +221,14 @@ usage:
         nes, nesterov                   Gradient descent with Nesterov momentum
             -m, --momentum                  Momentum factor [0=auto]
             -r, --restart                   Automatic restart [True]
-            -o, --output FILE               Write momentum maps
+            -o, --output [PATH]             Write the momentum map after each step (@nonlin only):
+                                            [False], True={dir}/momentum.{iter}.nii.gz
         ogm, optimized-gradient         Optimized gradient method of Kim & Fessler
             -m, --momentum                  Momentum factor [0=auto]
             -x, --relax                     Relaxation factor [0=auto]
             -r, --restart                   Automatic restart [True]
-            -o, --output FILE               Write momentum maps
+            -o, --output [PATH]             Write the momentum map after each step (@nonlin only):
+                                            [False], True={dir}/momentum.{iter}.nii.gz
         lbfgs                           Limited-memory BFGS
             -h, --history                   History size [100]
         none                            Do not optimize
@@ -523,7 +525,7 @@ optim.add_suboption('nes', 'restart', ('-r', '--restart'), nargs=1,
                     default=True, convert=bool_or_str, help='Automatic restart')
 optim.add_suboption('nes', 'output', ('-o', '--output'), nargs='?',
                     default='', action=cli.Actions.store_value('{dir}{sep}momentum.{iter}.nii.gz'),
-                    help='Write momentum maps')
+                    help='Write the momentum map after each step (@nonlin only)')
 optim.add_suboption('ogm', 'momentum', ('-m', '--momentum'), nargs=1,
                     default=0, convert=float, help='Momentum factor')
 optim.add_suboption('ogm', 'relax', ('-x', '--relax'), nargs=1,
@@ -532,7 +534,7 @@ optim.add_suboption('ogm', 'restart', ('-r', '--restart'), nargs=1,
                     default=True, convert=bool_or_str, help='Automatic restart')
 optim.add_suboption('ogm', 'output', ('-o', '--output'), nargs='?',
                     default='', action=cli.Actions.store_value('{dir}{sep}momentum.{iter}.nii.gz'),
-                    help='Write momentum maps')
+                    help='Write the momentum map after each step (@nonlin only)')
 optim.add_suboption('lbfgs', 'history', ('-h', '--history'), nargs=1,
                     default=100, convert=int, help='History size')
 cg_aliases = {'fletcher-reeves': 'fr',
