@@ -557,7 +557,14 @@ class EMMI(OptimizationLoss):
         max_iter : int, default=32
             Maximum number of EM iterations per call
         cache : bool, default=True
-            Warm-start EM from the previous joint histogram
+            Warm-start EM from the previous joint histogram.
+            The cached H is dropped when its shape does not match the
+            inputs (e.g., when the number of fixed bins changes between
+            pyramid levels, with `-d auto`). With a warm start, the
+            value at a given point depends on the call history only
+            through the EM stopping rule (`tolerance`, `max_iter`): EM
+            ascends 𝓛 in H from wherever it starts, so the difference
+            with a cold start is of the order of the EM tolerance.
         tolerance : float, default=1e-5
             Stop EM when the absolute change of the log-likelihood is
             less than `tolerance * N`
@@ -575,7 +582,7 @@ class EMMI(OptimizationLoss):
         max_iter = kwargs.pop('max_iter', self.max_iter)
         kwargs.setdefault('tolerance', self.tolerance)
         mask = kwargs.pop('mask', None)
-        prior = getattr(self, '_prior', None) if self.cache else None
+        prior = self._cached_prior(moving, fixed, dim)
         ll, prior = emmi(moving, fixed, grad=False, hess=False, weights=mask,
                          dim=dim, fwhm=fwhm, max_iter=max_iter,
                          prior=prior, return_prior=True, **kwargs)
@@ -589,7 +596,7 @@ class EMMI(OptimizationLoss):
         max_iter = kwargs.pop('max_iter', self.max_iter)
         kwargs.setdefault('tolerance', self.tolerance)
         mask = kwargs.pop('mask', None)
-        prior = getattr(self, '_prior', None) if self.cache else None
+        prior = self._cached_prior(moving, fixed, dim)
         ll, g, prior = emmi(moving, fixed, grad=True, hess=False, weights=mask,
                             dim=dim, fwhm=fwhm, max_iter=max_iter,
                             prior=prior, return_prior=True, **kwargs)
@@ -603,13 +610,27 @@ class EMMI(OptimizationLoss):
         max_iter = kwargs.pop('max_iter', self.max_iter)
         kwargs.setdefault('tolerance', self.tolerance)
         mask = kwargs.pop('mask', None)
-        prior = getattr(self, '_prior', None) if self.cache else None
+        prior = self._cached_prior(moving, fixed, dim)
         ll, g, h, prior = emmi(moving, fixed, grad=True, hess=True, weights=mask,
                                dim=dim, fwhm=fwhm, max_iter=max_iter,
                                prior=prior, return_prior=True, **kwargs)
         if self.cache:
             self._prior = prior
         return ll, g, h
+
+    def _cached_prior(self, moving, fixed, dim):
+        prior = getattr(self, '_prior', None) if self.cache else None
+        if prior is None:
+            return None
+        dim = dim or (moving.dim() - 1)
+        K = moving.shape[-dim-1]
+        if fixed.dtype.is_floating_point:
+            J = fixed.shape[-dim-1]
+        else:
+            J = int(fixed.max()) + 1
+        if tuple(prior.shape[-2:]) != (J, K):
+            return None
+        return prior
 
     def clear_state(self):
         self._prior = None
