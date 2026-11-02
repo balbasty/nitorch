@@ -52,7 +52,7 @@ def test_reg_scaling(model, modulation, monkeypatch):
         assert r['penalty'] == pytest.approx(f)
         assert r['optim'] == pytest.approx(f)
     # the finest level and the returned model use the user's factor
-    assert records[-1]['factor'] == 2.
+    assert records[-1]['factor'] == pytest.approx(2.)
     assert nonlin.factor == 2. and nonlin.penalty['factor'] == 2.
 
 

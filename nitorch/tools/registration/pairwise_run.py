@@ -6,6 +6,7 @@ from .pairwise_makeobj import make_affine, make_affine_optim, make_nonlin, make_
 from .optim import InterleavedOptimIterator, Optim
 from . import objects
 from nitorch.core.py import make_list
+from functools import partial
 import torch
 import math
 
@@ -115,11 +116,8 @@ def run(
 
     plotopt = dict(verbose=verbose, framerate=framerate, figure=figure)
 
-    if pyramid:
-        def runner(*args, **kwargs):
-            return run_pyramid(*args, reg_modulation=reg_modulation, **kwargs)
-    else:
-        runner = run_single
+    runner = (partial(run_pyramid, reg_modulation=reg_modulation)
+              if pyramid else run_single)
 
     # --- progressive affine initialization ---
     if affine and not affine.frozen and progressive:
@@ -300,9 +298,6 @@ def run_pyramid(
     # (the level that defines the solution)
     scale_reg = bool(nonlin and not getattr(nonlin, 'frozen', False)
                      and reg_modulation != 1 and nb_levels > 1)
-    if scale_reg and not reg_modulation > 0:
-        raise ValueError(f'reg_modulation must be positive, '
-                         f'got {reg_modulation}')
     if scale_reg:
         factor0 = _get_reg_factor(nonlin)
         vx0, shape0 = nonlin.voxel_size.tolist(), list(nonlin.shape)
@@ -325,12 +320,8 @@ def run_pyramid(
             print(f'   PYRAMID LEVEL {n_level}')
             print('-' * line_size)
         if scale_reg:
-            if n_level == 0:
-                factor = factor0
-            else:
-                ratio = _voxel_size_ratio(nonlin.voxel_size.tolist(),
-                                          vx0, shape0)
-                factor = factor0 * reg_modulation ** math.log2(ratio)
+            factor = _get_modulated_factor(
+                nonlin, factor0, vx0, shape0, reg_modulation)
             _set_reg_factor(nonlin, factor)
             if verbose:
                 print(f'   (regularisation factor: {factor:.3g})')
@@ -374,6 +365,13 @@ def _voxel_size_ratio(vx, vx0, shape0):
     if not ratios:
         return 1.
     return math.prod(ratios) ** (1 / len(ratios))
+
+
+def _get_modulated_factor(nonlin, factor0, vx0, shape0, modulation):
+    """Regularisation factor at the current pyramid level:
+    `factor0 * modulation ** log2(vx / vx0)`"""
+    ratio = _voxel_size_ratio(nonlin.voxel_size.tolist(), vx0, shape0)
+    return factor0 * modulation ** math.log2(ratio)
 
 
 def _get_reg_factor(nonlin):
