@@ -11,7 +11,8 @@ import math
 Tensor = torch.Tensor
 
 
-__all__ = ['local_mean', 'cache']
+__all__ = ['local_mean', 'local_mean_norm', 'cache']
+
 
 
 # ----------------------------------------------------------------------
@@ -159,6 +160,57 @@ def conv_transpose(x: Tensor, kernel: Tensor, stride: List[int],
 
 
 @jit_script
+def conv_axis(x: Tensor, kernel: Tensor, stride: int) -> Tensor:
+    """'Same' convolution along a single spatial axis, using `conv1d`.
+
+    `kernel` is one factor of a separable kernel: a (1, 1, *kernel_size)
+    tensor whose size is 1 along all axes but one (of length K > 1).
+    The input is seen as a batch of 1D rows along that axis. This is the
+    same operation as `conv(x, kernel, stride)`, but CPU backends are much
+    faster at it for long kernels (e.g., 3-6x for K = 59 on a 192^3
+    volume, mostly along the last axis).
+
+    x : (B, C, *spatial) tensor
+    kernel : (1, 1, *kernel_size) tensor
+    stride : int, along the kernel's axis
+    returns : (B, C, *outspatial) tensor
+    """
+    dim = x.dim() - 2
+    ksize: List[int] = list(kernel.shape[2:])
+    d = 0
+    for dd in range(dim):
+        if ksize[dd] > ksize[d]:
+            d = dd
+    K = ksize[d]
+    x = x.movedim(d + 2, -1)
+    shape: List[int] = list(x.shape)
+    x = F.conv1d(x.reshape([-1, 1, shape[-1]]), kernel.reshape([1, 1, K]),
+                 stride=[stride], padding=[(K - 1) // 2])
+    shape[-1] = x.shape[-1]
+    return x.reshape(shape).movedim(-1, d + 2)
+
+
+@jit_script
+def _conv_separable(x: Tensor, kernel: Tensor, stride: List[int]) -> Tensor:
+    """One factor of a separable 'same' convolution: `conv1d` along its
+    axis for long kernels (>= 15 taps), N-D convolution otherwise (faster
+    for short kernels, and used when `stride` is not 1 on the other axes)."""
+    ksize: List[int] = list(kernel.shape[2:])
+    d = 0
+    for dd in range(len(ksize)):
+        if ksize[dd] > ksize[d]:
+            d = dd
+    if ksize[d] >= 15:
+        unit = True
+        for dd in range(len(ksize)):
+            if dd != d and stride[dd] != 1:
+                unit = False
+        if unit:
+            return conv_axis(x, kernel, stride[d])
+    return conv(x, kernel, stride)
+
+
+@jit_script
 def do_conv(x: Tensor, kernel: List[Tensor], stride: List[int]) -> Tensor:
     """Apply a [separable] convolution
     x : (B, C, *inspatial) tensor
@@ -173,7 +225,7 @@ def do_conv(x: Tensor, kernel: List[Tensor], stride: List[int]) -> Tensor:
         for d, (k, s) in enumerate(zip(kernel, stride)):
             stride1: List[int] = [1] * dim
             stride1[d] = s
-            x = conv(x, k, stride1)
+            x = _conv_separable(x, k, stride1)
     return x
 
 
@@ -199,7 +251,7 @@ def do_convt(x: Tensor, kernel: List[Tensor], stride: List[int],
                 # Without stride, the transposed 'same' convolution is a
                 # 'same' convolution with the flipped kernel, which is
                 # faster than conv_transpose on most backends.
-                x = conv(x, k.flip([d+2]), stride1)
+                x = _conv_separable(x, k.flip([d+2]), stride1)
                 continue
             shape1[d] = z
             x = conv_transpose(x, k, stride1, shape1)
@@ -298,17 +350,21 @@ def _local_mean_patch(
         stride: List[int],
         backward: bool = False,
         shape: Optional[List[int]] = None,
-        mask: Optional[Tensor] = None) -> Tensor:
+        mask: Optional[Tensor] = None,
+        norm: Optional[Tensor] = None) -> Tensor:
     """Compute a local average by extracting patches"""
     dim = x.dim() - 2
+    nrm = norm
+    if mask is not None and nrm is None:
+        nrm = do_patch(mask, kernel_size, stride).clamp_min(1e-5)
 
     # --- backward pass ------------------------------------------------
     if backward:
         if shape is None:
             shape = patcht_output_shape(x.shape[-dim:], kernel_size, stride)
         if mask is not None:
-            convmask = do_patch(mask, kernel_size, stride).clamp_min(1e-5)
-            x = x.div(convmask)
+            assert nrm is not None
+            x = x.div(nrm)
         x = do_patcht(x, kernel_size, stride, shape)
         if mask is not None:
             x = x.mul(mask)
@@ -318,8 +374,8 @@ def _local_mean_patch(
             x = x.mul(mask)
         x = do_patch(x, kernel_size, stride)
         if mask is not None:
-            mask = do_patch(mask, kernel_size, stride).clamp_min(1e-5)
-            x = x.div(mask)
+            assert nrm is not None
+            x = x.div(nrm)
 
     return x
 
@@ -328,28 +384,26 @@ cache: Dict[str, Tensor] = {}
 
 
 @jit_script
-def _local_mean_conv(
-        x: Tensor,
-        fwhm: List[float],
-        stride: List[int],
-        backward: bool = False,
-        shape: Optional[List[int]] = None,
-        mask: Optional[Tensor] = None,
-        cache: Optional[Dict[str, Tensor]] = None) -> Tensor:
-    """Compute a local average by convolving with a (normalized) Gaussian."""
-    dim = x.dim() - 2
+def _gaussian_kernel(fwhm: List[float], dim: int, dtype: torch.dtype,
+                     device: torch.device) -> Tuple[List[Tensor], List[int]]:
+    """Separable Gaussian kernel, normalised so that it sums to one.
 
-    # build kernel
-    kernel: List[Tensor] = []
-    # Gaussian kernel (weighted mean)
+    Returns
+    -------
+    kernel : List[(1, 1, *kernel_size) tensor]
+        One tensor per smoothed axis (for `do_conv`/`do_convt`)
+    kernel_size : List{dim}[int]
+        Kernel length along each axis (0 = not smoothed)
+    """
     kernel_size = [int(math.ceil(k*3)) for k in fwhm]
     kernel_size = [k + 1 - (k % 2) if k else 0 for k in kernel_size]  # ensure odd
     sigma2 = [(f/2.355)**2 for f in fwhm]
+    kernel: List[Tensor] = []
     norm: Optional[Tensor] = None
     for d in range(dim):
         if not kernel_size[d]:
             continue
-        k = torch.arange(kernel_size[d], dtype=x.dtype, device=x.device)
+        k = torch.arange(kernel_size[d], dtype=dtype, device=device)
         k = k - kernel_size[d]//2
         k = k.mul(k).div(-2*sigma2[d]).exp()
         for dd in range(d):
@@ -366,6 +420,42 @@ def _local_mean_conv(
         norm = norm.sum().pow(1/len(kernel))
         for k in kernel:
             k.div_(norm)
+    return kernel, kernel_size
+
+
+@jit_script
+def _conv_norm(shape: List[int], kernel: List[Tensor], kernel_size: List[int],
+               stride: List[int], dtype: torch.dtype, device: torch.device,
+               mask: Optional[Tensor] = None,
+               cache: Optional[Dict[str, Tensor]] = None) -> Tensor:
+    """Denominator of a Gaussian local mean: conv(mask), or conv(ones)
+    (cached when `cache` is provided and there is no mask)."""
+    if mask is not None:
+        return do_conv(mask, kernel, stride).clamp_min(1e-5)
+    key = str((list(shape), list(kernel_size), list(stride), dtype, device))
+    if cache is not None:
+        if key in cache:
+            return cache[key]
+    convmask = torch.ones(shape, dtype=dtype, device=device)[None, None]
+    convmask = do_conv(convmask, kernel, stride).clamp_min(1e-5)
+    if cache is not None:
+        cache[key] = convmask
+    return convmask
+
+
+@jit_script
+def _local_mean_conv(
+        x: Tensor,
+        fwhm: List[float],
+        stride: List[int],
+        backward: bool = False,
+        shape: Optional[List[int]] = None,
+        mask: Optional[Tensor] = None,
+        cache: Optional[Dict[str, Tensor]] = None,
+        norm: Optional[Tensor] = None) -> Tensor:
+    """Compute a local average by convolving with a (normalized) Gaussian."""
+    dim = x.dim() - 2
+    kernel, kernel_size = _gaussian_kernel(fwhm, dim, x.dtype, x.device)
 
     # --- original spatial shape ---------------------------------------
     if shape is None:
@@ -374,26 +464,16 @@ def _local_mean_conv(
         else:
             shape = x.shape[-dim:]
 
-    # --- cached conv(ones) --------------------------------------------
-    if mask is None:
-        key = str((list(shape), list(kernel_size), list(stride),
-                   x.dtype, x.device))
-        if cache is not None:
-            if key not in cache:
-                convmask = torch.ones(shape, dtype=x.dtype, device=x.device)
-                convmask = convmask[None, None]
-                cache[key] = do_conv(convmask, kernel, stride).clamp_min(1e-5)
-            convmask = cache[key]
-        else:
-            convmask = torch.ones(shape, dtype=x.dtype, device=x.device)
-            convmask = convmask[None, None]
-            convmask = do_conv(convmask, kernel, stride).clamp_min(1e-5)
+    # --- conv(mask) or cached conv(ones) ------------------------------
+    if norm is None:
+        nrm = _conv_norm(list(shape), kernel, kernel_size, stride,
+                         x.dtype, x.device, mask, cache)
     else:
-        convmask = do_conv(mask, kernel, stride).clamp_min(1e-5)
+        nrm = norm
 
     # --- backward pass ------------------------------------------------
     if backward:
-        x = x.div(convmask)
+        x = x.div(nrm)
         x = do_convt(x, kernel, stride, shape)
         if mask is not None:
             x = x.mul(mask)
@@ -402,7 +482,7 @@ def _local_mean_conv(
         if mask is not None:
             x = x.mul(mask)
         x = do_conv(x, kernel, stride)
-        x = x.div(convmask)
+        x = x.div(nrm)
 
     return x
 
@@ -440,7 +520,8 @@ def local_mean(x: Tensor,
                backward: bool = False,
                shape: Optional[List[int]] = None,
                mask: Optional[Tensor] = None,
-               cache: Optional[Dict[str, Tensor]] = None) -> Tensor:
+               cache: Optional[Dict[str, Tensor]] = None,
+               norm: Optional[Tensor] = None) -> Tensor:
     """Compute a local average by convolution
 
     Parameters
@@ -462,6 +543,13 @@ def local_mean(x: Tensor,
     mask : ([*batch, channels], *spatial) tensor, optional
         A mask (if bool) or weight map (if float) used to weight the
         contribution of each voxel.
+    cache : dict, optional
+        Cache for the normaliser of unmasked local means.
+    norm : tensor, optional
+        Normaliser of the masked local mean, as returned by
+        `local_mean_norm` with the same mask and options. It depends
+        on the mask only, so calls (forward and backward) that share a
+        mask can compute it once.
 
     Returns
     -------
@@ -476,28 +564,91 @@ def local_mean(x: Tensor,
         mask = mask.to(x.device, x.dtype)
         mask, *_ = pre_reshape(mask, dim)
 
-    kernel_fwhm = pad_list_float(kernel_fwhm, dim)
-    if mode == 'g':
-        kernel_size = [int(math.ceil(k*3)) for k in kernel_fwhm]
-    else:
-        # Patches cannot be larger than the (forward) input image.
-        # In the backward pass, the forward input shape is `shape`.
-        fwd_shape: List[int] = list(x.shape[-dim:])
-        if backward and shape is not None:
-            fwd_shape = shape
-        kernel_size = [min(int(math.ceil(k)), d)
-                       for k, d in zip(kernel_fwhm, fwd_shape)]
-    if stride is None:
-        stride = [1]
-    stride = pad_list_int(stride, dim)
-    stride = [s if s > 0 else k for s, k in zip(stride, kernel_size)]
+    # Patches cannot be larger than the (forward) input image.
+    # In the backward pass, the forward input shape is `shape`.
+    fwd_shape: List[int] = list(x.shape[-dim:])
+    if backward and shape is not None:
+        fwd_shape = shape
+    fwhm1, kernel_size, stride1 = _prepare_kernel(
+        kernel_fwhm, stride, mode, dim, fwd_shape)
 
     if mode in ('c', 's'):  # const/square
-        x = _local_mean_patch(x, kernel_size, stride, backward, shape, mask)
+        x = _local_mean_patch(x, kernel_size, stride1, backward, shape, mask,
+                              norm)
     elif mode == 'g':        # gauss
-        x = _local_mean_conv(x, kernel_fwhm, stride, backward, shape, mask, cache)
+        x = _local_mean_conv(x, fwhm1, stride1, backward, shape, mask,
+                             cache, norm)
     else:
         raise ValueError(f'Unknown mode {mode}')
 
     x = post_reshape(x, nb_batch, extra_batch)
     return x
+
+
+@jit_script
+def _prepare_kernel(kernel_fwhm: List[float], stride: Optional[List[int]],
+                    mode: str, dim: int, fwd_shape: List[int]
+                    ) -> Tuple[List[float], List[int], List[int]]:
+    """Pad kernel sizes and strides to `dim` (shared by `local_mean` and
+    `local_mean_norm`)"""
+    kernel_fwhm = pad_list_float(kernel_fwhm, dim)
+    if mode == 'g':
+        kernel_size = [int(math.ceil(k*3)) for k in kernel_fwhm]
+    else:
+        kernel_size = [min(int(math.ceil(k)), d)
+                       for k, d in zip(kernel_fwhm, fwd_shape)]
+    stride1: List[int] = [1]
+    if stride is not None:
+        stride1 = stride
+    stride1 = pad_list_int(stride1, dim)
+    stride1 = [s if s > 0 else k for s, k in zip(stride1, kernel_size)]
+    return kernel_fwhm, kernel_size, stride1
+
+
+def local_mean_norm(mask: Tensor,
+                    kernel_fwhm: List[float],
+                    stride: Optional[List[int]] = None,
+                    mode: str = 'g',
+                    dim: Optional[int] = None,
+                    dtype: Optional[torch.dtype] = None) -> Tensor:
+    """Normaliser of a masked local mean (the local sum of the mask).
+
+    `local_mean(x, ..., mask=mask)` recomputes it at each call: compute
+    it once with this function and pass it as `norm=` to all calls
+    (forward and backward) that use the same mask and options.
+
+    Parameters
+    ----------
+    mask : ([*batch, channels], *spatial) tensor
+    kernel_fwhm, stride, mode, dim
+        Same as in `local_mean` (forward-pass geometry).
+    dtype : torch.dtype, optional
+        Data type of the images the local means will be applied to
+        (default: the mask's floating point type).
+
+    Returns
+    -------
+    norm : tensor
+        In the internal layout of `local_mean`: only meant to be passed
+        to `local_mean(..., norm=norm)`.
+    """
+    mode = mode[0].lower()
+    if dim is None:
+        dim = mask.dim() - 1
+    if dtype is None:
+        dtype = mask.dtype if mask.dtype.is_floating_point else \
+            torch.get_default_dtype()
+    mask = mask.to(dtype)
+    mask, *_ = pre_reshape(mask, dim)
+    shape = list(mask.shape[-dim:])
+    fwhm1, kernel_size, stride1 = _prepare_kernel(
+        kernel_fwhm, stride, mode, dim, shape)
+    if mode in ('c', 's'):
+        return do_patch(mask, kernel_size, stride1).clamp_min(1e-5)
+    elif mode == 'g':
+        kernel, kernel_size = _gaussian_kernel(
+            fwhm1, dim, mask.dtype, mask.device)
+        return _conv_norm(shape, kernel, kernel_size, stride1,
+                          mask.dtype, mask.device, mask)
+    else:
+        raise ValueError(f'Unknown mode {mode}')
