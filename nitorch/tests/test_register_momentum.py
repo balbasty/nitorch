@@ -3,11 +3,12 @@
 The option used to be parsed and passed to the optimizer constructor,
 where it was silently swallowed: nothing was ever written. It now writes
 the optimizer's final momentum state (`delta`) once, after the fit, next
-to the velocity.
+to the velocity. For `@affine`, the momentum is a vector of Lie-algebra
+coefficients and is written to a JSON file instead.
 """
 import glob
+import json
 import os
-import warnings
 import numpy as np
 import torch
 import pytest
@@ -118,11 +119,66 @@ def test_cli_other_optimizers_unaffected(pair, name):
     assert os.path.exists(os.path.join(odir, 'svf.nii.gz'))
 
 
-def test_cli_affine_momentum_ignored_with_warning(pair):
-    with warnings.catch_warnings(record=True) as w:
-        warnings.simplefilter('always')
-        odir = _run(pair, '@affine', 'translation',
-                    '@@optim', 'nes', '-n', '2', '-o')
-    assert any('momentum maps' in str(x.message) for x in w)
+@pytest.fixture
+def affine_optims(monkeypatch):
+    """Record the affine optimizers built by the CLI"""
+    built = []
+    make = register_cli.make_affine_optim
+
+    def record(*args, **kwargs):
+        built.append(make(*args, **kwargs))
+        return built[-1]
+    monkeypatch.setattr(register_cli, 'make_affine_optim', record)
+    return built
+
+
+def _check_affine_momentum(fname, optim, basis):
+    with open(fname) as f:
+        prm = json.load(f)
+    assert set(prm) == {'basis', 'momentum'}
+    assert prm['basis'] == basis
+    ref = optim.delta.detach().double().cpu()
+    mom = torch.as_tensor(prm['momentum'], dtype=torch.double)
+    assert mom.shape == ref.shape
+    assert mom.abs().max() > 0
+    assert torch.allclose(mom, ref)
+
+
+@pytest.mark.parametrize('name', ['nes', 'ogm'])
+def test_cli_affine_writes_final_momentum(pair, affine_optims, name):
+    odir = _run(pair, '@affine', 'rigid',
+                '@@optim', name, '-n', '2', '-o')
+    assert os.path.exists(os.path.join(odir, 'rigid.lta'))
     assert not glob.glob(os.path.join(odir, 'momentum*'))
+    files = glob.glob(os.path.join(odir, '*momentum*'))
+    assert files == [os.path.join(odir, 'affine_momentum.json')]
+    assert len(affine_optims) == 1
+    _check_affine_momentum(files[0], affine_optims[0], 'rigid')
+    assert len(affine_optims[0].delta) == 6
+
+
+def test_cli_affine_momentum_custom_path(pair, affine_optims):
+    _, _, odir = pair
+    out = os.path.join(odir, '{name}_mom.json')
+    _run(pair, '@affine', 'translation', '@@optim', 'nes', '-n', '2',
+         '-o', out)
+    fname = os.path.join(odir, 'translation_mom.json')
+    _check_affine_momentum(fname, affine_optims[0], 'translation')
+
+
+def test_cli_affine_and_nonlin_momentum_do_not_collide(
+        pair, optims, affine_optims):
+    odir = _run(pair, '@affine', 'translation',
+                '@@optim', 'nes', '-n', '2', '-o',
+                '@nonlin', 'svf', '@@optim', 'nes', '-n', '2', '-o')
+    files = sorted(glob.glob(os.path.join(odir, '*momentum*')))
+    assert files == [os.path.join(odir, 'affine_momentum.json'),
+                     os.path.join(odir, 'momentum.nii.gz')]
+    _check_affine_momentum(files[0], affine_optims[0], 'translation')
+    _check_final_momentum(files[1], odir, optims[0])
+
+
+def test_cli_affine_no_momentum_by_default(pair):
+    odir = _run(pair, '@affine', 'translation', '@@optim', 'nes', '-n', '2')
+    assert not glob.glob(os.path.join(odir, '*momentum*'))
     assert os.path.exists(os.path.join(odir, 'translation.lta'))

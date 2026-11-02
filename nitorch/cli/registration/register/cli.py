@@ -1,6 +1,8 @@
 from nitorch.cli.cli import commands
 from nitorch.core.cli import ParseError
-from .parser import parser, help, default_hessian
+from .parser import (
+    parser, help, default_hessian, default_momentum, default_affine_momentum
+)
 from nitorch.tools.registration import objects
 from nitorch.tools.registration.pairwise_preproc import (
     map_image, load_image, preproc_image
@@ -169,17 +171,17 @@ def _main(options):
     interleaved = options.optim.name[0] == 'i'
 
     affine_optim = None
+    affine_momentum_output = None
     momentum_output = None
     if affine and options.affine.optim.name != 'none':
         if not options.affine.optim.max_iter:
             options.affine.optim.max_iter = 50 if interleaved else 100
         optim_kwargs = dict(options.affine.optim)
-        if optim_kwargs.pop('output', None):
-            # The momentum of an affine optimizer is a vector of a few
-            # Lie-algebra coefficients, not a map.
-            warnings.warn('@affine @@optim -o/--output: momentum maps are '
-                          'only written for the nonlinear component; '
-                          'ignored.')
+        # The momentum of an affine optimizer is a vector of a few
+        # Lie-algebra coefficients, not a map: written as JSON.
+        affine_momentum_output = optim_kwargs.pop('output', None)
+        if affine_momentum_output == default_momentum:
+            affine_momentum_output = default_affine_momentum
         affine_optim = make_affine_optim(options.affine.optim.name, order,
                                          **optim_kwargs)
     elif affine and options.affine.optim.name == 'none':
@@ -245,6 +247,19 @@ def _main(options):
             if affine.position[0] == 's':
                 aff = aff.matmul(aff)
             io.transforms.savef(aff.cpu(), fname, type=1)  # 1 = RAS_TO_RAS
+
+        # final momentum of nes/ogm (`delta`: last step of the auxiliary
+        # sequence, in the basis of the optimised Lie parameters)
+        delta = getattr(affine_optim, 'delta', None)
+        if affine_momentum_output and torch.is_tensor(delta):
+            fname = affine_momentum_output.format(
+                dir=odir, sep=os.path.sep, name=options.affine.name)
+            basis = affine.optim or affine.basis_name
+            with open(fname, 'w') as f:
+                json.dump({'basis': basis,
+                           'momentum': delta.detach().cpu().tolist()}, f)
+            if options.verbose:
+                print('Affine momentum ->', fname)
 
     if nonlin:
         if options.nonlin.output:

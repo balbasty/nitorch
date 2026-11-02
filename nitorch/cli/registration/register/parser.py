@@ -221,14 +221,16 @@ usage:
         nes, nesterov                   Gradient descent with Nesterov momentum
             -m, --momentum                  Momentum factor [0=auto]
             -r, --restart                   Automatic restart [True]
-            -o, --output [PATH]             Write the final momentum map (@nonlin only):
-                                            [False], True={dir}/momentum.nii.gz
+            -o, --output [PATH]             Write the final momentum: [False],
+                                            True={dir}/momentum.nii.gz (@nonlin) or
+                                            True={dir}/affine_momentum.json (@affine)
         ogm, optimized-gradient         Optimized gradient method of Kim & Fessler
             -m, --momentum                  Momentum factor [0=auto]
             -x, --relax                     Relaxation factor [0=auto]
             -r, --restart                   Automatic restart [True]
-            -o, --output [PATH]             Write the final momentum map (@nonlin only):
-                                            [False], True={dir}/momentum.nii.gz
+            -o, --output [PATH]             Write the final momentum: [False],
+                                            True={dir}/momentum.nii.gz (@nonlin) or
+                                            True={dir}/affine_momentum.json (@affine)
         lbfgs                           Limited-memory BFGS
             -h, --history                   History size [100]
         none                            Do not optimize
@@ -280,6 +282,8 @@ def number_or_str(type=float):
 
 
 default_hessian = '{dir}{sep}{name}_hessian.nii.gz'
+default_momentum = '{dir}{sep}momentum.nii.gz'
+default_affine_momentum = '{dir}{sep}affine_momentum.json'
 
 
 def bool_or_str(x):
@@ -532,8 +536,9 @@ optim.add_suboption('nes', 'momentum', ('-m', '--momentum'), nargs=1,
 optim.add_suboption('nes', 'restart', ('-r', '--restart'), nargs=1,
                     default=True, convert=bool_or_str, help='Automatic restart')
 optim.add_suboption('nes', 'output', ('-o', '--output'), nargs='?',
-                    default='', action=cli.Actions.store_value('{dir}{sep}momentum.nii.gz'),
-                    help='Write the final momentum map (@nonlin only)')
+                    default='', action=cli.Actions.store_value(default_momentum),
+                    help='Write the final momentum (map for @nonlin, '
+                         'JSON for @affine)')
 optim.add_suboption('ogm', 'momentum', ('-m', '--momentum'), nargs=1,
                     default=0, convert=float, help='Momentum factor')
 optim.add_suboption('ogm', 'relax', ('-x', '--relax'), nargs=1,
@@ -541,8 +546,9 @@ optim.add_suboption('ogm', 'relax', ('-x', '--relax'), nargs=1,
 optim.add_suboption('ogm', 'restart', ('-r', '--restart'), nargs=1,
                     default=True, convert=bool_or_str, help='Automatic restart')
 optim.add_suboption('ogm', 'output', ('-o', '--output'), nargs='?',
-                    default='', action=cli.Actions.store_value('{dir}{sep}momentum.nii.gz'),
-                    help='Write the final momentum map (@nonlin only)')
+                    default='', action=cli.Actions.store_value(default_momentum),
+                    help='Write the final momentum (map for @nonlin, '
+                         'JSON for @affine)')
 optim.add_suboption('lbfgs', 'history', ('-h', '--history'), nargs=1,
                     default=100, convert=int, help='History size')
 cg_aliases = {'fletcher-reeves': 'fr',
