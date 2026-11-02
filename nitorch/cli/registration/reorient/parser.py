@@ -4,7 +4,7 @@ from nitorch.core.struct import Structure
 
 
 class Reorient(Structure):
-    """Structure that holds parameters of the `nireorient` command"""
+    """Structure that holds parameters of the `nitorch reorient` command"""
     files: list = []
     layout: str = 'RAS'
     output: list = '{dir}{sep}{base}.{layout}{ext}'

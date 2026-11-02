@@ -6,7 +6,7 @@ help = r"""[nitorch] Resize volumes
 
 usage:
     nitorch resize *FILES [-f FACTOR] [-v VX] [-s SHAPE] [-a ANCHOR]
-                   [-i ORDER] [-b BND] [-p FILTER] [-g] [-cpu|gpu]
+                   [-i ORDER] [-b BND] [-p FILTER] [-g] [--cpu|--gpu [ID]]
     
     The resizing factor can be defined by one of three (exclusive) arguments:
     -f, --factor            Resizing factor
@@ -26,7 +26,7 @@ usage:
     -g, --grid              The input is a displacement (disp) or 
                             transformation (trf) grid (default: no) 
     -o, --output            Name of the output file (default: '*.resized*')
-    -cpu, -gpu              Device to use (cpu)
+    --cpu, --gpu [ID]       Device to use (cpu)
    
 """
 

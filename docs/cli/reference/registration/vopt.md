@@ -132,10 +132,7 @@ While running, `vopt` prints progress messages to the standard output.
 | `-l`, `--lame` | `VAL [VAL]` | Penalty on linear-elastic energy: one value, or two values (divergence and shear). | `1e-4` |
 | `-h`, `--help` | | Print the built-in help and exit. | |
 
-Each of `-o`, `-x`, `-a`, `-m`, `-b` and `-l` may be given at most once. The
-penalty defaults are the values that the code applies; the built-in help
-announces other values (`1e-3`, `0.2` and `0.05 0.2` for `-m`, `-b` and
-`-l`).
+Each of `-o`, `-x`, `-a`, `-m`, `-b` and `-l` may be given at most once.
 
 ## Using the outputs
 

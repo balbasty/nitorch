@@ -25,7 +25,7 @@ usage:
     -m, --modulation {yes,no}           Jacobian modulation [yes]
     -d, --diffeo                        Use diffeomorphic model [no]
     -p, --penalty VAL [{memb,bend}]     Penalty on bending energy [100 bend]
-    -w, --downsample                    Estimate field at a lower dimension [1 mm]
+    -w, --downsample *VX                Coarse-to-fine voxel sizes (mm) [8 4 1]
     -n, --max-iter                      Maximum number of iterations [50]
     -t, --tolerance                     Tolerance for early stopping [1e-4]
     --cpu, --gpu                        Device to use [cpu]

@@ -46,17 +46,18 @@ note:
     time as the SVF pairs, from the Hessian of the registration loss.
 
 arguments:
-    -i, --input         Affine transform for one pair of images
+    -i, --input         SVF for one pair of images
                           <fix>   Index (or label) of fixed image
                           <mov>   Index (or label) of moving image
                           <path>  Path to an SVF file that warps <mov> to <fix>
     -w, --weight        Precision (= squared weights) for one pair of images
-    -o, --output        Path to output transforms (default: {dir}/{label}_optimal{ext})
+                          <fix> <mov> <path>  (same layout as --input)
+    -o, --output        Path to output transforms (default: {dir}/{label}_optimal.lta)
     -x, --bound [dft]   Boundary condition: {dct2,dct1,dst2,dst1,dft,zero,nearest}
     -a, --absolute      Penalty on absolute displacements (0th) [1e-4]
-    -m, --membrane      Penalty on membrane energy (1st) [1e-3]
-    -b, --bending       Penalty on bending energy (2nd) [0.2]
-    -l, --lame          Penalty on linear elastic energy [0.05, 0.2]]
+    -m, --membrane      Penalty on membrane energy (1st) [1e-4]
+    -b, --bending       Penalty on bending energy (2nd) [1e-4]
+    -l, --lame          Penalty on linear elastic energy (1 or 2 values) [1e-4]
 
 example:
     nitorch vopt \

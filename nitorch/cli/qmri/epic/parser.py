@@ -18,16 +18,18 @@ usage:
     -o, --output                        Path to corrected echoes [{dir}/{base}_epic{ext}]
     -d, --direction {rl,ap,is}          Readout direction [largest]
     -p, --polarity {[+],-}              Polarity of the first echo
-    -b, --bandwidth [1]                 Acquisition bandwidth (Hz/pixel)
+    -b, --bandwidth BW                  Acquisition bandwidth in Hz/pixel [1, i.e., the
+                                        fieldmap is a voxel shift map]
     -x, --no-synth                      Do not synthesize reverse echoes
     -e, --extrapolate [false]           Extrapolate first/last echo in synth
     -s, --slicewise [CHUNKSIZE]         Apply slicewise/chunkwise [false]
-    -p, --penalty VAL                   Amount or regularization [100]
-    -n, --max-iter IRLS [CG]            Maximum number of iterations [20 32]
+    --penalty VAL                       Amount of regularization [100]
+    -m, --maxiter IRLS [CG]             Maximum number of iterations [20 32]
     -t, --tolerance IRLS [CG]           Tolerance for early stopping [1e-5]
     --cpu, --gpu [THREAD/ID]            Device to use [cpu]
     -h, --help                          Display this help
     -v, --verbose [LVL]                 Level of verbosity [1=print], 2=more
+    -q, --quiet                         No verbosity
     
 References:
     "A new distortion correction approach for multi-contrast MRI"
@@ -50,7 +52,7 @@ parser.add_option('polarity', ('-p', '--polarity'), nargs=1, default='+',
                   validation=cli.Validations.choice(['+', '-']),
                   help='Polarity of first echo')
 parser.add_option('bandwidth', ('-b', '--bandwidth'), nargs=1, default=1,
-                  convert=float, help='Polarity of first echo')
+                  convert=float, help='Bandwidth (Hz/pixel)')
 parser.add_option('synth', ('-x', '--no-synth'), nargs=0, default=True,
                   convert=cli.Conversions.bool, action=cli.Actions.store_false,
                   help='Synthesize reverse echoes')
