@@ -86,6 +86,7 @@ def main(options):
         prior=options.tpm,
         do_bias=options.bias,
         do_warp=options.warp,
+        do_affine=options.align,
         do_mixing=options.mix,
         do_mrf=options.mrf,
         wishart=wishart_mode,
@@ -202,7 +203,11 @@ def write_outputs(z, prm, options):
     dat_affine = io.map(ref_native).affine
     mni_affine = mni_affine.to(**backend)
     dat_affine = dat_affine.to(**backend)
-    prm_affine = prm['affine'].to(**backend)
+    prm_affine = prm.get('affine', None)
+    if prm_affine is None:
+        # no TPM alignment (--no-align)
+        prm_affine = torch.eye(4)
+    prm_affine = prm_affine.to(**backend)
     dat_affine = prm_affine @ dat_affine
     if options.mni_vx:
         vx = spatial.voxel_size(mni_affine)
@@ -212,14 +217,14 @@ def write_outputs(z, prm, options):
 
     if options.prob_mni or options.labels_mni or options.all_mni:
         z_mni = spatial.reslice(z, dat_affine, mni_affine, mni_shape)
-        if options.prob_mni:
+        if options.prob_mni or options.all_mni:
             fname = options.prob_mni or '{dir}{sep}{base}.prob.mni{ext}'
             fname = fname.format(**format_dict)
             if options.verbose > 0:
                 print('prob.mni     ->', fname)
             io.savef(utils.movedim(z_mni, 0, -1), fname, like=ref_native,
                      affine=mni_affine, dtype='float32')
-        if options.labels_mni:
+        if options.labels_mni or options.all_mni:
             fname = options.labels_mni or '{dir}{sep}{base}.labels.mni{ext}'
             fname = fname.format(**format_dict)
             if options.verbose > 0:
@@ -230,7 +235,7 @@ def write_outputs(z, prm, options):
 
     if options.prior_mni or options.all_mni:
         mu_mni = spatial.reslice(prm['warped'], dat_affine, mni_affine, mni_shape)
-        fname = options.prob_mni or '{dir}{sep}{base}.prior.mni{ext}'
+        fname = options.prior_mni or '{dir}{sep}{base}.prior.mni{ext}'
         fname = fname.format(**format_dict)
         if options.verbose > 0:
             print('prior.mni     ->', fname)
@@ -262,7 +267,7 @@ def write_outputs(z, prm, options):
         if options.nobias_mni or options.all_mni:
             nobias = spatial.reslice(dat, dat_affine, mni_affine, mni_shape)
             nobias *= bias
-            fname = options.bias_mni or '{dir}{sep}{base}.nobias.mni{ext}'
+            fname = options.nobias_mni or '{dir}{sep}{base}.nobias.mni{ext}'
             if len(options.input) == 1:
                 fname = fname.format(**format_dict)
                 if options.verbose > 0:
@@ -281,8 +286,8 @@ def write_outputs(z, prm, options):
         del bias
 
     need_iwarp = (options.warp_mni or options.prob_wrp or options.labels_wrp or
-                  options.bias_wrp or options.nobias_wrp or options.all_mni or
-                  options.all_wrp)
+                  options.prior_wrp or options.bias_wrp or options.nobias_wrp or
+                  options.all_mni or options.all_wrp)
     need_iwarp = need_iwarp and options.warp
     if not need_iwarp:
         return
@@ -309,15 +314,15 @@ def write_outputs(z, prm, options):
 
     if options.prob_wrp or options.labels_wrp or options.all_wrp:
         z_mni = spatial.grid_pull(z, iwarp)
-        if options.prob_mni or options.all_wrp:
-            fname = options.prob_mni or '{dir}{sep}{base}.prob.wrp{ext}'
+        if options.prob_wrp or options.all_wrp:
+            fname = options.prob_wrp or '{dir}{sep}{base}.prob.wrp{ext}'
             fname = fname.format(**format_dict)
             if options.verbose > 0:
                 print('prob.wrp     ->', fname)
             io.savef(utils.movedim(z_mni, 0, -1), fname, like=ref_native,
                      affine=mni_affine, dtype='float32')
-        if options.labels_mni or options.all_wrp:
-            fname = options.labels_mni or '{dir}{sep}{base}.labels.wrp{ext}'
+        if options.labels_wrp or options.all_wrp:
+            fname = options.labels_wrp or '{dir}{sep}{base}.labels.wrp{ext}'
             fname = fname.format(**format_dict)
             if options.verbose > 0:
                 print('labels.wrp   ->', fname)
@@ -327,13 +332,13 @@ def write_outputs(z, prm, options):
 
     if options.prior_wrp or options.all_wrp:
         mu_mni = spatial.grid_pull(prm['warped'], iwarp)
-        fname = options.prob_mni or '{dir}{sep}{base}.prior.wrp{ext}'
+        fname = options.prior_wrp or '{dir}{sep}{base}.prior.wrp{ext}'
         fname = fname.format(**format_dict)
         if options.verbose > 0:
             print('prior.wrp     ->', fname)
         io.savef(utils.movedim(mu_mni, 0, -1), fname, like=ref_native,
                  affine=mni_affine, dtype='float32')
-        del z_mni
+        del mu_mni
 
     if options.bias and (options.bias_wrp or options.nobias_wrp or options.all_wrp):
         bias = spatial.grid_pull(prm['bias'], iwarp,
