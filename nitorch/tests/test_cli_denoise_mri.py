@@ -67,3 +67,28 @@ def test_outputs_named_after_own_inputs(tmp_path, fast_noise):
     out = str(tmp_path / 'out')
     dmri_cli._cli([f1, f2, '-n', '2', '-v', '0', '-o', out])
     assert sorted(os.listdir(out)) == ['den_T1w.nii.gz', 'den_T2w.nii.gz']
+
+
+def test_outputs_sharing_base_name_do_not_collide(tmp_path, fast_noise):
+    (tmp_path / 'a').mkdir()
+    (tmp_path / 'b').mkdir()
+    f1 = _volume(tmp_path, 'a/t1.nii.gz', 0)
+    f2 = _volume(tmp_path, 'b/t1.nii.gz', 1)
+    out = str(tmp_path / 'out')
+    dmri_cli._cli([f1, f2, '-n', '2', '-v', '0', '-o', out])
+    assert sorted(os.listdir(out)) == ['den_t1.1.nii.gz', 'den_t1.2.nii.gz']
+
+
+def test_output_fnames_disambiguates_colliding_only():
+    names = dmri_main._output_fnames(
+        ['a/t1.nii', 'b/t2.nii', 'c/t1.nii', 'd/t1.nii'], 'out')
+    names = [os.path.basename(n) for n in names]
+    assert names == ['den_t1.1.nii', 'den_t2.nii',
+                     'den_t1.3.nii', 'den_t1.4.nii']
+    # without -o, inputs in different directories do not collide
+    names = dmri_main._output_fnames(['a/t1.nii', 'b/t1.nii'], None)
+    assert [os.path.basename(n) for n in names] == ['den_t1.nii'] * 2
+    # same file given twice collides even without -o
+    names = dmri_main._output_fnames(['a/t1.nii', 'a/t1.nii'], None)
+    assert [os.path.basename(n) for n in names] == ['den_t1.1.nii',
+                                                    'den_t1.2.nii']
