@@ -1,4 +1,5 @@
 import math as pymath
+import warnings
 import torch
 from torch.nn import functional as F
 from nitorch import core
@@ -313,8 +314,9 @@ def pool(dim, tensor, kernel_size=3, stride=None, dilation=1, padding=0,
         `ceil(spatial_in / stride)` if `ceil` is True).
     bound : str, default='constant'
         Boundary conditions used in the padding.
-    reduction : {'mean', 'max', 'min', 'median', 'sum', 'ssq'} or callable, default='mean'
-        Function to apply to the elements in a window.
+    reduction : {'mean', 'max', 'min', 'median', 'sum', 'rms'} or callable, default='mean'
+        Function to apply to the elements in a window
+        ('rms' = root mean square; 'ssq' is a deprecated alias).
     ceil : bool, default=False
         Use ceil instead of floor to compute output shape
     return_indices : bool, default=False
@@ -332,6 +334,12 @@ def pool(dim, tensor, kernel_size=3, stride=None, dilation=1, padding=0,
     """
     # move everything to the same dtype/device
     tensor = torch.as_tensor(tensor)
+
+    if isinstance(reduction, str) and reduction.lower() == 'ssq':
+        warnings.warn("pool: reduction 'ssq' has been renamed to 'rms' "
+                      "(root mean square). 'ssq' will be removed in a "
+                      "future version.", FutureWarning, stacklevel=2)
+        reduction = 'rms'
 
     # sanity checks + reshape for torch's conv
     batch = tensor.shape[:-dim]
@@ -363,8 +371,11 @@ def pool(dim, tensor, kernel_size=3, stride=None, dilation=1, padding=0,
             or any(isinstance(p, (list, tuple)) for p in padding)):
         # torch implementation -> handles zero-padding
         # our implementation -> needs explicit padding
+        # (left, right) pairs per dimension -> side=None
+        padding = [p if isinstance(p, (list, tuple)) else (p, p)
+                   for p in padding]
         padding = _normalize_padding(padding)
-        tensor = utils.pad(tensor, padding, bound, side='both',
+        tensor = utils.pad(tensor, padding, bound,
                            value=_fill_value(reduction, tensor))
         padding = [0] * dim
 
@@ -405,7 +416,7 @@ def pool(dim, tensor, kernel_size=3, stride=None, dilation=1, padding=0,
             reduction = lambda x: math.max(x, dim=-1)
         elif reduction == 'median':
             reduction = lambda x: math.median(x, dim=-1)
-        if reduction == 'ssq':
+        elif reduction == 'rms':
             reduction = lambda x: math.mean(x.square(), dim=-1).sqrt()
         elif not callable(reduction):
             raise ValueError(f'Unknown reduction {reduction}')

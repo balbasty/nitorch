@@ -2086,8 +2086,10 @@ def affine_conv(affine, shape, kernel_size, stride=1, padding=0,
         Kernel size
     stride : int or sequence[int], default=1
         Strides (= step size when moving the kernel)
-    padding : int or sequence[int], default=0
-        Amount of padding added to (both sides of) the input
+    padding : int or sequence[int or (int, int)], default=0
+        Amount of padding added to (both sides of) the input.
+        A per-dimension pair `(low, high)` gives the padding on each
+        side (only for non-transposed convolutions).
     output_padding : int or sequence[int], default=0
         Additional size added to (the bottom/right) side of each
         dimension in the output shape. Only used if `transposed is True`.
@@ -2130,14 +2132,21 @@ def affine_conv(affine, shape, kernel_size, stride=1, padding=0,
                 raise ValueError('Cannot compute automatic padding '
                                  'for even-sized kernels.')
             Pi = D * (K // 2)
+        if isinstance(Pi, (list, tuple)):
+            if transposed:
+                raise ValueError('Asymmetric padding not supported for '
+                                 'transposed convolutions.')
+            Plo, Phi = Pi
+        else:
+            Plo = Phi = Pi
         if transposed:
             oshape += [(L - 1) * S - 2 * Pi + D * (K - 1) + Po + 1]
             scale += [1/S]
             offset += [(Pi - (K-1)/2)/S]
         else:
-            oshape += [math.floor((L + 2 * Pi - D * (K - 1) - 1) / S + 1)]
+            oshape += [math.floor((L + Plo + Phi - D * (K - 1) - 1) / S + 1)]
             scale += [S]
-            offset += [(K-1)/2 - Pi]
+            offset += [(K-1)/2 - Plo]
 
     # build voxel-to-voxel transformation matrix
     lin = torch.diag(torch.as_tensor(scale, **info))
