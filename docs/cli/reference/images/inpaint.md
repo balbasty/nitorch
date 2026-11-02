@@ -32,10 +32,10 @@ penalty is computed over all channels together, so all channels share the same
 edges. This is the right choice for a set of co-registered contrasts of the
 same subject (say a T1-weighted and a T2-weighted scan), and it makes the
 filling of each channel benefit from the structure visible in the others. The
-files must have the same shape. Each file is a 3D volume, optionally with a
-fourth dimension whose entries are used as extra channels; further dimensions
-are accepted only if they have size 1. The voxel size is read from the orientation
-matrix of the first file. Each channel keeps its own set of missing voxels: a
+files must have the same shape. Each one is a 3D volume, optionally with a
+fourth dimension whose entries are used as extra channels; any further
+dimension must have size 1. The voxel size is read from the orientation matrix
+of the first file. Each channel keeps its own set of missing voxels: a
 voxel that is missing in one file and observed in another is filled in the
 first and kept in the second.
 

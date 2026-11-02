@@ -30,8 +30,9 @@ translation is moved forward by `k` voxels along the axis for the slice of index
 `k` (counting from 0), and the directions and voxel size are unchanged. For a
 2 mm volume whose last axis starts at `z = -30` mm, the 16th slice (index 15)
 has `z = -30 + 15 * 2 = 0` mm.
-When the split dimension is not a spatial axis (the extra dimension of a 4D
-volume), every piece keeps the orientation matrix of the input.
+
+When the split dimension is not a spatial axis, as for the extra dimension of a
+4D volume, every piece keeps the orientation matrix of the input.
 
 `unstack` is the special case of [`chunk`](chunk.md) with `-n 1`. Both write
 the same files.

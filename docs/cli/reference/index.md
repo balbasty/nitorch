@@ -56,7 +56,7 @@ Tools to align images, pairwise or in groups. See the
 | Command                                    | Summary                                                              |
 | ------------------------------------------ | -------------------------------------------------------------------- |
 | [`register`](registration/register.md)     | Pairwise affine and non-linear registration, with a choice of similarity losses and optimisers. |
-| [`simplereg`](registration/simplereg.md)   | Pairwise affine + nonlinear registration through a simpler, more classical syntax. A wrapper around `register`. |
+| [`simplereg`](registration/simplereg.md)   | Pairwise affine and nonlinear registration through a simpler, more classical syntax. A wrapper around `register`. |
 | [`affreg`](registration/affreg.md)         | Pairwise affine registration. A wrapper around `register`.           |
 | [`optinorm`](registration/optinorm.md)     | Groupwise normalisation of several scans of the same subject to their mean space. |
 | [`affopt`](registration/affopt.md)         | Compute optimal template-to-subject affine matrices from subject-to-subject pairs. |

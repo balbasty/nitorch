@@ -70,8 +70,7 @@ Three kinds of files can be written:
 
 - **The transformation**, an affine matrix in LTA format, written to
   `{dir}/{name}.lta`: `rigid.lta` or `affine.lta`, in the directory of the
-  fixed image. Use `-o` to choose another path, or `-o false` to not write
-  it.
+  fixed image. Use `-o` to choose another path, or `-o false` to skip it.
 - **The moved images**, `{base}.moved{ext}`, in the directory of each input.
   With the symmetric affine, the moving image is brought halfway to the fixed
   image, and the fixed image halfway to the moving image, by changing only
@@ -200,7 +199,9 @@ nitorch affreg -m sub-01_T1w.nii.gz -f template_T1w.nii.gz \
 ## See also
 
 - [`register`](register.md) — the command `affreg` wraps, with full control.
-- [`simplereg`](simplereg.md) — a similar interface, with an additional nonlinear part (note: there `-a` is the output affine path and `--affine [TYPE]` the model).
+- [`simplereg`](simplereg.md) — a similar interface with an added nonlinear
+  part. Beware that `-a` means something else there: it names the output
+  affine, and the model is chosen with `--affine [TYPE]`.
 - [`reslice`](../spatial/reslice.md) — apply the resulting matrix to other
   images.
 - [Registering two images](../../tutorials/registration.md) — a tutorial.
