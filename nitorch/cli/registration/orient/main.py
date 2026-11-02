@@ -34,12 +34,10 @@ def orient(inp, affine=None, layout=None, voxel_size=None, center=None,
         '{dir}/{base}.{layout}{ext}', where `dir`, `base` and `ext`
         are the directory, base name and extension of the input file.
     output_transform : str, optional
-        Filename of output transform.
-        If the input is not a path, the reoriented data is not written
-        on disk by default.
-        If the input is a path, the default output filename is
-        '{dir}/{base}_to_{layout}.lta', where `dir` and `base`
-        are the directory and base name of the input file.
+        Filename of output transform. It is not written if not provided.
+        The templates '{dir}', '{sep}', '{base}' and '{layout}' are
+        expanded, where `dir` and `base` are the directory and base name
+        of the input file (e.g. '{dir}{sep}{base}_to_{layout}.lta').
 
     Returns
     -------
@@ -61,8 +59,6 @@ def orient(inp, affine=None, layout=None, voxel_size=None, center=None,
         inp = (f.shape[:dim], f.affine)
         if output is None:
             output = '{dir}{sep}{base}.{layout}{ext}'
-        if output_transform is None:
-            output_transform = '{dir}{sep}{base}_to_{layout}.lta'
         dir, base, ext = py.fileparts(fname)
 
     like_is_file = isinstance(like, str) and like

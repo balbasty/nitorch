@@ -106,11 +106,9 @@ template in which these placeholders are expanded:
 | `{sep}` | The directory separator of your system. |
 | `{ext}` | The extension of the first input file (such as `.nii.gz`). |
 
-!!! warning "Always pass `-o`"
-    The built-in default is `{dir}{sep}{label}_optimal.lta`. The `.lta` extension
-    selects a linear-transform file format, which cannot store a velocity
-    field. Always give an output template with a volume extension, for example
-    `-o out/{label}_to_mean{ext}`. Create the output directory beforehand.
+The default is `{dir}{sep}{label}_optimal.nii.gz`, which writes NIfTI files
+next to the first input. Create the output directory beforehand when you
+choose another one.
 
 While running, `vopt` prints progress messages to the standard output.
 
@@ -124,7 +122,7 @@ While running, `vopt` prints progress messages to the standard output.
 | ------ | ----- | ----------- | ------- |
 | `-i`, `--input` | `FIX MOV FILE` | One pair: label of the fixed image, label of the moving image, and path to the velocity field that warps the moving image to the fixed one. Repeat for each pair. | *required* |
 | `-w`, `--weight` | `FIX MOV FILE` | Precision (squared weight) map for one pair, with the same labels as `-i`. Repeat for each pair. | all pairs weighted equally |
-| `-o`, `--output` | `FILE` | Output path template; see [Output](#output). | `{dir}{sep}{label}_optimal.lta` |
+| `-o`, `--output` | `FILE` | Output path template; see [Output](#output). | `{dir}{sep}{label}_optimal.nii.gz` |
 | `-x`, `--bound` | `BOUND` | Boundary condition: `dct2`, `dct1`, `dst2`, `dst1`, `dft`, `zero` or `nearest`. | `dft` |
 | `-a`, `--absolute` | `VAL` | Penalty on absolute displacements (0th order). | `1e-4` |
 | `-m`, `--membrane` | `VAL` | Penalty on membrane energy (1st order). | `1e-4` |

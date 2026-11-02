@@ -3,7 +3,7 @@ import os.path as op
 from nitorch.cli.cli import commands
 from nitorch.core.cli import ParseError
 from nitorch import io
-from nitorch.spatial import optimal_svf
+from nitorch.spatial import optimal_svf, voxel_size as get_voxel_size
 from nitorch.core.py import fileparts
 
 
@@ -52,7 +52,7 @@ arguments:
                           <path>  Path to an SVF file that warps <mov> to <fix>
     -w, --weight        Precision (= squared weights) for one pair of images
                           <fix> <mov> <path>  (same layout as --input)
-    -o, --output        Path to output transforms (default: {dir}/{label}_optimal.lta)
+    -o, --output        Path to output transforms (default: {dir}/{label}_optimal.nii.gz)
     -x, --bound [dft]   Boundary condition: {dct2,dct1,dst2,dst1,dft,zero,nearest}
     -a, --absolute      Penalty on absolute displacements (0th) [1e-4]
     -m, --membrane      Penalty on membrane energy (1st) [1e-4]
@@ -168,7 +168,7 @@ def parse(args):
         else:
             raise ParseError(f'Unknown tag {tag}')
 
-    output = output or '{dir}{sep}{label}_optimal.lta'
+    output = output or '{dir}{sep}{label}_optimal.nii.gz'
     bound = bound or 'dft'
     absolute = 1e-4 if absolute is None else absolute
     membrane = 1e-4 if membrane is None else membrane
@@ -190,7 +190,7 @@ def _cli(args):
     weights = {k: io.map(v) for k, v in weights.items()}
 
     aff = list(iter(inputs.values()))[0].affine
-    prm["voxel_size"] = aff.square().sum(0).sqrt().tolist()
+    prm["voxel_size"] = get_voxel_size(aff).tolist()
 
     optimal = optimal_svf(inputs, weights=weights, **prm)
 
