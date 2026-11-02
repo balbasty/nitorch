@@ -1,5 +1,5 @@
 import torch
-from nitorch.core import utils, linalg, py
+from nitorch.core import utils, linalg, py, math
 from nitorch.spatial import grid_pull, grid_push, grid_grad, spline_coeff, identity_grid
 import time
 import math as pymath
@@ -459,7 +459,7 @@ def min_dist_gn(x, s, max_iter=16, tol=1e-3, init=None, init_kwargs=None):
             t = torch.where(success, t, t0 - armijo * g).clamp_(0, 1)
             d = s.eval_position(t).sub_(x)
             nll = d.square().sum(-1)
-            success = success.logical_or_(nll < nll0)
+            success = success | (nll < nll0)
             if success.all():
                 break
             armijo /= 2
@@ -627,7 +627,7 @@ def draw_curves_prob(shape, curves, fast=0, mode='cosine', **kwargs):
         radius = curve.eval_radius(time)
         prob = dist_to_prob(dist, radius, mode)
         label.masked_fill_(prob > max_prob, count)
-        max_prob = torch.maximum(max_prob, prob)
+        max_prob = math.maximum(max_prob, prob)
         sum_prob *= prob.neg_().add_(1)  # probability of no vessel
     sum_prob = sum_prob.neg_().add_(1)   # probability of at least one vessel
 
@@ -670,7 +670,7 @@ def draw_curves_prob_fast(shape, curves, threshold, mode='cosine', **kwargs):
             prob[mask] = subprob
 
             label.masked_fill_(prob > max_prob, count)
-            max_prob = torch.maximum(max_prob, prob)
+            max_prob = math.maximum(max_prob, prob)
             sum_prob *= prob.neg_().add_(1)  # probability of no curve
     sum_prob = sum_prob.neg_().add_(1)   # probability of at least one curve
 
@@ -1430,7 +1430,8 @@ class Brent:
         def pre_closure(a0, a1, a2, f0, f1, f2, gold: float):
             delta0 = a2 - a1
             delta, s = quad_min(a0, a1, a2, f0, f1, f2)
-            delta = (delta - a1).minimum((1 + gold) * delta0)
+            # torch.min(a, b) == torch.minimum(a, b) (needs torch >= 1.7)
+            delta = torch.min(delta - a1, (1 + gold) * delta0)
             a = torch.where(s > 0, a1 + delta, a2 + gold * delta0)
             return a
 

@@ -11,6 +11,7 @@ SegNet : a generic segmentation network (maps images to posterior probabilities)
 
 import torch.nn as tnn
 import torch
+from nitorch.core import math
 from .. import check
 from ..base import Module
 from ..activations import SoftMax
@@ -139,7 +140,7 @@ class FocalHead(ClassificationHead):
         gamma = overload.get('gamma', self.loss.gamma)
         score = self.score(score, **overload)
         score = SoftMax(implicit=(False, False))(score)
-        phi = (1 - score).pow(gamma) - gamma * (1 - score).pow(gamma - 1) * score * score.logit()
+        phi = (1 - score).pow(gamma) - gamma * (1 - score).pow(gamma - 1) * score * math.binary_logit(score)
         score = score / phi
         score = score / score.sum(1, keepdim=True)
         return score[:, :-1]

@@ -996,7 +996,7 @@ def registration_board(
             else:
                 x = get_slice(x[0, 0])
                 x = intensity_to_rgb(x)
-            x = x.clip(0, 1)
+            x = x.clamp(0, 1)
         else:  # 3d
             if is_seg:
                 nk = x.shape[1] + implicit
@@ -1005,7 +1005,7 @@ def registration_board(
             else:
                 x = get_orthogonal_slices(x[0, 0])
                 x = [intensity_to_rgb(y) for y in x]
-            x = [y.clip(0, 1) for y in x]
+            x = [y.clamp(0, 1) for y in x]
         return x
 
     *outputs, vel = outputs

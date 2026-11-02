@@ -501,7 +501,7 @@ if COMPILED_BACKEND == 'C':
         output = _c_pcg_grid(hessian, gradient, output, weight,
                              absolute, membrane, bending, lame_shear, lame_div, voxel_size,
                              bound, int(nb_iter), float(tol))
-        output = output.movedim(1, -1)
+        output = movedim(output, 1, -1)
         for _ in range(pad_dim): output = output.squeeze(0)
         return output
 

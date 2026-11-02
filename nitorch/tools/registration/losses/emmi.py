@@ -70,7 +70,7 @@ Mapping to the code
 . `prior[..., j, k]` is 𝐻ⱼₖ, of shape (..., J, K); `fixed` holds 𝒙
   (or q); `moving[..., k, :]` holds (𝜇 ∘ 𝜙)ₙₖ.
 """
-from nitorch.core import utils, linalg
+from nitorch.core import utils, linalg, math
 from nitorch import spatial
 from .base import OptimizationLoss
 import torch
@@ -428,8 +428,8 @@ def sym_outer(x, dim=-1, out=None):
         shape = list(x.shape)
         shape[dim] = K2
         out = x.new_empty(shape)
-    x = x.movedim(dim, 0)
-    out = out.movedim(dim, 0)
+    x = utils.fast_movedim(x, dim, 0)
+    out = utils.fast_movedim(out, dim, 0)
 
     torch.mul(x[:K], x[:K], out=out[:K])
     c = K
@@ -438,7 +438,7 @@ def sym_outer(x, dim=-1, out=None):
             torch.mul(x[k], x[kk], out=out[c])
             c += 1
 
-    out = out.movedim(0, dim)
+    out = utils.fast_movedim(out, 0, dim)
     return out
 
 
@@ -533,10 +533,10 @@ def add_tiny_(x, n=0, eps=1e-12):
     if n:
         # one value per batch element
         dims = list(range(n, x.dim()))
-        tiny = torch.maximum(x.amax(dim=dims, keepdim=True),
-                             x.amin(dim=dims, keepdim=True).neg_())
+        tiny = math.maximum(math.amax(x, dim=dims, keepdim=True),
+                            math.amin(x, dim=dims, keepdim=True).neg_())
     else:
-        tiny = torch.maximum(x.max(), x.min().neg_())
+        tiny = math.maximum(x.max(), x.min().neg_())
     x.add_(tiny, alpha=eps)
     return x
 

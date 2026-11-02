@@ -305,6 +305,29 @@ def test_eigh_fallback(UPLO, symeig_fallback):
         assert symeig_fallback == [UPLO == 'U'] * 2
 
 
+def test_hessian_eig_cpu():
+    """`hessian_eig`/`frangi` used `torch.symeig` (removed in torch 2)
+    on the CPU, with only the upper triangle of the Hessian filled."""
+    from nitorch.spatial import hessian_eig, frangi
+    a, b, c = 1.5, -0.5, 0.75
+    n = 12
+    x, y = utils.meshgrid_ij(torch.arange(n, dtype=torch.float64),
+                             torch.arange(n, dtype=torch.float64))
+    img = a * x * x + b * y * y + c * x * y
+    eig = hessian_eig(img, fwhm=0, dim=2, sort='val')
+    h = torch.tensor([[2 * a, c], [c, 2 * b]], dtype=torch.float64)
+    ref = torch.as_tensor(_reference_eigh(h)[0])
+    inner = eig[2:-2, 2:-2]
+    _assert_equal(inner, ref.expand_as(inner), rtol=1e-8, atol=1e-8)
+
+    # frangi_nodiff, then frangi_diff (used when the input requires grad)
+    for requires_grad in (False, True):
+        inp = img.float().requires_grad_(requires_grad)
+        vessels = frangi(inp, fwhm=[1], dim=2)
+        assert vessels.shape == img.shape
+        assert torch.isfinite(vessels).all()
+
+
 # ----------------------------------------------------------------------
 #                          eigvals / det / kron
 # ----------------------------------------------------------------------

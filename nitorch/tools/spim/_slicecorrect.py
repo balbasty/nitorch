@@ -63,7 +63,7 @@ def slice_correct(x, dim=-1, nb_iter=20):
         a -= a.mean()
 
     x = (a + x).exp()
-    x = x.reshape(shape).movedim(-1, dim)
+    x = utils.movedim(x.reshape(shape), -1, dim)
     return x, a
 
 
