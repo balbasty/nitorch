@@ -187,3 +187,93 @@ def test_apply_jacobian_ignores_other_axes(tmp_path, readout):
                      '-bw', '1', '-o', out])
     res = nib.load(out).get_fdata()
     np.testing.assert_allclose(res, 1, atol=1e-4)
+
+
+# ----------------------------------------------------------------------
+# Readout errors, subcommand dispatch, debug print, bool flags
+# ----------------------------------------------------------------------
+
+def test_get_readout_unknown_letter_raises_clear_error():
+    with pytest.raises(ValueError) as e:
+        topup_main.get_readout('xy', torch.eye(4, dtype=torch.double),
+                               [4, 5, 6])
+    msg = str(e.value)
+    assert "'xy'" in msg and 'RAS' in msg
+
+
+def test_get_readout_valid():
+    aff = torch.eye(4, dtype=torch.double)
+    assert topup_main.get_readout('ap', aff, [4, 5, 6]) == -2
+    assert topup_main.get_readout('lr', aff, [4, 5, 6]) == 0
+
+
+def test_cli_no_args_prints_help(capsys, monkeypatch):
+    monkeypatch.setattr('sys.argv', ['nitorch'])
+    topup_main.cli([])
+    out = capsys.readouterr()
+    assert 'usage:' in out.out
+    assert '[ERROR]' not in out.err
+
+
+def test_cli_no_args_via_nitorch_entry_point(capsys, monkeypatch):
+    # `nitorch topup` calls cli([]) while sys.argv still holds 'topup'
+    monkeypatch.setattr('sys.argv', ['nitorch', 'topup'])
+    topup_main.cli([])
+    out = capsys.readouterr()
+    assert 'usage:' in out.out
+    assert '[ERROR]' not in out.err
+
+
+def test_cli_unknown_subcommand(capsys):
+    topup_main.cli(['frobnicate', 'field.nii'])
+    out = capsys.readouterr()
+    assert 'usage:' in out.out
+    assert '[ERROR] Unknown subcommand' in out.err
+    assert 'frobnicate' in out.err
+
+
+def test_fit_mse_no_debug_print(tmp_path, monkeypatch, capsys):
+    dat = np.random.RandomState(0).rand(6, 7, 8)
+    pos = _save(tmp_path, 'pos.nii.gz', dat)
+    neg = _save(tmp_path, 'neg.nii.gz', dat)
+    monkeypatch.setattr(topup_main, 'topup_fit',
+                        lambda d0, d1, **kw: torch.zeros_like(d0))
+    monkeypatch.setattr(topup_main, 'estimate_noise',
+                        lambda d: ({'sd': torch.tensor(0.123456)}, None))
+    out = str(tmp_path / 'field.nii.gz')
+    topup_main._cli(['fit', pos, neg, '-w', '1', '-o', out])
+    assert '0.123' not in capsys.readouterr().out
+    topup_main._cli(['fit', pos, neg, '-w', '1', '-o', out, '-v', '2'])
+    assert '0.123' in capsys.readouterr().out
+
+
+@pytest.mark.parametrize('flag,key', [('-d', 'diffeo'), ('--diffeo', 'diffeo'),
+                                      ('-j', 'modulation'),
+                                      ('--modulation', 'modulation')])
+def test_fit_bool_flag_before_inputs(flag, key):
+    opt = parser_fit.parse([flag, 'pos.nii', 'neg.nii'])
+    assert getattr(opt, key) is True
+    assert opt.pos_file == 'pos.nii' and opt.neg_file == 'neg.nii'
+    opt = parser_fit.parse([flag, 'off', 'pos.nii', 'neg.nii'])
+    assert getattr(opt, key) is False
+    assert opt.pos_file == 'pos.nii' and opt.neg_file == 'neg.nii'
+
+
+def test_apply_bool_flag_before_field():
+    opt = parser_apply.parse(['-d', 'field.nii', '-p', 'pos.nii'])
+    assert opt.diffeo is True and opt.dist_file == 'field.nii'
+
+
+@pytest.mark.parametrize('word,value', [
+    ('yes', True), ('no', False), ('TRUE', True), ('false', False),
+    ('1', True), ('0', False), ('on', True), ('Off', False)])
+def test_strict_bool_words(word, value):
+    from nitorch.cli.qmri.topup.parser import bool_or_str
+    assert bool_or_str(word) is value
+
+
+@pytest.mark.parametrize('word', ['pos.nii', '2', 'y', ''])
+def test_strict_bool_rejects(word):
+    from nitorch.cli.qmri.topup.parser import bool_or_str
+    with pytest.raises(ValueError):
+        bool_or_str(word)

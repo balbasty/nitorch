@@ -32,7 +32,7 @@ $$
 
 where $\mathbf{e}$ is the unit vector along the readout direction. The Jacobian factors $1 \pm \partial_e u$ model the pile-up or stretching of the intensity caused by the displacement, and can be switched off with `-j no`. The field is smoothed by a penalty on its bending energy (or membrane energy). It is estimated on a pyramid of increasingly fine grids.
 
-The matching term between the two images is the main difference with FSL TOPUP. With the default `mse`, the squared difference is used, as in TOPUP, with the noise level estimated from the images; this requires images with the same contrast. The other losses allow images with *different* contrasts to be matched, which makes it possible to estimate a distortion field from the first two echoes of a bipolar multi-echo acquisition, for instance: `ncc` (global normalised cross-correlation), `lncc` (local normalised cross-correlation in patches, see `-k`), `gmm` (negative mutual information estimated with a Gaussian mixture model with `-b` classes) and `lgmm` (the same, computed locally in patches).
+The matching term between the two images is the main difference with FSL TOPUP. With the default `mse`, the squared difference is used, as in TOPUP, with the noise level estimated from the images (it is printed at verbosity 2 or higher); this requires images with the same contrast. The other losses allow images with *different* contrasts to be matched, which makes it possible to estimate a distortion field from the first two echoes of a bipolar multi-echo acquisition, for instance: `ncc` (global normalised cross-correlation), `lncc` (local normalised cross-correlation in patches, see `-k`), `gmm` (negative mutual information estimated with a Gaussian mixture model with `-b` classes) and `lgmm` (the same, computed locally in patches).
 
 ### The output field
 
@@ -44,7 +44,7 @@ The matching term between the two images is the main difference with FSL TOPUP. 
 
 ### Readout direction
 
-The readout direction is set with `-r`, using anatomical axis letters such as `ap`, `lr` or `is`. The command picks the first voxel axis of the (first) input file whose orientation, computed from the orientation matrix, matches one of the letters. Without `-r`, the voxel axis with the most voxels is used. The chosen layout is printed when the command runs.
+The readout direction is set with `-r`, using the letters `L`/`R`, `A`/`P` or `I`/`S` (for example `ap`, `lr` or `is`). The command picks the first voxel axis of the (first) input file whose orientation, computed from the orientation matrix, matches one of the letters. Without `-r`, the voxel axis with the most voxels is used. The chosen layout is printed when the command runs. If no axis matches the letters, the command stops with an error that names the layout of the image.
 
 ### Multi-resolution schedule
 
@@ -65,6 +65,8 @@ The field is estimated on a pyramid. The grids are defined by `-w`, the voxel si
 | ------- | ----------- |
 | `FIELD` | Distortion field written by `topup fit`. |
 
+Running `nitorch topup` without arguments prints the help. An unknown subcommand prints the help followed by an `[ERROR] Unknown subcommand ...` message.
+
 ## Options: `topup fit`
 
 ### Input and output
@@ -73,7 +75,7 @@ The field is estimated on a pyramid. The grids are defined by `-w`, the voxel si
 | ------------------------- | ------------ | ----------- | ------- |
 | `-m`, `--mask`            | `FILE`       | Mask in which the matching loss is computed. | whole image |
 | `-o`, `--output`          | `TEMPLATE`   | Output path. The template can use `{dir}`, `{sep}`, `{base}` and `{ext}` (directory, separator, base name and extension of `POS`). | `{dir}{sep}{base}_topup_b0{ext}` |
-| `-r`, `--readout`         | `DIR`        | Readout direction (for example `ap`). | voxel axis with the most voxels |
+| `-r`, `--readout`         | `DIR`        | Readout direction: letters `L`/`R`, `A`/`P` or `I`/`S` (for example `ap`). | voxel axis with the most voxels |
 | `-bw`, `--bandwidth`      | `BW`         | Readout bandwidth in Hz/pixel. The field is multiplied by it. Use `1` for a field in voxels. | `1` |
 
 ### Model
@@ -89,7 +91,7 @@ The field is estimated on a pyramid. The grids are defined by `-w`, the voxel si
 
 The short option `-m` means `--mask`, and `-j` means `--modulation`.
 
-Because the value of `-j` and `-d` is optional, a flag written directly before the input files would take the first file as its value. Place such flags after the input files, or give them an explicit value.
+Options can be written before or after the positional inputs. The value of `-j` and `-d` is optional: when present, it must be one of `yes`, `no`, `true`, `false`, `1`, `0`, `on` or `off`. Any other word following the flag is treated as the next argument, and the flag means `yes`. For example, `topup fit -d pos.nii neg.nii` fits a diffeomorphic model. Options that take a list of values, on the other hand, still consume everything up to the next option, so give them after the inputs.
 
 ### Optimisation
 
@@ -123,6 +125,8 @@ Because the value of `-j` and `-d` is optional, a flag written directly before t
 | `--gpu`                   | `[ID]`       | Run on a CUDA device. | `--cpu` |
 | `-v`, `--verbose`         | `[LVL]`      | Verbosity. | `1` |
 | `-h`, `--help`            |              | Print the built-in help. | |
+
+As with `topup fit`, options can be written before or after `FIELD`, and the value of `-m` and `-d` is optional: it must be one of `yes`, `no`, `true`, `false`, `1`, `0`, `on` or `off`, and any other word is treated as the next argument. A list-valued option placed directly before `FIELD` still consumes it: `topup apply -p pos.nii field.nii` reads `field.nii` as a second `POS` file, so give `-p` and `-n` after `FIELD`.
 
 Because every file is written with its own `{dir}` and `{base}`, the default template never overwrites an input.
 
