@@ -3,10 +3,27 @@ import ast
 from nitorch.core import cli
 from nitorch.core.cli import ParseError
 from nitorch.core.struct import Structure
+from nitorch.core import bounds
+
+
+def parse_bound(val):
+    """Parse a boundary condition: a bound name/alias or a constant."""
+    if val.lower() == 'dct':
+        return 'dct2'
+    try:
+        val = bounds.to_nitorch(val)
+        return 0. if val == 'zero' else val
+    except ValueError:
+        pass
+    try:
+        return float(val)
+    except ValueError:
+        raise ParseError(f'Unknown boundary condition {val}. Expected a '
+                         f'number or one of {("dct",) + bounds.all_bounds}.')
 
 
 class Pad(Structure):
-    """Structure that holds parameters of the `crop` command"""
+    """Structure that holds parameters of the `pad` command"""
     files: list = []
     size: list = []
     size_space: str = 'vox'
@@ -24,12 +41,17 @@ usage:
 
     -s, --size *SIZE [SPACE]     Padding size. Space in {vox (default), ras}
                                  Each size element can be a pair of
-                                 lower/upper (or negative/positive) padding size.
-    -b, --bound BOUND            Boundary conditions 
-                                 {zero (default), replicate, dct, dct2, dft}
+                                 lower/upper (or negative/positive) padding
+                                 size, e.g. "(0,16)" or "(0, 16)".
+    -b, --bound BOUND            Boundary conditions: a number (constant fill)
+                                 or {zero (default), replicate, dct2, dft, ...}
+                                 Any bound name/alias known to nitorch is
+                                 accepted (`dct` is an alias for `dct2`).
     -k, --like FILE              Path to a pre-padded volume to use as reference.
-    -o, --output *FILES          Output filenames (default: {dir}/{base}.crop{ext})
-    -t, --transform              Input or output transformation filename (default: none)
+    -o, --output *FILES          Output filenames (default: {dir}/{base}.pad{ext})
+    -t, --transform [*FILES]     Input or output transformation filename
+                                 (default: none; {dir}/{base}.pad.lta if
+                                 the tag is given without a value)
                                     Input if none of s/k options are used.
                                     Output otherwise.
     
@@ -58,27 +80,35 @@ def parse(args):
                 val, *args = args
                 if val.lower() in ('vox', 'ras'):
                     struct.size_space = val
-                elif '(' in val or '[' in val:
-                    bracket = ')' if '(' in val else ']'
-                    while cli.next_isvalue(args):
+                elif val.startswith(('(', '[')):
+                    # A pair `(lower, upper)`, either in one word or
+                    # split across several words.
+                    bracket = ')' if val.startswith('(') else ']'
+                    while bracket not in val and cli.next_isvalue(args):
                         tmp, *args = args
                         val += tmp
-                        if bracket in tmp:
-                            val = ast.literal_eval(val)
-                            struct.size.append(val)
-                            break
+                    if bracket not in val:
+                        raise ParseError(f'Unclosed pair in --size: {val}')
+                    try:
+                        pair = ast.literal_eval(val)
+                        pair = tuple(float(v) for v in pair)
+                    except Exception:
+                        raise ParseError(f'Could not parse pair {val}')
+                    if len(pair) != 2:
+                        raise ParseError(f'Expected a pair (lower, upper) '
+                                         f'but got {val}')
+                    struct.size.append(pair)
                 else:
-                    struct.size.append(float(val))
+                    try:
+                        struct.size.append(float(val))
+                    except ValueError:
+                        raise ParseError(f'Could not parse size {val}')
         elif tag in ('-k', '--like'):
             cli.check_next_isvalue(args, tag)
             struct.like = args.pop(0)
         elif tag in ('-b', '--bound'):
             cli.check_next_isvalue(args, tag)
-            struct.bound = args.pop(0)
-            if struct.bound not in ('zero', 'dft', 'dct', 'dct2', 'replicate'):
-                struct.bound = float(struct.bound)
-            if struct.bound == 'zero':
-                struct.bound = 0.
+            struct.bound = parse_bound(args.pop(0))
         elif tag in ('-o', '--output'):
             struct.output = []
             while cli.next_isvalue(args):
@@ -86,7 +116,7 @@ def parse(args):
                 struct.output.append(val)
         elif tag in ('-t', '--transform'):
             if not cli.next_isvalue(args):
-                struct.transform = ['{dir}{sep}{base}.crop.lta']
+                struct.transform = ['{dir}{sep}{base}.pad.lta']
             else:
                 struct.transform = []
             while cli.next_isvalue(args):

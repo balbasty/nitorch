@@ -51,8 +51,10 @@ def pad(inp, size=None, space='vx', like=None, bound=0.,
         Either a path to a volume file or a tuple `(dat, affine)`, where
         the first element contains the volume data and the second contains
         the orientation matrix.
-    bound : {'replicate', 'dct', 'dct2', 'dft'} or Number, default=0
-        Boundary condition.
+    bound : str or Number, default=0
+        Boundary condition: any name accepted by
+        `nitorch.core.bounds.to_nitorch` (e.g. 'replicate', 'dct2',
+        'dft'), 'dct' (alias for 'dct2'), or a constant fill value.
     output : [sequence of] str, optional
         Output filename(s).
         If the input is not a path, the unstacked data is not written
@@ -127,13 +129,18 @@ def pad(inp, size=None, space='vx', like=None, bound=0.,
     size = [val for pair in size for val in pair]
 
     # --- convert size to voxels ---
-    size = utils.make_vector(size, dtype=torch.long)
     if space.lower() == 'ras':
-        perm = spatial.affine_to_layout(aff0)[:, 0]
-        size = size[perm.long()]
-        size = size / spatial.voxel_size(aff0)
-        size = size.ceil().long().tolist()
-    size = size.tolist()
+        # `size` is given in RAS order: permute it to voxel order, swap
+        # lower/upper along flipped axes, and convert mm to voxels.
+        size = torch.as_tensor(size, dtype=torch.float).reshape([dim, 2])
+        layout = spatial.affine_to_layout(aff0)
+        size = size[layout[:, 0].long()]
+        flip = layout[:, 1].bool()
+        size[flip] = size[flip].flip(-1)
+        size = size / spatial.voxel_size(aff0)[:, None]
+        size = size.ceil().long().flatten().tolist()
+    else:
+        size = utils.make_vector(size, dtype=torch.long).tolist()
 
     verb = f'Padding volume with shape {list(shape0[:dim])} by ['
     verb += ', '.join([f'({f}, {l})' for f, l in zip(size[::2], size[1::2])])
@@ -143,7 +150,11 @@ def pad(inp, size=None, space='vx', like=None, bound=0.,
     # --- do crop ---
     aff, _ = spatial.affine_pad(aff0, shape0[:dim], size)
     size += [0] * (2*(dat.dim() - dim))
-    mode = bound if isinstance(bound, str) else 'constant'
+    if isinstance(bound, str):
+        mode = 'dct2' if bound.lower() == 'dct' else bound
+        bound = 0
+    else:
+        mode = 'constant'
     dat = utils.pad(dat, size, mode=mode, value=bound)
     shape = dat.shape[:dim]
 

@@ -52,28 +52,26 @@ values than files, the last one is reused.
 number, which is used on both sides of the axis, or a pair
 `(lower, upper)` that gives different amounts before and after the data.
 If you give fewer entries than there are axes, the last entry is repeated, so
-`-s 10` pads every axis by 10 voxels on both sides. Amounts are truncated to
-whole numbers of voxels.
+`-s 10` pads every axis by 10 voxels on both sides. Amounts in voxels are
+truncated to whole numbers.
 
-Because of the way the command reads its arguments, a pair must be written as
-**two separate words**, the opening bracket on the first and the closing
-bracket on the second. Quote them so that your shell leaves the brackets
-alone:
+A pair can be written as one word or split over several words; quote it so
+that your shell leaves the brackets alone:
 
 ```shell
-nitorch pad T1w.nii.gz -s 10 10 '(0,' '16)'
+nitorch pad T1w.nii.gz -s 10 10 '(0,16)'
 ```
 
 pads the first two axes by 10 voxels on each side and adds 16 voxels after the
-data on the third axis. Square brackets work as well. A pair written as one
-word, such as `'(0,16)'`, is not understood: the parser then swallows the
-words that follow it, up to the next option, and drops them all without an
-error.
+data on the third axis. Square brackets work as well, and `'(0,' '16)'` or
+`'(0, 16)'` are read the same way. A pair whose closing bracket is missing, or
+that does not hold exactly two numbers, is rejected with an error.
 
-!!! warning "Millimetre sizes are not usable yet"
-    The parser accepts the keyword `ras` after the sizes, but in the current
-    version a padding given in millimetres stops with a Python error
-    (`'list' object has no attribute 'tolist'`). Give the amounts in voxels.
+With the keyword `ras` after the sizes, the amounts are in millimetres and
+are given along the world axes (x, y, z) rather than the stored axes: the
+command maps each one to the stored axis that points along it, swaps lower and
+upper on axes that are flipped, divides by the voxel size and rounds up to a
+whole number of voxels.
 
 Negative amounts remove voxels. They are only dependable with the boundary
 conditions `replicate`, `dct2` and `dft`; with the default constant fill, a
@@ -92,9 +90,10 @@ prefer [`crop`](crop.md).
 | `dct2`        | The image mirrored about its edge, with the edge voxel repeated.             |
 | `dft`         | The image wrapped around, as if it were periodic.                            |
 
-The parser also accepts the name `dct`, but the padding routine does not know
-it and stops with the error *Unknown boundary condition dct*. Any other word
-that is not a number is rejected.
+The other names and aliases that NITorch uses for boundary conditions are
+accepted too: `dct` (same as `dct2`), `dct1`, `dst1`, `dst2`, and the SciPy
+and PyTorch names such as `reflect`, `mirror`, `wrap`, `nearest`, `border` or
+`constant`. Any other word that is not a number is rejected with an error.
 
 The padded values are written in the data type of the input, with no checks, so
 a constant that does not fit in that type wraps around or is truncated.
@@ -141,7 +140,7 @@ matrix between world spaces, because padding does not move anything in world
 space, and stores the two volume geometries (shape and orientation matrix)
 that carry the information: the input as source, the padded volume as
 destination. If you give `-t` without a file name, the file is named
-`{dir}{sep}{base}.crop.lta`, the same default as `crop`.
+`{dir}{sep}{base}.pad.lta`.
 
 *Reading.* If you give `-t FILE` and neither `-s` nor `-k`, the file is read,
 and the input is padded so that its shape matches the destination geometry of
@@ -158,11 +157,11 @@ of one image to others.
 
 | Option               | Value               | Description                                                                              | Default                      |
 | -------------------- | ------------------- | ---------------------------------------------------------------------------------------- | ---------------------------- |
-| `-s`, `--size`       | `SIZE... [SPACE]`   | Amount of padding per axis: a number, or a pair `(lower, upper)` written as two words. The last entry is repeated for missing axes. [See above](#padding-amounts). | none, required unless `-k` or `-t` is given |
-| `-b`, `--bound`      | `BOUND`             | Boundary condition: `zero`, a number, `replicate`, `dct2` or `dft`. [See above](#boundary-conditions). | `zero`                       |
+| `-s`, `--size`       | `SIZE... [SPACE]`   | Amount of padding per axis: a number, or a pair `(lower, upper)`. The last entry is repeated for missing axes. [See above](#padding-amounts). | none, required unless `-k` or `-t` is given |
+| `-b`, `--bound`      | `BOUND`             | Boundary condition: `zero`, a number, `replicate`, `dct2`, `dft` or another bound name. [See above](#boundary-conditions). | `zero`                       |
 | `-k`, `--like`       | `FILE`              | Reference volume whose shape and position define the padding. [See above](#using-a-reference-image). | none                         |
 | `-o`, `--output`     | `FILE...`           | Output name template, one per input. Placeholders: `{dir}`, `{sep}`, `{base}`, `{ext}`.  | `{dir}{sep}{base}.pad{ext}`  |
-| `-t`, `--transform`  | `[FILE...]`         | Name of a `.lta` file to write or read, one per input. [See above](#transformation-files). | none; `{dir}{sep}{base}.crop.lta` if given with no value |
+| `-t`, `--transform`  | `[FILE...]`         | Name of a `.lta` file to write or read, one per input. [See above](#transformation-files). | none; `{dir}{sep}{base}.pad.lta` if given with no value |
 | `-h`, `--help`       |                     | Print the built-in help and exit.                                                        |                              |
 
 ## Examples
@@ -178,7 +177,7 @@ Add 16 voxels after the data along the third axis only, repeating the last
 slice:
 
 ```shell
-nitorch pad T1w.nii.gz -s 0 0 '(0,' '16)' -b replicate
+nitorch pad T1w.nii.gz -s 0 0 '(0,16)' -b replicate
 ```
 
 Pad a mask with a margin of 5 voxels, wrapping the image around instead of
