@@ -15,7 +15,8 @@ from nitorch import spatial
 from nitorch.core import utils, linalg
 import torch
 from . import optim as optm, utils as regutils
-from .objects import SVFModel, ShootModel, MeanSpace, Nonlin2dModel, SumSimilarity
+from .objects import (SVFModel, ShootModel, MeanSpace, Nonlin2dModel,
+                      SumSimilarity, AffineModel)
 
 
 # TODO:
@@ -154,15 +155,26 @@ class PairwiseRegister:
                 self.nonlin.set_kernel()
 
         # initialize loss
-        verbose, self.verbose = self.verbose, False
-        if self.nonlin:
-            step.do_vel(self.nonlin.parameters(), grad=False, hess=False)
-            if self.affine:
-                step.do_affine(self.affine.parameters(), grad=False, hess=False)
-        else:
+        if not self.nonlin:
             self.affine.position, pos = 'm', self.affine.position
-            step.do_affine_only(self.affine.parameters(), grad=False, hess=False)
-        self.verbose = verbose
+        if any(loss.loss.get_state() is not None for loss in self.losses):
+            # Stateful losses (warm-started EM, IRLS weights...): this
+            # evaluation initialises their state before the optimiser's
+            # first evaluation, as it always did.
+            verbose, self.verbose = self.verbose, False
+            if self.nonlin:
+                step.do_vel(self.nonlin.parameters(), grad=False, hess=False)
+                if self.affine:
+                    step.do_affine(self.affine.parameters(), grad=False, hess=False)
+            else:
+                step.do_affine_only(self.affine.parameters(), grad=False, hess=False)
+            self.verbose = verbose
+        else:
+            # Every optimiser evaluates the objective at the initial
+            # parameters itself, so evaluating the data term here would be
+            # a duplicate: only initialise the penalty terms that the
+            # steps of a joint model take from each other.
+            step.init_penalties()
 
         step.framerate = self.framerate
         if self.affine and self.nonlin:
@@ -593,12 +605,24 @@ class PairwiseRegisterStep:
         if not in_line_search:
             self.ll = ll
             self.llv = llv
+            self.lla = lla
             self.all_ll.append(ll)
             self.ll_prev = self.ll
             self.ll_max = max(self.ll_max, self.ll)
             self.n_iter += 1
 
         return ll
+
+    def init_penalties(self):
+        """Initialise the penalties that each step of a joint model takes
+        from the other component (`do_affine` uses the last velocity
+        penalty `llv`, `do_vel` the last affine penalty `lla`), without
+        evaluating the data term."""
+        if not (self.affine and self.nonlin):
+            return
+        self.llv = self._nonlin_penalty(self.nonlin.parameters())
+        if self.affine.penalty is not None:
+            self.lla = self._affine_penalty(self.affine.parameters())
 
     def do_vel(self, vel, grad=False, hess=False, in_line_search=False):
         """Forward pass for updating the nonlinear component"""
@@ -785,11 +809,7 @@ class PairwiseRegisterStep:
         # ==============================================================
         #                       REGULARIZATION
         # ==============================================================
-        vgrad = self.nonlin.regulariser(vel0)
-        llv = 0.5 * vel0.flatten().dot(vgrad.flatten())
-        if grad:
-            sumgrad += vgrad
-        del vgrad
+        llv = self._nonlin_penalty(vel0, sumgrad if grad else None)
 
         # ==============================================================
         #                           VERBOSITY
@@ -812,6 +832,18 @@ class PairwiseRegisterStep:
             out.append(sumhess)
         return tuple(out) if len(out) > 1 else out[0]
 
+    def _nonlin_penalty(self, vel, grad=None):
+        """Regularisation of the nonlinear parameters: `0.5 * <v, L v>`.
+
+        Its gradient (L v) is added to `grad` in place; its Hessian (L) is
+        not materialised (the nonlinear solvers apply it themselves).
+        Returns the value.
+        """
+        vgrad = self.nonlin.regulariser(vel)
+        if grad is not None:
+            grad += vgrad
+        return 0.5 * vel.flatten().dot(vgrad.flatten())
+
     def _affine_penalty(self, logaff, grad=None, hess=None):
         """L2 penalty on the (model-basis) affine log-parameters.
 
@@ -820,6 +852,10 @@ class PairwiseRegisterStep:
         Gram matrix M of `_optim_grad`: M.T (P * q) and M.T diag(P) M.
         `grad` and `hess` are updated in place. Returns the value.
         """
+        if isinstance(logaff, AffineModel.Parameters):
+            # optimisers pass the model's parameters on their first
+            # evaluation, and (model-basis) tensors afterwards
+            logaff = logaff.dat
         penalty = self.affine.penalty
         lla = logaff * penalty
         if grad is not None or hess is not None:
