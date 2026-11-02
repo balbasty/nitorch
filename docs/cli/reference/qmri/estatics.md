@@ -74,7 +74,7 @@ These options describe one contrast and apply to the `-c` they follow.
 | `-sp`, `--echo-spacing` | `DELTA UNIT`                | Spacing between consecutive echoes. Requires `-te` and a unit. | unused |
 | `-rd`, `--readout`      | `DIR`                       | Readout direction, for example `ap`, `lr` or `is`. The first voxel axis whose orientation letter appears in `DIR` is chosen. Only used with `--meetup`. | the voxel axis with the most voxels |
 | `-bw`, `--bandwidth`    | `BW [UNIT]`                 | Readout bandwidth. Only read together with `-b0`. | unused |
-| `-b0`, `--distortion`   | `FIELD [UNIT]`              | Pre-computed B0 field map, in voxels (`vox`) or Hz (`hz`). **Not functional in this version:** the code that loads the map fails. Use `--meetup` instead. | |
+| `-b0`, `--distortion`   | `FIELD [UNIT]`              | Pre-computed B0 field map, in voxels (`vox`) or Hz (`hz`). The map is resliced to the space of the contrast. A map in Hz requires `-bw`. | |
 
 ### Reconstruction
 

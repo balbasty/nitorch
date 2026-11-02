@@ -109,8 +109,8 @@ These are given before the first `-c`.
 | Option                | Value                  | Description | Default |
 | --------------------- | ---------------------- | ----------- | ------- |
 | `-tf`, `--transmit`   | `FIELD [MAG] [UNIT]`   | B1 transmit map used by all contrasts that do not have their own. | none |
-| `-rf`, `--receive`    | `FIELD [MAG] [UNIT]`   | Intended as a shared receive map. **Currently fails**; give `-rf` inside each contrast instead. | none |
-| `-b0`, `--b0-field`   | `FIELD [MAG] [UNIT]`   | Intended as a shared B0 map. **Currently fails**, and B0 correction is not implemented anyway. | none |
+| `-rf`, `--receive`    | `FIELD [MAG] [UNIT]`   | B1 receive map used by all contrasts that do not have their own. | none |
+| `-b0`, `--b0-field`   | `FIELD [MAG] [UNIT]`   | B0 map used by all contrasts that do not have their own. Accepted but **not used**: B0 correction is not implemented. | none |
 
 ### Reconstruction
 
@@ -129,7 +129,7 @@ These are given before the first `-c`.
 | `--meetup`           | `[yes&vert;no]`               | Parsed, but distortion correction is not implemented in `greeq`, so this has no effect. Use [`estatics`](estatics.md) for MEETUP. | `no` |
 | `--lam-meetup`       | `VAL`                         | Parsed but has no effect, for the same reason. | `1e5` |
 
-A per-map weight of `0` is treated as unset and falls back to `--lam`. To switch regularisation off, use `--regularization no`.
+A per-map weight of `0` switches the penalty off for that map only. To switch regularisation off for all maps, use `--regularization no`.
 
 ### Optimisation
 
@@ -148,7 +148,7 @@ A per-map weight of `0` is treated as unset and falls back to `--lam`. To switch
 | `-u`, `--uncertainty`  | `[yes&vert;no]` | Also write the uncertainty of every map. Alone, the flag means `yes`. | `no` |
 | `--cpu`                |           | Run on the CPU. | |
 | `--gpu`                | `[ID]`    | Run on a CUDA device. `ID` is the device index. Falls back to the CPU when CUDA is not available. | `--cpu` |
-| `-v`, `--verbose`      | `[LVL]`   | Verbosity. Alone, the flag means `1`. | `0` |
+| `-v`, `--verbose`      | `[LVL]`   | Verbosity. Alone, the flag means `1`. Use `-v 0` for a silent run. | `1` |
 | `--framerate`          | `HZ`      | Accepted but currently has no effect. | `1` |
 | `-h`, `--help`         |           | Print the built-in help. | |
 

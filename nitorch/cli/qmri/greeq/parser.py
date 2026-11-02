@@ -141,7 +141,7 @@ parser.add_option('solver', '--solver', nargs='+', default=['cg'])
 
 # generic options
 parser.add_option('verbose', ('-v', '--verbose'),
-                  nargs='?', default=0, convert=int,
+                  nargs='?', default=1, convert=int,
                   action=cli.Actions.store_value(1),
                   help='Level of verbosity')
 parser.add_option('gpu', '--gpu',
