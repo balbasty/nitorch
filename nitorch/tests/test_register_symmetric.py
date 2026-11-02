@@ -366,7 +366,10 @@ def test_verbose_does_not_change_objective(step_name, optim, capsys):
         for line_search in (True, False):
             step, f, x = _penalised_step(step_name, optim, True, verbose)
             outs.append(f(x, grad=True, hess=True, in_line_search=line_search))
+    # Not bitwise: on torch 1.13 the first evaluation runs the TorchScript
+    # kernels unfused and later ones fused, which changes the last bits
+    # (~1e-22 here) even without any printing.
     for out in outs[1:]:
         for a, b in zip(outs[0], out):
-            assert torch.equal(a, b)
+            assert torch.allclose(a, b, rtol=1e-12, atol=1e-12 * b.abs().max())
     capsys.readouterr()
