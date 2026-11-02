@@ -231,3 +231,114 @@ def test_register_emmi_translation(tmp_path):
               '@@optim', 'gn', '-n', '50', '@pyramid', '--levels', '0'])
     t = io.transforms.loadf(lta).reshape([4, 4])[:3, -1].tolist()
     assert all(abs(a - b) < 0.5 for a, b in zip(t, SHIFT)), t
+
+
+# ----------------------------------------------------------------------
+#   Automatic number of fixed bins (`-d auto`)
+# ----------------------------------------------------------------------
+def noisy_blobs(shape, shift, noise=0.05, seed=0):
+    from nitorch import spatial
+    grid = spatial.identity_grid(shape, dtype=dt)
+    x = grid - (torch.as_tensor(shape, dtype=dt) / 2
+                + torch.as_tensor(shift, dtype=dt))
+    a = (x / torch.as_tensor([5., 3.5, 4.])).square().sum(-1).neg().exp()
+    b = ((x - torch.as_tensor([4., -3., 2.])) / 2.5).square().sum(-1)
+    g = torch.Generator().manual_seed(seed)
+    out = a + 0.7 * b.neg().exp()
+    out += noise * torch.randn(shape, generator=g, dtype=dt)
+    return out[None].float()
+
+
+def emmi_at_level(level, discretize, shifts, shape=(32, 32, 32)):
+    from nitorch.tools.registration.pairwise_makeobj import make_image
+    fix = make_image(noisy_blobs(shape, [0, 0, 0], seed=0),
+                     pyramid=[level], discretize=discretize)[0].dat
+    vals = []
+    for s in shifts:
+        mov = make_image(noisy_blobs(shape, [s, 0, 0], seed=1),
+                         pyramid=[level], discretize=16, soft=True)[0].dat
+        vals.append(float(emmi(mov.double(), fix, dim=3,
+                               grad=False, hess=False)))
+    return int(fix.max()) + 1, vals
+
+
+def test_auto_bins_rule():
+    from nitorch.tools.registration.pairwise_preproc import auto_bins
+    assert auto_bins(256**3, 16) == 256          # capped at the user value
+    assert auto_bins(256**3, 16, max_bins=64) == 64
+    assert auto_bins(4096, 16) == 51             # N / (5 K)
+    assert auto_bins(64, 16) == 2                # at least 2 bins
+
+
+def test_emmi_auto_bins_per_level():
+    """`discretize='auto'` keeps 256 bins at full resolution (on a large
+    enough image) and uses fewer bins on coarse pyramid levels."""
+    from nitorch.tools.registration.pairwise_makeobj import make_image
+    img = make_image(noisy_blobs((32, 32, 32), [0, 0, 0]),
+                     pyramid=[0, 1, 2], discretize=('auto', 256, 16))
+    nbins = [int(level.dat.max()) + 1 for level in img]
+    assert nbins == [256, 51, 6]
+    img = make_image(noisy_blobs((32, 32, 32), [0, 0, 0]),
+                     pyramid=[0, 1, 2], discretize=256)
+    assert all(int(level.dat.max()) + 1 == 256 for level in img)
+
+
+def test_emmi_auto_bins_coarse_level_ordering():
+    """On a coarse level (4^3 voxels), 256 fixed bins overfit: the value
+    at a wrong shift is lower than at the true shift. With auto bins,
+    the value is nearly flat (2 bins) with no spurious minimum."""
+    shifts = [0, 2, 4, 8]
+    J, v256 = emmi_at_level(3, 256, shifts)
+    assert J == 256
+    assert v256[0] > min(v256[1:])
+    J, vauto = emmi_at_level(3, ('auto', 256, 16), shifts)
+    assert J == 2
+    assert vauto[0] <= min(vauto[1:]) + 1e-6 and vauto[0] < vauto[-1]
+    # one level finer (8^3): values increase with the shift, and the
+    # overfitting bias (the value at the true shift) is much smaller
+    J, v256 = emmi_at_level(2, 256, shifts)
+    J, vauto = emmi_at_level(2, ('auto', 256, 16), shifts)
+    assert all(a < b for a, b in zip(vauto[:-1], vauto[1:]))
+    assert abs(vauto[0]) < 0.6 * abs(v256[0])
+
+
+def test_emmi_cache_shape_and_history():
+    """The cached H is dropped when the number of bins changes, and a
+    warm start only changes the value by about the EM tolerance."""
+    mu, fix, g = make_data()
+    loss = EMMI(dim=3, cache=True, max_iter=1000, tolerance=1e-8)
+    cold = float(EMMI(dim=3, cache=False, max_iter=1000,
+                      tolerance=1e-8).loss(mu, fix))
+    other = torch.rand(mu.shape, dtype=dt, generator=g).add_(0.1)
+    other /= other.sum(0, keepdim=True)
+    loss.loss(other, fix)
+    assert abs(float(loss.loss(mu, fix)) - cold) < 1e-4
+    # fewer bins: the cached (J, K) histogram cannot be used
+    ll = loss.loss(mu, fix.clamp_max(J - 3))
+    assert torch.isfinite(ll) and loss._prior.shape[-2:] == (J - 2, K)
+
+
+def test_cli_discretize_auto_option():
+    from nitorch.cli.registration.register.parser import _convert_discretize
+    assert _convert_discretize('auto') == ('auto', 256)
+    assert _convert_discretize('auto:64') == ('auto', 64)
+    assert _convert_discretize('32') == 32
+
+
+@pytest.mark.slow
+def test_register_emmi_translation_auto(tmp_path):
+    """`@loss emmi` with `-d auto` and a 3-level pyramid recovers a known
+    translation (with 256 fixed bins at every level, the coarse levels
+    overfit)."""
+    import os
+    from nitorch import io
+    from nitorch.cli.registration.register.cli import _cli as register
+    fix, mov = shifted_pair(str(tmp_path))
+    lta = os.path.join(str(tmp_path), 'emmi.lta')
+    register(['-v', '0', '--cpu', '@loss', 'emmi',
+              '@@fix', fix, '-o', 'false', '-r', 'false', '-d', 'auto',
+              '@@mov', mov, '-o', 'false', '-r', 'false',
+              '@affine', 'translation', '-o', lta,
+              '@@optim', 'gn', '-n', '50', '@pyramid', '--levels', '0:3'])
+    t = io.transforms.loadf(lta).reshape([4, 4])[:3, -1].tolist()
+    assert all(abs(a - b) < 0.5 for a, b in zip(t, SHIFT)), t
