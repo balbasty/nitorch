@@ -248,8 +248,10 @@ the implementation, so check it against a newer release.
 - `ssim` does not work, [as described above](#ssim).
 - `--append` does not append. It expects the output file to exist, and then
   replaces its content with `null`. Write each result to its own file instead.
-- Errors other than a bad command line, for example a shape mismatch, are not
-  caught and are reported as a Python traceback.
+- Errors other than a bad command line, for example a shape mismatch, are
+  reported as `[ERROR] <message>` without a Python traceback, and the command
+  exits with status 1 (see [Errors](../../conventions.md#errors)). The message
+  can be terse, since it is the text of the underlying exception.
 - Only the first prediction file names the output, so a call with several
   prediction files writes a single JSON file.
 

@@ -20,37 +20,44 @@ from .. import helpers
 def reslice(argv=None):
     """Generic reslicing
 
-    This is a command-line utility.
+    This is a command-line utility: errors are printed to stderr and
+    reported by returning 1 (see `_reslice` for a version that raises).
     """
 
     try:
-        argv = argv or sys.argv[1:]
-        options = parse(list(argv))
-        if not options:
-            return
-
-        read_info(options)
-
-        options_volumes = options
-        options_streamlines = copy.deepcopy(options)
-        options_streamlines.transformations \
-            = invert_transforms(options_streamlines.transformations)
-
-        if options_volumes.volumes:
-            collapse(options_volumes)
-            write_volumes(options_volumes)
-            del options_volumes
-
-        if options_streamlines.streamlines:
-            collapse(options_streamlines)
-            write_streamlines(options_streamlines)
-            del options_streamlines
-
+        return _reslice(argv)
     except ParseError as e:
         print(help)
         print(f'[ERROR] {str(e)}', file=sys.stderr)
-    # except Exception as e:
-    #     print(f'[ERROR] {str(e)}', file=sys.stderr)
+        return 1
+    except Exception as e:
+        print(f'[ERROR] {str(e)}', file=sys.stderr)
+        return 1
+
+
+def _reslice(argv=None):
+    """Generic reslicing, without exception handling"""
+    argv = argv or sys.argv[1:]
+    options = parse(list(argv))
+    if not options:
+        return
+
+    read_info(options)
+
+    options_volumes = options
+    options_streamlines = copy.deepcopy(options)
+    options_streamlines.transformations \
+        = invert_transforms(options_streamlines.transformations)
+
+    if options_volumes.volumes:
+        collapse(options_volumes)
+        write_volumes(options_volumes)
+        del options_volumes
+
+    if options_streamlines.streamlines:
+        collapse(options_streamlines)
+        write_streamlines(options_streamlines)
+        del options_streamlines
 
 
 commands['reslice'] = reslice
