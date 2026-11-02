@@ -147,7 +147,7 @@ A few rules follow from the grammar:
 
 - Global options must be given **before the first `@` group**. Once a group
   has been opened they are no longer recognised.
-- The same short tag means different things in different groups: `-o` is
+- The same short tag can mean different things in different groups: `-o` is
   the output directory globally, the output image in `@@fix`/`@@mov`, the
   transformation file in `@affine`/`@nonlin`, and a momentum file in
   `@@optim`. The meaning is always given by the innermost open group.
@@ -207,6 +207,9 @@ images, or segmentations?
 | `gmmi`, `gmm`         | Mutual-information-type measure in which the joint intensity distribution is modelled by a Gaussian mixture fitted by EM. | Different contrasts, as an alternative to `mi` that needs no histogram binning.                |
 | `lgmmi`, `lgmm`       | The same, with the mixture fitted within local patches.                                       | Different contrasts with spatially varying relationship (bias field).                           |
 | `emmi`                | Mutual information computed by an expectation-maximisation estimate of the joint histogram, between a discretised fixed image and a soft-quantised moving image. | Different contrasts. See [Image options](#image-options-fix-mov) for what it does to the inputs. |
+| `dot`, `prod`         | Dot product between the two images.                                                           | Mostly useful as a building block; it is not invariant to the scale of the data.               |
+| `ndot`                | Normalised dot product (cosine similarity between the two images).                            | Same contrast, when only the direction of the intensity vectors matters.                       |
+| `sqz`, `squeezed`     | Squeezed product, weighted by a precision `-w`.                                                | Same contrast, as a weighted alternative to `mse`.                                              |
 | `cat`, `cce`          | Categorical cross-entropy between two sets of probability maps (one channel per class).       | Soft segmentations, such as tissue probability maps, or label maps converted to one-hot maps with `-l`. |
 | `dice`, `f1`          | One minus the Dice coefficient of each class, summed over classes.                            | Label maps and probability maps, when you care about the overlap of structures rather than voxel intensities. |
 
@@ -239,9 +242,8 @@ Some practical guidance:
   this means one joint histogram per pair of channels, not one over all
   pairs.
 
-Several further names are accepted by the parser but are not part of the
-documented interface: `ent` (joint entropy), `dot` and `ndot` (dot product
-and its normalised version), and `extra`. `extra` is not a loss at all: an
+Two further names are accepted but remain experimental: `ent` (joint
+entropy) and `extra`. `extra` is not a loss at all: an
 `@loss extra` group contributes nothing to the objective, but its moving
 image is warped with the final transformation and written out like any
 other. It still requires a `@@fix` and `@@mov`, the former being used to
@@ -258,8 +260,9 @@ and before `@@fix`/`@@mov`.
 | `mi`           | `-b`, `--bins`          | `N [N]`            | Number of bins of the joint histogram. A second value gives a different number of bins for the fixed image (the first is for the moving image). | `32`               |
 | `mi`           | `-f`, `--fwhm`          | `VAL...`           | Full width at half maximum of the Gaussian smoothing applied to the joint histogram, in bins.        | `0`                |
 | `mi`           | `-n`, `--order`         | `N [N]`            | Order of the B-spline (Parzen window) that spreads each voxel over neighbouring bins.                | `3`                |
-| `mse`          | `-w`, `--weight`        | `VAL`              | Fix the precision (inverse variance) of the noise instead of estimating it.                          | estimated          |
-| `mad`, `tuk`   | `-w`, `--weight`        | `VAL`              | Fix the precision of the residuals instead of estimating it.                                         | estimated          |
+| `mse`          | `-w`, `--weight`        | `VAL` &vert; `auto` | Precision (inverse variance) of the noise. With `auto`, it is estimated from the data.              | `auto`             |
+| `mad`, `tuk`   | `-w`, `--weight`        | `VAL` &vert; `auto` | Precision of the residuals. With `auto`, it is estimated from the data.                             | `auto`             |
+| `sqz`          | `-w`, `--weight`        | `VAL` &vert; `auto` | Precision used to weight the product.                                                                | `1`                |
 | `mad`, `tuk`   | `-j`, `--joint`         |                    | Use a single weight map shared by all channels, rather than one per channel.                         |                    |
 | `lcc`          | `-p`, `--patch`         | `VAL... [UNIT]`    | Size of the local window, one value or one per axis. The unit is `vox`, `mm` or `pct` (percentage of the image size). With the default Gaussian kernel the size is a FWHM; with a square kernel it is the full width. | `10 pct`           |
 | `lcc`          | `--stride`              | `VAL...`           | Distance between consecutive windows, in voxels. Larger values are faster.                           | `1`                |
@@ -279,8 +282,7 @@ and before `@@fix`/`@@mov`.
     physical size (`mm`). A size in `vox` is halved each time the image is
     subsampled by two.
 
-In `lcc` and `lgmmi`, the short tag `-s` is the symmetric flag of the loss
-and not the stride; write `--stride` in full.
+`--stride` has no short tag: in every loss, `-s` is the symmetric flag.
 
 ### Image options (`@@fix`, `@@mov`)
 
@@ -308,8 +310,8 @@ the same voxel grid.
 | `--extrapolate`         |                             | Extrapolate out-of-bounds data instead of leaving it undefined.                                                                             |         |
 | `-n`, `--order`         | `N`                         | Interpolation order used to write the output images. Registration itself always uses linear interpolation. Use `0` for label maps.          | `1`     |
 | `--name`                | `NAME`                      | A name for this image, to refer to it in `@nonlin --fov`.                                                                                   | first filename |
-| `-o`, `--output`        | `PATH` &vert; `false`       | Template of the output image with *minimal reslicing*. `false` disables it. Always give a value: `-o` alone is not supported. See [Outputs](#outputs).                                       | `{dir}{sep}{base}.moved{ext}` |
-| `-r`, `--resliced`      | `[PATH]`                    | Template of the output image resliced onto the grid of the *other* image. With no value, `{dir}{sep}{base}.resliced{ext}`. Disabled by default. | off     |
+| `-o`, `--output`        | `[PATH` &vert; `true` &vert; `false]` | Template of the output image with *minimal reslicing*. With no value or `true`, the default template is used; `false` disables the output. See [Outputs](#outputs). | `{dir}{sep}{base}.moved{ext}` |
+| `-r`, `--resliced`      | `[PATH` &vert; `true` &vert; `false]` | Template of the output image resliced onto the grid of the *other* image. With no value or `true` (or `yes`), `{dir}{sep}{base}.resliced{ext}`. | off     |
 
 A few of these deserve a comment.
 
@@ -621,7 +623,9 @@ For the transformations, `{dir}` is the output directory given by `-o` or,
 if there is none, the directory of the first fixed image. For images it is
 the output directory, or else the directory of the image itself. Note that
 **both** the fixed and moving images are written as `.moved` by default; give
-`-o false` to `@@fix` or `@@mov` to avoid it.
+`-o false` to `@@fix` or `@@mov` to avoid it. Output templates are checked
+before the fit starts, so a malformed template is reported immediately
+rather than after the optimisation has run.
 
 **Minimal reslicing** means that the image keeps its own voxel grid
 whenever possible. With a purely affine registration, the voxel data are
@@ -685,7 +689,7 @@ These must precede the first group.
 | `-r`, `--framerate`       | `HZ`           | Refresh rate of the live plot.                                                                                             | `1`                                      |
 | `--cpu`                   | `[THREADS]`    | Run on the CPU, with an optional number of threads.                                                                        | CPU                                      |
 | `--gpu`                   | `[ID]`         | Run on a GPU (the one with this index, if given). Falls back to the CPU with a warning when CUDA is not available.          | CPU                                      |
-| `-d`, `--dim`             | `DIM`          | Accepted, but ignored: registration is always performed in 3D.                                                             |                                          |
+| `-d`, `--dim`             | `DIM`          | Dimensionality of the registration. Only `3` is accepted; any other value is an error, raised before any file is read. A 2D image is registered as a single-slice volume, using `-2d` in `@affine`/`@nonlin` for in-plane transformations. | `3`                                      |
 | `-h`, `--help`            | `[LEVEL]`      | Print the help. Level 1 is a summary, 2 lists the accepted names, 3 lists all options.                                     | `1`                                      |
 
 See [Hardware](../../conventions.md#hardware) for general notes on devices.
