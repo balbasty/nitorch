@@ -163,8 +163,15 @@ usage:
        [r, rigid]                       Translations + Rotations
         s, similitude                   Translations + Rotations + Iso zoom
         a, affine                       Full affine
-    FACTOR must be a scalar value [1] and is a global penalty factor
-    (no affine penalty is implemented yet, so FACTOR currently has no effect)
+    FACTOR must be a scalar value [0] and is the precision lambda of a
+    Gaussian prior N(0, (lambda I)^-1) on the (orthonormal) affine Lie
+    parameters q, i.e. a penalty 1/2 lambda ||q||^2. 0 means no penalty.
+    Per-group factors, multiplied by FACTOR (as for @nonlin), so that the
+    precision of a group is FACTOR x its factor:
+        -t, --translation-penalty F     Penalty factor of translations [1]
+        -r, --rotation-penalty F        Penalty factor of rotations [1]
+        -z, --zoom-penalty F            Penalty factor of zooms [1]
+        -s, --shear-penalty F           Penalty factor of shears [1]
     Common options:
         -p, --position                  Position of the affine: [sym], mov, fix
         -g, --progressive               Progressive optimization (t -> r -> s -> a) [false]
@@ -572,8 +579,15 @@ affine_choices = cli.Positional('name', nargs='?', default='rigid',
                                 convert=lambda x: affine_aliases.get(x, x),
                                 help='Name of the affine transform')
 affine = cli.NamedGroup('affine', affine_choices, '@affine', n='?', make_default=False)
-affine.add_positional('factor', nargs='*', default=[1.], convert=float,
-                      help='Penalty factor')
+affine.add_positional('factor', nargs='*', default=[0.], convert=float,
+                      help='Prior precision (0 = no penalty)')
+for _grp, _flags in (('translation', ('-t', '--translation-penalty')),
+                     ('rotation', ('-r', '--rotation-penalty')),
+                     ('zoom', ('-z', '--zoom-penalty')),
+                     ('shear', ('-s', '--shear-penalty'))):
+    affine.add_option(_grp, _flags, nargs=1, convert=float, default=1.,
+                      help=f'Penalty factor of the {_grp} parameters '
+                           f'(times FACTOR)')
 affine.add_option('position', ('-p', '--position'), default='sym', nargs=1,
                   validation=cli.Validations.choice(['sym', 'mov', 'fix']),
                   help='Position of the affine transform in the model')

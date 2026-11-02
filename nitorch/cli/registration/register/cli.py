@@ -125,6 +125,24 @@ def _main(options):
                 affine_init = torch.eye(4)
                 affine_init[:-1, -1] = shift
 
+        # affine prior precision: as for @nonlin, the precision of each
+        # group is FACTOR (global, 0 = no penalty) x its group factor
+        # (-t/-r/-z/-s, default 1)
+        factor = options.affine.factor
+        if isinstance(factor, (list, tuple)):
+            factor = factor[0] if factor else 0.
+        factor = float(factor)
+        groups = ('translation', 'rotation', 'zoom', 'shear')
+        per_group = {g: getattr(options.affine, g, 1.) for g in groups}
+        per_group = {g: 1. if v is None else float(v)
+                     for g, v in per_group.items()}
+        if not factor:
+            affine_penalty = None
+        elif all(v == 1. for v in per_group.values()):
+            affine_penalty = factor     # lambda * I, as without -t/-r/-z/-s
+        else:
+            affine_penalty = {g: factor * v for g, v in per_group.items()}
+
         # build affine object
         if options.affine.is2d is not False:
             if isinstance(losses[0], objects.SumSimilarity):
@@ -133,10 +151,10 @@ def _main(options):
                 affine0 = losses[0].fixed.affine
             affine = make_affine_2d(options.affine.is2d, affine0,
                                     options.affine.name, options.affine.position,
-                                    init=affine_init)
+                                    penalty=affine_penalty, init=affine_init)
         else:
             affine = make_affine(options.affine.name, options.affine.position,
-                                 init=affine_init)
+                                 penalty=affine_penalty, init=affine_init)
 
     # ------------------------------------------------------------------
     #                           BUILD DENSE

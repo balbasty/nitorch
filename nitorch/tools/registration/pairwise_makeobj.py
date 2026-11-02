@@ -136,8 +136,10 @@ def make_affine(basis='rigid', position='symmetric', penalty=None, init=None):
         If 'symmetric', both images are rotated by the transformation and
         its inverse, towards a mean space; thereby making the model fully
         symmetric.
-    penalty : None
-        Not implemented
+    penalty : float or list[float] or dict, optional
+        Precision of a Gaussian prior on the Lie parameters
+        (see `objects.AffineModel`). A float lambda gives the penalty
+        1/2 lambda ||q||^2. None or 0: no penalty.
     init : str | MappedAffine | (4, 4) tensor
         Initial affine
 

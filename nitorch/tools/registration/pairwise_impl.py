@@ -845,11 +845,13 @@ class PairwiseRegisterStep:
         return 0.5 * vel.flatten().dot(vgrad.flatten())
 
     def _affine_penalty(self, logaff, grad=None, hess=None):
-        """L2 penalty on the (model-basis) affine log-parameters.
+        """Gaussian prior N(0, P^-1) on the model-basis log-parameters.
 
-        Its gradient (P * q) and Hessian (diag(P)) live in the model
-        basis; they are mapped to the optimised basis (`-g`) with the
-        Gram matrix M of `_optim_grad`: M.T (P * q) and M.T diag(P) M.
+        P is diagonal: a scalar lambda (P = lambda I) or a vector of
+        per-parameter precisions. Value: 1/2 q' P q. Its gradient (P q)
+        and Hessian (P) live in the model basis; they are mapped to the
+        optimised basis (`-g`) with the Gram matrix M of `_optim_grad`:
+        M.T (P q) and M.T P M (lambda M.T q and lambda M.T M for a scalar).
         `grad` and `hess` are updated in place. Returns the value.
         """
         if isinstance(logaff, AffineModel.Parameters):
