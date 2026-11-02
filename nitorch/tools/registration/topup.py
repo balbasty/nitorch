@@ -79,7 +79,7 @@ class TopUpFlexiStep:
         if self.modulation:
             pos *= jac
             neg *= ijac
-            if self.model == 'svf':
+            if grad and self.model == 'svf':
                 grad_pos *= jac
                 grad_neg *= ijac
 
@@ -317,8 +317,10 @@ def topup_fit(pos, neg, dim=-1, loss='mse', lam=1, vx=1, ndim=3, mask=None,
 
     step = TopUpFlexiStep(pos, neg, loss, regulariser, verbose,
                           model=model, modulation=modulation, mask=mask)
+    # `lam` is already normalized by the number of voxels (and so is
+    # `regulariser`), so the optimizer must not reduce it again.
     optim = optm.FieldCG(factor=lam, voxel_size=vx, **{penalty: 1},
-                         bound=BND, max_iter=4)
+                         bound=BND, max_iter=4, reduce=False, dim=ndim)
     optim.search = 'wolfe'
     optim.iter = optm.OptimIterator(max_iter=max_iter, tol=tolerance,
                                     stop='diff')
