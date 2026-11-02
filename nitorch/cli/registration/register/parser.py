@@ -41,6 +41,9 @@ usage:
         emmi                            EM-based Mutual Information
         cat, cce                        Categorical cross-entropy
         dice, f1                        Dice coefficient
+        dot, prod                       Dot product
+        ndot                            Normalized dot product
+        sqz, squeezed                   Squeezed product (can be weighted)
 
 @affine options:
     NAME can take values:
@@ -72,7 +75,9 @@ usage:
 
 General options:
     --cpu [THREADS], --gpu          Device to use [cpu]
-    -d, --dim [DIM]                 Number of spatial dimensions [try to guess]
+    -d, --dim DIM                   Number of spatial dimensions. Only [3] is supported:
+                                    2D images are registered as single-slice volumes
+                                    (use -2d in @affine/@nonlin for in-plane transforms)
     -o, --output-dir                Output directory [same as input files]
     -h, --help [LEVEL]              Display this help: [1=minimal], 2=normal, 3=more details
     -v, --verbose [LVL]             Level of verbosity [1=print], 2=plot
@@ -102,12 +107,12 @@ usage:
             -f, --fwhm VAL                  Full width half-max of histogram smoothing [0]
             -n, --order VAL                 Spline order of parzen window [3]
         mse, l2                         Mean squared error (can be weighted)
-            -w, --weight [VAL]              Weight (= Gaussian precision): [auto]
+            -w, --weight VAL|auto           Weight (= Gaussian precision): [auto]
         mad, l1                         Median absolute deviation (can be weighted)
-            -w, --weight [VAL]              Weight (= Laplace precision): [auto]
+            -w, --weight VAL|auto           Weight (= Laplace precision): [auto]
             -j, --joint                     Joint weight map across channels [false]
         tuk, tukey                      Tukey's biweight function (can be weighted)
-            -w, --weight [VAL]              Weight (= Laplace precision): [auto]
+            -w, --weight VAL|auto           Weight (= Laplace precision): [auto]
             -j, --joint                     Joint weight map across channels [false]
         cc, ncc                         Correlation coefficient (= Normalized cross correlation)
         lcc, lncc                       Local correlation coefficient
@@ -129,6 +134,10 @@ usage:
         cat, cce                        Categorical cross-entropy
         dice, f1                        Dice coefficient
             -w, --weight *VAL               Weight per class [1]
+        dot, prod                       Dot product
+        ndot                            Normalized dot product
+        sqz, squeezed                   Squeezed product (can be weighted)
+            -w, --weight VAL                Weight [1]
     FACTOR must be a scalar value [1]
     Common options:
         -s, --symmetric                 Make loss symmetric [False]
@@ -137,8 +146,10 @@ usage:
 @@fix/mov options:
     *FILES must be one or several filenames, which will be concatenated
     across the channel dimension.
-    -o, --output [PATH]             Path to the output with minimal reslicing: [True={base}.moved.{ext}]
-    -r, --resliced [PATH]           Path to the output resliced to the other image's space: [False], True={base}.resliced.{ext}
+    -o, --output [PATH]             Path to the output with minimal reslicing: [True={base}.moved{ext}], False
+                                    (bare -o or `true` = default path)
+    -r, --resliced [PATH]           Path to the output resliced to the other image's space: [False], True={base}.resliced{ext}
+                                    (bare -r or `true` = default path)
     -b, --bound BND                 Boundary conditions [dct2]
     -n, --order N                   Interpolation order [1]
     -a, --affine *PATH              Path to one or more affine transforms to apply
@@ -268,7 +279,9 @@ usage:
 
 General options:
     --cpu [THREADS], --gpu [ID]     Device to use [cpu]
-    -d, --dim [DIM]                 Number of spatial dimensions [try to guess]
+    -d, --dim DIM                   Number of spatial dimensions. Only [3] is supported:
+                                    2D images are registered as single-slice volumes
+                                    (use -2d in @affine/@nonlin for in-plane transforms)
     -o, --output-dir                Output directory [same as input files]
     -h, --help [LEVEL]              Display this help: [1=minimal], 2=normal, 3=more details
     -v, --verbose [LVL]             Level of verbosity [0], 1=print, 2=plot
@@ -289,6 +302,8 @@ def number_or_str(type=float):
 
 
 default_hessian = '{dir}{sep}{name}_hessian.nii.gz'
+default_moved = '{dir}{sep}{base}.moved{ext}'
+default_resliced = '{dir}{sep}{base}.resliced{ext}'
 default_momentum = '{dir}{sep}momentum.nii.gz'
 default_affine_momentum = '{dir}{sep}affine_momentum.json'
 
@@ -302,6 +317,24 @@ def bool_or_str(x):
         return bool(int(x))
     except ValueError:
         return x
+
+
+def path_or_bool(default):
+    """'true'/'yes'/1 -> `default` (a path template), 'false'/'no'/0 -> False,
+    anything else is kept as a path (template)."""
+    def _convert(x):
+        x = bool_or_str(x)
+        if x is True:
+            return default
+        return x
+    return _convert
+
+
+def weight_or_auto(x):
+    """'auto' -> None (automatic weighting), else float"""
+    if x.lower() == 'auto':
+        return None
+    return float(x)
 
 
 def float_or_auto(x):
@@ -356,8 +389,8 @@ parser.add_option('help', ('-h', '--help'),
                   action=cli.Actions.store_value(1),
                   help='Display this help. Call it with 1, 2, or 3 for '
                        'different levels of detail.')
-parser.add_option('dim', ('-d', '--dim'), nargs=1, convert=int,
-                  help='Number of spatial dimensions')
+parser.add_option('dim', ('-d', '--dim'), nargs=1, convert=int, default=3,
+                  help='Number of spatial dimensions (only 3 is supported)')
 parser.add_option('odir', ('-o', '--output-dir'), nargs=1,
                   help='Output directory')
 parser.add_option('framerate', ('-r', '--framerate'), nargs=1, convert=float,
@@ -366,9 +399,9 @@ parser.add_option('framerate', ('-r', '--framerate'), nargs=1, convert=float,
 # Loss group
 loss_aliases = {'nmi': 'mi', 'l1': 'mad', 'l2': 'mse', 'tukey': 'tuk',
                 'ncc': 'cc', 'lncc': 'lcc', 'cce': 'cat', 'f1': 'dice',
-                'entropy': 'ent', 'sqz': 'squeezed',
+                'entropy': 'ent', 'squeezed': 'sqz', 'prod': 'dot',
                 'gmm': 'gmmi', 'lgmm': 'lgmmi'}
-loss_choices = list(loss_aliases.values()) + ['emmi', 'prod', 'dot', 'ndot', 'extra']
+loss_choices = list(loss_aliases.values()) + ['emmi', 'ndot', 'extra']
 loss_choices = cli.Positional('name', nargs='?', default='mi',
                               validation=cli.Validations.choice(loss_choices),
                               convert=lambda x: loss_aliases.get(x, x),
@@ -384,14 +417,16 @@ loss.add_option('slicewise', ('-z', '--slicewise'), nargs='?', default=False,
                 help='Make the loss slice-wise')
 # conditional options
 weight_option = cli.Option('weight', ('-w', '--weight'), nargs='1',
-                           default=None, convert=number_or_str(float),
-                           help='Weight (= precision) or the loss.')
+                           default=None, convert=weight_or_auto,
+                           help='Weight (= precision) or the loss '
+                                '(`auto`: estimated from the data).')
 joint_option = cli.Option('joint', ('-j', '--joint'), nargs='0',
                           default=False, action=cli.Actions.store_true,
                           help='Joint weight map across channels.')
 patch_option = cli.Option('patch', ('-p', '--patch'), nargs='1*', default=10,
                           convert=number_or_str(float), help='Patch size')
-stride_option = cli.Option('stride', ('-s', '--stride'), nargs='1*', default=1,
+# no short tag: `-s` is `--symmetric` in the @loss group
+stride_option = cli.Option('stride', ('--stride',), nargs='1*', default=1,
                            convert=int, help='Strides between patches.')
 cluster_option = cli.Option('bins', ('-b', '--bins'), nargs=1, default=6,
                             convert=int, help='Number of bins in the mixture')
@@ -440,12 +475,13 @@ loss.add_suboption('lgmmi', iter_option)
 file = cli.Group('file', n=1, help='Volume to register')
 file.add_positional('files', nargs='1*', help='File names')
 file.add_option('output', ('-o', '--output'), nargs='?',
-                default='{dir}{sep}{base}.moved{ext}',
-                convert=bool_or_str,
+                default=default_moved,
+                convert=path_or_bool(default_moved),
+                action=cli.Actions.store_value(default_moved),
                 help='Path to the output with minimal reslicing')
 file.add_option('resliced', ('-r', '--resliced'), nargs='?',
-                default=False, convert=bool_or_str,
-                action=cli.Actions.store_value('{dir}{sep}{base}.resliced{ext}'),
+                default=False, convert=path_or_bool(default_resliced),
+                action=cli.Actions.store_value(default_resliced),
                 help='Path to the output resliced to the other \'s space')
 file.add_option('fwhm', ('-f', '--fwhm'), nargs='0*',
                 default=[0], convert=number_or_str(float),

@@ -65,12 +65,52 @@ def _cli(args):
         print(options)
         print('')
 
+    check_options(options)
     _main(options)
+
+
+def _check_template(value, what, **keys):
+    """Check that an output path (template) can be formatted, so that
+    a bad value fails before the fit rather than after it."""
+    if value in (None, False, ''):
+        return
+    if not isinstance(value, str):
+        raise ParseError(f'{what}: expected a path or true/false, '
+                         f'got {value!r}')
+    try:
+        value.format(sep=os.path.sep, **keys)
+    except (KeyError, IndexError, ValueError) as e:
+        raise ParseError(f'{what}: invalid path template {value!r} '
+                         f'(available keys: '
+                         f'{", ".join(["sep", *keys])}): {e}')
+
+
+def check_options(options):
+    """Validate options that the parser cannot check by itself."""
+    if options.dim != 3:
+        raise ParseError(f'-d/--dim: only 3 spatial dimensions are '
+                         f'supported (got {options.dim}). 2D images are '
+                         f'registered as single-slice volumes; use -2d in '
+                         f'@affine/@nonlin for in-plane transforms.')
+    filekeys = dict(dir='', base='', ext='')
+    for loss in options.loss:
+        for side in ('fix', 'mov'):
+            opt = getattr(loss, side)
+            _check_template(opt.output, f'@@{side} -o/--output', **filekeys)
+            _check_template(opt.resliced, f'@@{side} -r/--resliced', **filekeys)
+    for group in ('affine', 'nonlin'):
+        opt = getattr(options, group, None)
+        if opt:
+            _check_template(opt.output, f'@{group} -o/--output',
+                            dir='', name='')
+    if options.nonlin and options.nonlin.hessian is not True:
+        _check_template(options.nonlin.hessian, '@nonlin -h/--hessian',
+                        dir='', name='')
 
 
 def _main(options):
     device = setup_device(*options.device)
-    dim = 3
+    dim = options.dim or 3  # only 3 is supported (see `check_options`)
 
     if options.odir:
         os.makedirs(options.odir, exist_ok=True)
