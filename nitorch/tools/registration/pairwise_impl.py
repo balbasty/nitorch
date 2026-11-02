@@ -559,13 +559,17 @@ class PairwiseRegisterStep:
             self._plot_pending.run()
 
     def print(self, step, ll, lla=None, llv=None, in_line_search=False):
+        """Display the objective and record it (outside line searches).
 
+        `ll` is the full objective, which already includes the penalties
+        `lla` and `llv`; they are only used to display its components.
+        This function never modifies `ll`.
+        """
         if lla is None:
             lla = self.lla
         if llv is None:
             llv = self.llv
-        llx = ll.clone()
-        ll += llv + lla
+        llx = ll - llv - lla
 
         if self.verbose and (self.verbose > 1 or not in_line_search):
             if step == 'affine_only':
@@ -790,8 +794,9 @@ class PairwiseRegisterStep:
         # ==============================================================
         #                           VERBOSITY
         # ==============================================================
-        sumloss = self.print('nonlin', sumloss, lla=self.lla, llv=llv,
-                             in_line_search=in_line_search)
+        sumloss = sumloss + llv + self.lla
+        self.print('nonlin', sumloss, lla=self.lla, llv=llv,
+                   in_line_search=in_line_search)
 
         # ==============================================================
         #                           RETURN
@@ -1023,15 +1028,16 @@ class PairwiseRegisterStep:
         if self.affine.penalty is not None:
             lla = self._affine_penalty(logaff, sumgrad if grad else None,
                                        sumhess if hess else None)
-            # (the value is added to `sumloss` by `self.print`)
+            sumloss = sumloss + lla
         else:
             lla = 0
 
         # ==============================================================
         #                           VERBOSITY
         # ==============================================================
-        sumloss = self.print('affine', sumloss, lla=lla, llv=self.llv,
-                             in_line_search=in_line_search)
+        sumloss = sumloss + self.llv
+        self.print('affine', sumloss, lla=lla, llv=self.llv,
+                   in_line_search=in_line_search)
 
         # ==============================================================
         #                           RETURN
@@ -1186,15 +1192,16 @@ class PairwiseRegisterStep:
         if self.affine.penalty is not None:
             lla = self._affine_penalty(logaff, sumgrad if grad else None,
                                        sumhess if hess else None)
-            # (the value is added to `sumloss` by `self.print`)
+            sumloss = sumloss + lla
         else:
             lla = 0
 
         # ==============================================================
         #                           VERBOSITY
         # ==============================================================
-        sumloss = self.print('affine_only', sumloss, lla=lla,
-                             in_line_search=in_line_search)
+        sumloss = sumloss + self.llv
+        self.print('affine_only', sumloss, lla=lla,
+                   in_line_search=in_line_search)
 
         # ==============================================================
         #                           RETURN

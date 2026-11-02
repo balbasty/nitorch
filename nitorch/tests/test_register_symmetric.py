@@ -303,3 +303,70 @@ def test_affine_penalty_full_basis_unchanged():
     h0.diagonal(0, -1, -2).add_(P)
     ll0 += 0.5 * lla.dot(x0)   # added once (not twice)
     assert torch.equal(g, g0) and torch.equal(h, h0) and torch.equal(ll, ll0)
+
+
+def _penalised_step(step_name, optim, penalty, verbose=0):
+    """Joint/affine-only/nonlin-only step, with or without penalties"""
+    fix, mov = make_images([8, 8, 8], vx_mov=1.)
+    affine = nonlin = None
+    if step_name in ('do_affine', 'do_affine_only'):
+        affine = _penalised_affine('affine', optim)
+        if not penalty:
+            affine._penalty = None
+    else:
+        # (the verbose display of the nonlinear step needs an affine)
+        affine = make_affine('f')
+    if step_name in ('do_affine', 'do_vel'):
+        nonlin = make_svf(fix, band=0)
+        if penalty:
+            nonlin.penalty.update(membrane=1., bending=1., factor=1.)
+    step = PairwiseRegisterStep(make_sim(mov, fix, 'fwd'), affine, nonlin,
+                                verbose=verbose)
+    x = (nonlin if step_name == 'do_vel' else affine).dat.dat.clone()
+    return step, getattr(step, step_name), x
+
+
+@pytest.mark.parametrize('optim', [None, 'rigid'])
+@pytest.mark.parametrize('step_name', ['do_affine_only', 'do_affine', 'do_vel'])
+def test_penalty_value_matches_grad(step_name, optim):
+    """Penalties are added to the objective once, consistently with grad.
+
+    The penalised and unpenalised objectives differ by a quadratic,
+    whose directional derivative is exactly given by the gradient
+    difference (central differences are exact for quadratics)."""
+    if step_name == 'do_vel' and optim:
+        pytest.skip('-g does not apply to the nonlinear step')
+    _, f1, x = _penalised_step(step_name, optim, True)
+    _, f0, _ = _penalised_step(step_name, optim, False)
+    _, g1 = f1(x, grad=True, in_line_search=True)
+    _, g0 = f0(x, grad=True, in_line_search=True)
+    gen = torch.Generator().manual_seed(4)
+    d = torch.randn(x.shape, dtype=dt, generator=gen)
+    if step_name != 'do_vel' and optim:
+        dg = torch.randn(g1.shape, dtype=dt, generator=gen)
+        d = objects._affine_gram(optim, 'affine', 3, dtype=dt) @ dg
+        an = ((g1 - g0) * dg).sum()
+    else:
+        an = ((g1 - g0) * d).sum()
+    eps = 1e-3
+    pen = lambda y: f1(y, in_line_search=True) - f0(y, in_line_search=True)
+    fd = (pen(x + eps * d) - pen(x - eps * d)) / (2 * eps)
+    assert torch.allclose(fd, an, rtol=1e-6, atol=1e-9), (fd, an)
+    assert pen(torch.zeros_like(x)).abs() < 1e-12   # zero at the origin
+
+
+@pytest.mark.parametrize('optim', [None, 'rigid'])
+@pytest.mark.parametrize('step_name', ['do_affine_only', 'do_affine', 'do_vel'])
+def test_verbose_does_not_change_objective(step_name, optim, capsys):
+    """Printing is side-effect free: same objective for -v 0/1/3"""
+    outs = []
+    if step_name == 'do_vel' and optim:
+        pytest.skip('-g does not apply to the nonlinear step')
+    for verbose in (0, 1, 3):
+        for line_search in (True, False):
+            step, f, x = _penalised_step(step_name, optim, True, verbose)
+            outs.append(f(x, grad=True, hess=True, in_line_search=line_search))
+    for out in outs[1:]:
+        for a, b in zip(outs[0], out):
+            assert torch.equal(a, b)
+    capsys.readouterr()
