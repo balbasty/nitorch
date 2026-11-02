@@ -572,6 +572,13 @@ class BabelArray(MappedArray):
         if like is not None:
             # copy generic metadata
             like_metadata = like.metadata()
+            # user-provided fields must not be shadowed by related
+            # fields inherited from `like`
+            if 'affine' in metadata:
+                like_metadata.pop('voxel_size', None)
+            if 'tr' in metadata or 'time_step' in metadata:
+                for key in ('tr', 'time_step', 'tr_unit', 'time_step_unit'):
+                    like_metadata.pop(key, None)
             like_metadata.update(metadata)
             metadata = like_metadata
         # set shape now so that we can set zooms/etc

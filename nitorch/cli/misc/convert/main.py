@@ -43,7 +43,7 @@ def convert(inp, meta=None, dtype=None, casting='unsafe', format=None, output=No
     output = output.format(dir=dir or '.', sep=os.sep, base=base, ext=ext)
 
     odtype = meta.get('dtype', None) or f.dtype
-    if ext in ('.mgh', '.mgz'):
+    if output.lower().endswith(('.mgh', '.mgz')):
         odtype = dtypes.dtype(odtype)
         mgh_dtypes = [dtypes.dtype(dt) for dt in get_mgh_dtypes()]
         for mgh_dtype in mgh_dtypes:
