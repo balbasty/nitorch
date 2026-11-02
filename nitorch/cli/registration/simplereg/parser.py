@@ -3,65 +3,84 @@ from nitorch.core import cli
 
 help = r"""[nitorch] simplereg
 
-Pairwise affine + nonlinear registration.
-This command is merely a wrapper around nitorch register, that exposes 
-fewer parameters and uses a more classical syntax.
+Pairwise affine + nonlinear registration with a classical syntax.
+This command is merely a wrapper around nitorch register, that exposes
+fewer parameters. It registers a single pair of images with an affine
+(rigid by default) transform and a nonlinear (stationary velocity field
+by default) transform, optimized jointly (interleaved).
+Use --nonlin none (or --no-nonlin) for an affine-only registration
+(as nitorch affreg) or --affine none (or --no-affine) for a
+nonlinear-only registration.
 
-note:
-    Multiple pairs of images can be provided, using multiple -m/-f options.
-    Similarly, multiple preprocessing, output, and losses options can be provided.
-    If only one of these options is provided, it applies to all pairs of images.
-    If multiple options are provided, they are applied in order (e.g., 
-    the first occurrence of -l is applied to the first occurrence of -m/-f)
-    Options that can appear multiple times are marked by [m].
+usage:
+    nitorch simplereg -m MOVING -f FIXED [options]
 
-usage: 
-    nitorch simplereg -m MOVING -f FIX [options]
-    
 Input options:
-[m] -m, --moving PATH               Moving image
-[m] -f, --fixed PATH                Fixed image
-[m] -i, --init PATH                 Initial affine to apply to `moving`.
-[m]     --fwhm [0]                  Smoothing applied to the moving image.
-[m]     --bound [dct2]              Boundary condition: {dct2,dct1,dst2,dst1,dft,zero,nearest}
-[m]     --order [1]                 Interpolation order: {1..7}
-[m]     --pad [0]                   Pad image before using it.
-[m]     --rescale [[0], 95]         Rescale image so that its percentiles match (0, 1).
-[m]     --discretize [256]          Discretize image into N bins (default: no)     
-        
-    
+    -m, --moving PATH               Moving image
+    -f, --fixed PATH                Fixed image
+    -i, --init PATH                 Initial affine to apply to `moving`.
+
+Preprocessing options (applied to both images):
+        --fwhm VAL [UNIT]           Smooth images before using them. Unit can be {vox,mm} [0 vox]
+        --pad VAL [UNIT]            Pad images before using them. Unit can be {vox,mm} [0 vox]
+        --bound BND                 Boundary condition {dct2,dct1,dst2,dst1,dft,zero,nearest} [dct2]
+        --order N                   Interpolation order {0..7} [1]
+        --rescale [MN] MX           Rescale images so that their MN/MX percentiles match (0, 1) [0 95]
+                                    (--rescale 0: no rescaling)
+        --discretize [N]            Discretize images into N bins [no; N=256 if no value]
 
 Output options:
-    -o, --output PATH               Output path to transform [{dir}/{name}.lta]
-[m] -x, --moved PATH                Output path to moved image [{dir}/{base}.moved{ext}]
-[m] -r, --resliced PATH             Output path to resliced image [{dir}/{base}.resliced{ext}]
-    
-Loss options: multiple options (one per -p) can be provided
-[m] -l, --loss                      Objective function. 
+    -a, --output-affine PATH        Output path to the affine [{dir}/{name}.lta]
+    -w, --output-warp PATH          Output path to the nonlinear field [{dir}/{name}.nii.gz]
+    -x, --moved PATH                Output path to moved image [{dir}/{base}.moved{ext}]
+    -r, --resliced PATH             Output path to resliced image [false: not written]
+    {dir} is the directory of the fixed image, {name} is the transform
+    type (the --affine type for the affine; svf/shoot/smalldef for the
+    nonlinear field), and {base}/{ext} are the moving image's base name
+    and extension.
+
+Loss options:
+    -l, --loss                      Objective function
        [nmi]                            Normalized mutual information
         mse                             Mean squared error
         mad                             Median absolute deviation
         tuk                             Tukey's biweight function
         cc                              Correlation coefficient
         lcc                             Local correlation coefficient
-        gmm                             Gaussian mixture likelihood
-        lgmm                            Local Gaussian mixture likelihood
-        emmi                            EM mutual information
-[m] -k, --kernel [SIZE] [UNIT]      Kernel size (for lcc/lgmm). Unit can be {vox,mm,pct} [10 pct]
-[m] -s, --symmetric                 Use a symmetric loss [false]
-    
-Optimization options:
-    -a, --affine                    12-param affine [default is 6-param rigid]
-    -p, --pyramid [LEVELS]          Pyramid levels to process [0:3]
-    -z, --optimizer [OPT]           Optimizer {gn,powell,lbfgs} [auto]
+        gmm                             Gaussian Mixture likelihood
+        lgmm                            Local Gaussian Mixture likelihood
+        emmi                            EM-based mutual information
+    -k, --kernel [SIZE] [UNIT]      Kernel size (for lcc/lgmm). Unit can be {vox,mm,pct} [10 pct]
+    -s, --symmetric                 Use a symmetric loss [false]
+
+Affine options:
+        --affine [TYPE]             Affine model {translation,rigid,similitude,affine,none} [rigid; affine if no value]
+        --no-affine                 Do not estimate an affine transform (= --affine none)
+    -z, --optimizer [OPT]           Optimizer {gn,powell,lbfgs} [auto: powell for nmi, else as nonlin]
     -n, --max-iter VAL              Max number of iterations [50]
     -t, --tolerance VAL             Tolerance for early stopping [1e-5]
         --line-search VAL           Number of line search iterations [wolfe]
-    
+
+Nonlinear options:
+        --nonlin NAME               Nonlinear model {svf,shoot,smalldef,none} [svf]
+        --no-nonlin                 Do not estimate a nonlinear transform (= --nonlin none)
+        --penalty VAL               Global regularization factor [1]
+        --absolute VAL              Penalty on absolute displacements [1e-4]
+        --membrane VAL              Penalty on membrane energy [1e-3]
+        --bending VAL               Penalty on bending energy [0.2]
+        --lame VAL [VAL]            Penalty on linear elastic energy [0.05 0.2]
+        --nonlin-optimizer OPT      Optimizer {gn,lbfgs} [auto: gn if the loss has a Hessian, else lbfgs]
+        --nonlin-iter VAL           Max number of iterations [10]
+
+Joint optimization options:
+        --outer-iter VAL            Number of interleaved affine/nonlinear iterations [5]
+    -p, --pyramid [LEVELS]          Pyramid levels to process [0:3]
+        --no-pyramid                Do not use a pyramid
+
 Other options:
-    -h, --help [LEVEL]              Display this help
-    -v, --verbose [LVL]             Level of verbosity [1=print], 2=print more, 3=plot
-    --cpu [THREADS], --gpu          Device to use [cpu]
+    -h, --help                      Display this help
+    -v, --verbose [LVL]             Level of verbosity [0], 1=print, 2=print more, 3=plot
+    --cpu [THREADS], --gpu [ID]     Device to use [cpu]
 
 """
 
@@ -107,62 +126,80 @@ def convert_device(device):
     return _convert
 
 
-parser = cli.CommandParser('affreg', help=help)
+parser = cli.CommandParser('simplereg', help=help)
 
-# Input options:
-#     -m, --moving PATH               Moving image
-#     -f, --fixed PATH                Fixed image
-#     -i, --init PATH                 Initial affine to apply to `moving`.
+# Input options
 parser.add_option('moving', ('-m', '--moving'), nargs=1, help='Moving image')
 parser.add_option('fixed', ('-f', '--fixed'), nargs=1, help='Fixed image')
 parser.add_option('init', ('-i', '--init'), nargs=1, help='Initial affine')
-# Output options:
-#     -o, --output PATH               Output path to transform [{dir}/{name}.lta]
-#     -x, --moved PATH                Output path to moved image [{dir}/{base}.moved{ext}]
-#     -r, --resliced PATH             Output path to resliced image [{dir}/{base}.resliced{ext}]
-parser.add_option('output', ('-o', '--output'), nargs=1, default='{dir}/{name}.lta', convert=bool_or_str)
+
+# Preprocessing options, applied to both images.
+# None = not forwarded, i.e., nitorch register's default is used.
+bounds = ['dct2', 'dct1', 'dst2', 'dst1', 'dft', 'zero', 'nearest']
+parser.add_option('fwhm', '--fwhm', nargs='+', default=None,
+                  convert=number_or_str(float))
+parser.add_option('pad', '--pad', nargs='+', default=None,
+                  convert=number_or_str(float))
+parser.add_option('bound', '--bound', nargs=1, default=None,
+                  validation=cli.Validations.choice(bounds))
+parser.add_option('order', '--order', nargs=1, default=None, convert=int)
+parser.add_option('rescale', '--rescale', nargs='1*2', default=None,
+                  convert=float)
+parser.add_option('discretize', '--discretize', nargs='?', default=None,
+                  convert=int, action=cli.Actions.store_value(256))
+
+# Output options
+parser.add_option('output_affine', ('-a', '--output-affine'), nargs=1, default='{dir}/{name}.lta', convert=bool_or_str)
+parser.add_option('output_warp', ('-w', '--output-warp'), nargs=1, default='{dir}/{name}.nii.gz', convert=bool_or_str)
 parser.add_option('moved', ('-x', '--moved'), nargs=1, default='{dir}/{base}.moved{ext}', convert=bool_or_str)
 parser.add_option('resliced', ('-r', '--resliced'), nargs=1, default=False, convert=bool_or_str)
-# Loss options:
-#     -l, --loss                      Objective function
-#        [nmi]                            Normalized mutual information
-#         mse                             Mean squared error
-#         mad                             Median absolute deviation
-#         tuk                             Tukey's biweight function
-#         cc                              Correlation coefficient
-#         lcc                             Local correlation coefficient
-#         gmm                             Gaussian Mixture likelihood
-#         lgmm                            Local Gaussian Mixture likelihood
-#     -k, --kernel [SIZE] [UNIT]      Kernel size (for lcc/lgmm). Unit can be {vox,mm,pct} [10 pct]
-#     -s, --symmetric                 Use a symmetric loss [false]
-losses = ['nmi', 'mse', 'mad', 'tuk', 'cc', 'lcc', 'gmm', 'lgmm']
+
+# Loss options
+losses = ['nmi', 'mse', 'mad', 'tuk', 'cc', 'lcc', 'gmm', 'lgmm', 'emmi']
 parser.add_option('loss', ('-l', '--loss'), nargs=1, default='nmi',
                   validation=cli.Validations.choice(losses))
 parser.add_option('kernel', ('-k', '--kernel'), nargs='+', default=[10, 'pct'],
                   convert=number_or_str(float))
 parser.add_option('symmetric', ('-s', '--symmetric'), nargs='?', default=False,
                   convert=bool_or_str, action=cli.Actions.store_true)
-# Optimization options:
-#     -a, --affine                    12-param affine [default is 6-param rigid]
-#     -p, --pyramid [LEVELS]          Pyramid levels to process [0:3]
-#     -z, --optimizer [OPT]           Optimizer {gn,powell,lbfgs} [auto]
-#     -n, --max-iter VAL              Max number of iterations [50]
-#     -t, --tolerance VAL             Tolerance for early stopping [1e-5]
-#         --line-search VAL           Number of line search iterations [wolfe]
-parser.add_option('affine', ('-a', '--affine'), nargs='?', default=False,
-                  convert=bool_or_str, action=cli.Actions.store_true)
-parser.add_option('pyramid', ('-p', '--pyramid'), nargs='+', default=[range(3)],
-                  convert=parse_range)
-parser.add_option('pyramid', '--no-pyramid', nargs=0, action=cli.Actions.store_false)
+
+# Affine options
+# --affine (no value) = 12-param affine; absent = rigid; none = no affine
+affines = ['translation', 'rigid', 'similitude', 'affine', 'none']
+parser.add_option('affine', '--affine', nargs='?', default='rigid',
+                  action=cli.Actions.store_value('affine'),
+                  validation=cli.Validations.choice(affines))
+parser.add_option('do_affine', '--no-affine', nargs=0, default=True,
+                  action=cli.Actions.store_false)
 optims = ['gn', 'lbfgs', 'powell']
 parser.add_option('optimizer', ('-z', '--optimizer'), nargs=1, validation=cli.Validations.choice(optims))
 parser.add_option('max_iter', ('-n', '--max-iter'), nargs=1, default=50, convert=int)
 parser.add_option('tolerance', ('-t', '--tolerance'), nargs=1, default=1e-5, convert=float)
 parser.add_option('search', '--line-search', nargs=1, default='wolfe', convert=number_or_str(int))
-# Other options:
-#     -h, --help [LEVEL]              Display this help
-#     -v, --verbose [LVL]             Level of verbosity [1=print], 2=print more, 3=plot
-#     --cpu [THREADS], --gpu          Device to use [cpu]
+
+# Nonlinear options.
+# None = not forwarded, i.e., nitorch register's default is used.
+nonlins = ['svf', 'shoot', 'smalldef', 'none']
+parser.add_option('nonlin', '--nonlin', nargs=1, default='svf',
+                  validation=cli.Validations.choice(nonlins))
+parser.add_option('do_nonlin', '--no-nonlin', nargs=0, default=True,
+                  action=cli.Actions.store_false)
+parser.add_option('penalty', '--penalty', nargs=1, default=None, convert=float)
+parser.add_option('absolute', '--absolute', nargs=1, default=None, convert=float)
+parser.add_option('membrane', '--membrane', nargs=1, default=None, convert=float)
+parser.add_option('bending', '--bending', nargs=1, default=None, convert=float)
+parser.add_option('lame', '--lame', nargs='1*2', default=None, convert=float)
+parser.add_option('nonlin_optimizer', '--nonlin-optimizer', nargs=1, default=None,
+                  validation=cli.Validations.choice(['gn', 'lbfgs']))
+parser.add_option('nonlin_iter', '--nonlin-iter', nargs=1, default=None, convert=int)
+
+# Joint optimization options
+parser.add_option('outer_iter', '--outer-iter', nargs=1, default=None, convert=int)
+parser.add_option('pyramid', ('-p', '--pyramid'), nargs='+', default=[range(3)],
+                  convert=parse_range)
+parser.add_option('pyramid', '--no-pyramid', nargs=0, action=cli.Actions.store_false)
+
+# Other options
 parser.add_option('verbose', ('-v', '--verbose'),
                   nargs='?', default=0, convert=int,
                   action=cli.Actions.store_value(1),
