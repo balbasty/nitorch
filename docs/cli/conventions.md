@@ -54,11 +54,13 @@ A few things are worth knowing about how commands behave.
   prints `nitorch uses its non-compiled backend (TS). Some algorithms may be
   slow.` on standard error. The warning is harmless. Set the environment
   variable `NI_CHECK_BACKEND=0` to silence it.
-- **Exit status is not a reliable success signal.** An unknown command makes
-  `nitorch` exit with status 1. However, when most commands fail to parse
-  their arguments or hit an error while working, they print an `[ERROR]`
-  message on standard error and still exit with status 0. In scripts, check
-  that the output files exist rather than relying on the exit status alone.
+- **The exit status tells whether a command succeeded.** A command that
+  completes, or that prints its help with `-h`, exits with status 0. A command
+  that fails, whether because of its arguments or while working, prints an
+  `[ERROR]` message on standard error and exits with status 1. This makes
+  commands easy to chain in shell scripts, for example
+  `nitorch reslice ... || echo failed`. Called from Python, a command's
+  `cli([...])` returns 1 instead of raising an exception.
 
 !!! note "`register2`"
     `register2` appears in the list of commands. It is a hidden, backward
@@ -174,9 +176,9 @@ text, followed by a line of the form
 ```
 
 on standard error. Errors raised while the command works (a missing file, a
-value of the wrong type) are reported in the same `[ERROR] ...` form by most
-commands, and as a Python traceback by the others. See [Running
-commands](#running-commands) about the exit status.
+value of the wrong type) are reported in the same `[ERROR] ...` form, without
+a Python traceback. In both cases the command exits with status 1; see
+[Running commands](#running-commands).
 
 ## File formats
 
