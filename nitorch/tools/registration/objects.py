@@ -2106,6 +2106,70 @@ class Nonlin2dModel(NonLinModel):
         return g, h, mugrad
 
 
+_AFFINE_PENALTY_GROUPS = ('translation', 'rotation', 'zoom', 'shear')
+
+
+def _affine_penalty_group(key):
+    """Canonical group name of a dict-penalty key"""
+    k = str(key).lower()
+    if k == 't' or k.startswith('tr'):
+        return 'translation'
+    if k == 'r' or k.startswith('ro'):
+        return 'rotation'
+    if k == 'z' or k.startswith('zo') or k.startswith('sc'):
+        return 'zoom'
+    if k.startswith('sh'):
+        return 'shear'
+    raise ValueError(f'Unknown affine penalty group: {key!r} (expected one '
+                     f'of {_AFFINE_PENALTY_GROUPS})')
+
+
+@functools.lru_cache(maxsize=None)
+def _affine_param_groups(basis, dim):
+    """Group of each parameter of an affine basis, classified from the
+    structure of its Lie generator."""
+    gens = spatial.affine_basis(_affine_group(basis), dim, dtype=torch.double)
+    groups = []
+    for g in gens:
+        lin = g[:-1, :-1]
+        if g[:-1, -1].abs().max() > 0:
+            groups.append('translation')
+        elif (lin + lin.T).abs().max() == 0:
+            groups.append('rotation')
+        elif (lin - lin.diag().diag_embed()).abs().max() == 0:
+            groups.append('zoom')
+        else:
+            groups.append('shear')
+    return tuple(groups)
+
+
+def _affine_penalty_vector(penalty, basis, dim, **backend):
+    """Per-parameter precision vector of an AffineModel penalty"""
+    groups = _affine_param_groups(basis, dim)
+    if isinstance(penalty, dict):
+        return torch.as_tensor([penalty.get(g, 0.) for g in groups], **backend)
+    penalty = torch.as_tensor(penalty, **backend)
+    if len(penalty) == len(groups):
+        return penalty.clone()
+    # given in another basis: identify it from its length
+    for other in ('affine', 'similitude', 'rigid', 'translation', 'rotation'):
+        src = _affine_param_groups(other, dim)
+        if len(src) == len(penalty):
+            break
+    else:
+        raise ValueError(f'Affine penalty of length {len(penalty)} does not '
+                         f'match any {dim}D affine basis')
+    out = torch.zeros(len(groups), **backend)
+    for group in _AFFINE_PENALTY_GROUPS:
+        dst = [i for i, g in enumerate(groups) if g == group]
+        sub = [i for i, g in enumerate(src) if g == group]
+        if not dst or not sub:
+            continue
+        val = penalty[sub]
+        out[dst] = val if len(val) == len(dst) else val.mean()
+    return out
+
+
 class AffineModel(TransformationModel):
     """Affine transformation model encoded in a Lie algebra"""
 
@@ -2211,10 +2275,19 @@ class AffineModel(TransformationModel):
             Affine basis name
         factor : float, default=1
             Regularization factor
-        penalty : float, optional
-            Precision lambda of a Gaussian prior N(0, (lambda I)^-1) on
-            the (orthonormal, model-basis) Lie parameters q, i.e. the
-            penalty 1/2 lambda ||q||^2. None or 0 means no penalty.
+        penalty : float or list[float] or dict, optional
+            Precision P of a Gaussian prior N(0, P^-1) on the
+            (orthonormal, model-basis) Lie parameters q, i.e. the
+            penalty 1/2 q' P q. None or 0 means no penalty.
+            - float lambda: P = lambda * I (what `@affine FACTOR` sets).
+            - list: one precision per parameter (diagonal P), in this
+              basis, or in another affine basis (identified by its
+              length) and then mapped group-wise (an isotropic zoom is
+              broadcast; anisotropic zooms are averaged).
+            - dict: one precision per group of parameters, with keys
+              "translation", "rotation", "zoom" and "shear"
+              (or "t", "r", "z", "sh"; "scale" for "zoom").
+              Missing groups have precision 0.
         optim : {'translation', 'rotation', 'rigid', 'similitude', 'affine'}
             Parameters to optimize.
         position : {'moving', 'fixed', 'symmetric'}, default='symmetric'
@@ -2241,24 +2314,52 @@ class AffineModel(TransformationModel):
 
     @property
     def penalty(self):
-        """Precision lambda of the prior N(0, (lambda I)^-1), or None (off)"""
-        return self._penalty
+        """Prior precision on the model-basis log-parameters, or None (off).
+
+        A float lambda (precision lambda * I), or a (F,) tensor with one
+        precision per model-basis parameter (diagonal precision), built
+        from a vector or a dict and cached.
+        """
+        if self._penalty is None or isinstance(self._penalty, float):
+            return self._penalty
+        if not self.dat:
+            return None
+        backend = dict(dtype=self.dat.dtype, device=self.dat.device)
+        key = (self._basis, self._truedim, backend['dtype'], backend['device'])
+        if self._penalty_cache is None or self._penalty_cache[0] != key:
+            vec = _affine_penalty_vector(self._penalty, self._basis,
+                                         self._truedim, **backend)
+            self._penalty_cache = (key, vec)
+        return self._penalty_cache[1]
 
     @penalty.setter
     def penalty(self, value):
-        if value is not None:
-            if torch.is_tensor(value):
-                value = value.item()
-            value = float(value)
-            if value < 0:
+        self._penalty_cache = None
+        if value is None:
+            self._penalty = None
+            return
+        if isinstance(value, dict):
+            value = {_affine_penalty_group(k): float(v)
+                     for k, v in value.items()}
+            if any(v < 0 for v in value.values()):
                 raise ValueError('Affine penalty must be non-negative')
-        self._penalty = value or None
+            self._penalty = value if any(value.values()) else None
+            return
+        value = torch.as_tensor(value, dtype=torch.double)
+        if (value < 0).any():
+            raise ValueError('Affine penalty must be non-negative')
+        if value.dim() == 0:
+            self._penalty = float(value) or None
+        else:
+            value = value.flatten()
+            self._penalty = value if value.any() else None
 
     def switch_basis(self, basis):
         obj = copy.deepcopy(self)
         if obj.dat:
             obj.dat = obj.dat.switch_basis(basis)
         obj._basis = basis
+        obj._penalty_cache = None
         return obj
 
     def set_dat(self, dat=None, dim=None, **backend):
@@ -2329,7 +2430,7 @@ class AffineModel(TransformationModel):
         s += [f'factor={self.factor}']
         s += [f'position={self.position}']
         if self.penalty is not None:
-            s += [f'penalty={self.penalty}']
+            s += [f'penalty={self._penalty}']
         s = ', '.join(s)
         return f'{self.__class__.__name__}({s})'
 

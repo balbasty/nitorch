@@ -158,3 +158,111 @@ def test_large_prior_shrinks_estimate(tmp_path):
     t0, t1 = shift('0'), shift('1e6')
     assert t0 > 0.5 * torch.as_tensor(SHIFT).norm()
     assert t1 < 0.1 * t0
+
+
+# ---------------------------------------------------------------------
+#   Per-component (diagonal) precision: vector and dict forms
+# ---------------------------------------------------------------------
+
+GROUPS = {
+    (3, 'translation'): 'ttt', (3, 'rotation'): 'rrr', (3, 'rigid'): 'tttrrr',
+    (3, 'similitude'): 'tttrrrz', (3, 'affine'): 'tttrrrzzzsss',
+    (2, 'translation'): 'tt', (2, 'rotation'): 'r', (2, 'rigid'): 'ttr',
+    (2, 'similitude'): 'ttrz', (2, 'affine'): 'ttrzzs',
+}
+PDICT = dict(translation=1., rotation=2., zoom=3., shear=4.)
+PVAL = dict(t=1., r=2., z=3., s=4.)
+
+
+def _model(basis, dim, penalty):
+    if dim == 3:
+        a = objects.AffineModel(basis, penalty=penalty)
+    else:
+        a = objects.Affine2dModel(basis, plane=2,
+                                  ref_affine=torch.eye(4, dtype=dt),
+                                  penalty=penalty)
+    a.set_dat(dim=3, dtype=dt)
+    return a
+
+
+@pytest.mark.parametrize('dim', [2, 3])
+@pytest.mark.parametrize('basis', ['translation', 'rotation', 'rigid',
+                                   'similitude', 'affine'])
+def test_dict_penalty_indices(dim, basis):
+    a = _model(basis, dim, PDICT)
+    expected = torch.as_tensor([PVAL[c] for c in GROUPS[dim, basis]], dtype=dt)
+    assert len(a.dat.dat) == len(expected)
+    assert torch.equal(a.penalty, expected)
+    # short keys and partial dicts (missing groups = 0)
+    a = _model(basis, dim, dict(t=5., sh=7.))
+    expected = torch.as_tensor([{'t': 5., 's': 7.}.get(c, 0.)
+                                for c in GROUPS[dim, basis]], dtype=dt)
+    assert torch.equal(a.penalty, expected)
+
+
+def test_dict_penalty_bad_key():
+    with pytest.raises(ValueError):
+        objects.AffineModel('affine', penalty=dict(foo=1.))
+
+
+def test_vector_penalty():
+    vec = torch.arange(1., 13., dtype=dt)
+    a = _model('affine', 3, vec.tolist())
+    assert torch.equal(a.penalty, vec)
+    # an affine-basis vector, mapped group-wise to similitude and rigid
+    s = a.switch_basis('similitude')
+    assert torch.equal(s.penalty,
+                       torch.as_tensor([1, 2, 3, 4, 5, 6, 8], dtype=dt))
+    r = a.switch_basis('rigid')
+    assert torch.equal(r.penalty, vec[:6])
+    # similitude-basis vector -> affine: iso zoom broadcast, no shear
+    b = _model('affine', 3, [1., 2, 3, 4, 5, 6, 9])
+    assert torch.equal(b.penalty, torch.as_tensor(
+        [1, 2, 3, 4, 5, 6, 9, 9, 9, 0, 0, 0], dtype=dt))
+    with pytest.raises(ValueError):
+        _model('affine', 3, [1., 2.]).penalty
+    with pytest.raises(ValueError):
+        objects.AffineModel('affine', penalty=[1., -1.])
+
+
+def test_penalty_cache_invalidation():
+    a = _model('affine', 3, PDICT)
+    p1 = a.penalty
+    assert a.penalty is p1                       # cached
+    a.penalty = dict(rotation=9.)
+    assert a.penalty is not p1 and a.penalty[3] == 9. and a.penalty[0] == 0.
+    s = a.switch_basis('rigid')
+    assert len(s.penalty) == 6 and len(a.penalty) == 12
+    a.set_dat(dim=3, dtype=torch.float)
+    assert a.penalty.dtype == torch.float
+    a.penalty = 2.
+    assert a.penalty == 2.
+
+
+@pytest.mark.parametrize('optim', [None, 'rigid', 'similitude'])
+@pytest.mark.parametrize('step_name', ['do_affine_only', 'do_affine'])
+def test_objective_vs_fd_nonuniform(optim, step_name):
+    fix, mov = make_images([8, 8, 8])
+    P = torch.linspace(5., 60., 12, dtype=dt)
+    affine = prior_affine(P.tolist(), optim)
+    nonlin = make_svf(fix) if step_name == 'do_affine' else None
+    step = PairwiseRegisterStep(make_sim(mov, fix, 'fwd'), affine, nonlin,
+                                verbose=0)
+    fn = getattr(step, step_name)
+    par = affine.parameters()
+    x0 = affine.dat.dat.clone()
+    _, g, _ = fn(x0, grad=True, hess=True, in_line_search=True)
+    M = torch.eye(len(x0), dtype=dt) if optim is None else par._gram(x0)
+    fd = torch.zeros(len(par), dtype=dt)
+    eps = 1e-5
+    for i in range(len(par)):
+        fd[i] = (fn(x0 + eps * M[:, i], in_line_search=True) -
+                 fn(x0 - eps * M[:, i], in_line_search=True)) / (2 * eps)
+    assert (fd - g).norm() / fd.norm() < 1e-4
+    # exact penalty terms
+    n = len(par)
+    gp, hp = torch.zeros(n, dtype=dt), torch.zeros(n, n, dtype=dt)
+    val = step._affine_penalty(x0, gp, hp)
+    assert torch.allclose(val, 0.5 * (P * x0 * x0).sum())
+    assert torch.allclose(gp, M.T @ (P * x0))
+    assert torch.allclose(hp, M.T @ torch.diag(P) @ M)

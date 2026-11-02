@@ -811,12 +811,13 @@ class PairwiseRegisterStep:
         return tuple(out) if len(out) > 1 else out[0]
 
     def _affine_penalty(self, logaff, grad=None, hess=None):
-        """Gaussian prior N(0, (lambda I)^-1) on the model-basis log-parameters.
+        """Gaussian prior N(0, P^-1) on the model-basis log-parameters.
 
-        Value: 1/2 lambda ||q||^2. Its gradient (lambda q) and Hessian
-        (lambda I) live in the model basis; they are mapped to the
+        P is diagonal: a scalar lambda (P = lambda I) or a vector of
+        per-parameter precisions. Value: 1/2 q' P q. Its gradient (P q)
+        and Hessian (P) live in the model basis; they are mapped to the
         optimised basis (`-g`) with the Gram matrix M of `_optim_grad`:
-        M.T (lambda q) and lambda M.T M.
+        M.T (P q) and M.T P M (lambda M.T q and lambda M.T M for a scalar).
         `grad` and `hess` are updated in place. Returns the value.
         """
         lam = self.affine.penalty
@@ -834,7 +835,7 @@ class PairwiseRegisterStep:
                 if gram is None:
                     hess.diagonal(0, -1, -2).add_(lam)
                 else:
-                    hess += gram.T.matmul(gram) * lam
+                    hess += (gram.T * lam).matmul(gram)
         return 0.5 * lla.dot(logaff)
 
     def do_affine(self, logaff, grad=False, hess=False, in_line_search=False):

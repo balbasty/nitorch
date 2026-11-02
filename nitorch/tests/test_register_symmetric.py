@@ -246,7 +246,7 @@ def test_affreg_symmetric_translation(shifted_pair):
 
 
 def _penalised_affine(basis, optim, pos='m'):
-    affine = objects.AffineModel(basis, penalty=2., optim=optim,
+    affine = objects.AffineModel(basis, penalty=[2.] * 12, optim=optim,
                                  position=pos)
     affine.set_dat(dim=3, dtype=dt)
     g = torch.Generator().manual_seed(3)
@@ -281,9 +281,9 @@ def test_affine_penalty_progressive(optim, step_name):
     P = affine.penalty
     gp, hp = torch.zeros(n, dtype=dt), torch.zeros(n, n, dtype=dt)
     val = step._affine_penalty(x0, gp, hp)
-    assert torch.allclose(val, 0.5 * P * x0.dot(x0))
+    assert torch.allclose(val, 0.5 * (P * x0 * x0).sum())
     assert torch.allclose(gp, M.T @ (P * x0))
-    assert torch.allclose(hp, P * M.T @ M)
+    assert torch.allclose(hp, M.T @ torch.diag(P) @ M)
 
 
 def test_affine_penalty_full_basis_unchanged():
