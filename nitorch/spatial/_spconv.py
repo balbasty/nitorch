@@ -202,27 +202,29 @@ def _split_kernel(kernel, dim):
         Sum of weights of each (diagonal) kernel
 
     """
-    w0 = kernel[tuple([Ellipsis, *[s // 2 for s in kernel.shape[-dim:]]])]
-    if w0.dim() == 2:
-        w0 = torch.stack([w0[d, d] for d in range(dim)])
-        diagonal = kernel._indices()[0].eq(kernel._indices()[1])
-        center = (kernel._indices()[2:].eq(kernel.shape[-1] // 2).all(0))
-        keep = diagonal.bitwise_and_(center).bitwise_not_()
-        kernel = torch.sparse_coo_tensor(
-            kernel._indices()[:, keep],
-            kernel._values()[keep],
-            kernel.shape)
-        for d in range(dim):
-            w0[d].add_(kernel.to_dense()[d, d].sum())
+    kernel = kernel.coalesce()
+    indices, values = kernel.indices(), kernel.values()
+    nb_chan = kernel.dim() - dim  # 0: scalar, 1: diagonal, 2: matrix
+    kcenter = [s // 2 for s in kernel.shape[-dim:]]
+    kcenter = torch.as_tensor(kcenter, dtype=indices.dtype,
+                              device=indices.device)
+    center = indices[nb_chan:].eq(kcenter[:, None]).all(0)
+    if nb_chan == 2:
+        # only kernels that map a channel onto itself are "diagonal"
+        diagonal = indices[0].eq(indices[1])
     else:
-        center = kernel._indices()[2:].eq(kernel.shape[-1] // 2).all(0)
-        keep = center.bitwise_not_()
-        kernel = torch.sparse_coo_tensor(
-            kernel._indices()[:, keep],
-            kernel._values()[keep],
-            kernel.shape)
-        for d in range(dim):
-            w0.add_(kernel.to_dense().sum())
+        diagonal = torch.ones_like(center)
+    channel = indices[0] if nb_chan else torch.zeros_like(indices[0])
+    nb_out = kernel.shape[0] if nb_chan else 1
+    # w0[c] = sum of all weights of the (diagonal) kernel c
+    w0 = values.new_zeros([nb_out])
+    w0.index_add_(0, channel[diagonal], values[diagonal])
+    if not nb_chan:
+        w0 = w0[0]
+    # remove (diagonal) central weights
+    keep = diagonal.bitwise_and(center).bitwise_not_()
+    kernel = torch.sparse_coo_tensor(indices[:, keep], values[keep],
+                                     kernel.shape)
     return kernel, w0
 
 

@@ -49,6 +49,7 @@ from ._regularisers import (absolute, membrane, bending,
                             absolute_grid, membrane_grid, bending_grid,
                             lame_shear, lame_div,
                             absolute_diag, membrane_diag, bending_diag,
+                            regulariser_grid_diag,
                             regulariser_grid_kernel, regulariser_kernel)
 from ._spconv import spconv
 if compiled_backend == 'C':
@@ -797,10 +798,18 @@ class _GridFMG(_FMG):
                 wa = w['absolute']
                 wm = w['membrane']
                 wb = w['bending']
-                wl = w['lame']
+                wl = w.get('lame', None)
             else:
                 wa = wb = wm = wl = w
             wl = py.ensure_list(wl, 2)
+
+            # weights are stored with a trailing singleton channel dimension
+            # (for restriction/prolongation), but regularisers expect
+            # (..., *spatial) weight maps
+            def squeeze(w):
+                return w[..., 0] if torch.is_tensor(w) else w
+            wa, wm, wb = squeeze(wa), squeeze(wm), squeeze(wb)
+            wl = [squeeze(w1) for w1 in wl]
             has_weights = (wa is not None or wm is not None or wb is not None
                            or any(w is not None for w in wl))
 
@@ -829,29 +838,12 @@ class _GridFMG(_FMG):
                 return y
 
             # diagonal of the regulariser
-            if has_weights:
-                smo = h.new_zeros([*batch, *spatial, self.dim])
-            else:
-                smo = h.new_zeros(self.dim)
-            if self.absolute:
-                smo.add_(absolute_diag(weights=wa), alpha=self.absolute)
-            if self.membrane:
-                smo.add_(membrane_diag(weights=wm, **opt), alpha=self.membrane)
-            if self.bending:
-                smo.add_(bending_diag(weights=wb, **opt), alpha=self.bending)
-            vx2 = utils.make_vector(vx, **utils.backend(smo)).square()
-            smo *= vx2
-            ivx2 = vx2.reciprocal_()
-            if self.lame[0]:
-                if wl[0] is not None:
-                    smo.add_(wl[0], alpha=2 * self.lame[0] * (1 + ivx2.sum() / ivx2))
-                else:
-                    smo += 2 * self.lame[0] * (1 + ivx2.sum() / ivx2)
-            if self.lame[1]:
-                if wl[1] is not None:
-                    smo.add_(wl[1], alpha=2 * self.lame[1])
-                else:
-                    smo += 2 * self.lame[1]
+            smo = regulariser_grid_diag(
+                self.dim, absolute=self.absolute, membrane=self.membrane,
+                bending=self.bending, lame=self.lame, voxel_size=vx,
+                bound=self.bound, **utils.backend(h),
+                weights=(dict(absolute=wa, membrane=wm, bending=wb, lame=wl)
+                         if has_weights else None))
             smo *= factor
 
             h_smo = h.clone()
@@ -928,20 +920,10 @@ class _GridFMG(_FMG):
                 return v
 
             # diagonal of the regulariser
-            smo = h.new_zeros(self.dim)
-            if self.absolute:
-                smo.add_(absolute_diag(), alpha=self.absolute)
-            if self.membrane:
-                smo.add_(membrane_diag(**opt), alpha=self.membrane)
-            if self.bending:
-                smo.add_(bending_diag(**opt), alpha=self.bending)
-            vx2 = utils.make_vector(vx, **utils.backend(smo)).square()
-            smo *= vx2
-            ivx2 = vx2.reciprocal_()
-            if self.lame[0]:
-                smo += 2 * self.lame[0] * (1 + ivx2.sum() / ivx2)
-            if self.lame[1]:
-                smo += 2 * self.lame[1]
+            smo = regulariser_grid_diag(
+                self.dim, absolute=self.absolute, membrane=self.membrane,
+                bending=self.bending, lame=self.lame, voxel_size=vx,
+                bound=self.bound, **utils.backend(h))
             smo *= factor
 
             h_smo = h.clone()
@@ -1416,35 +1398,10 @@ def solve_grid(hessian, gradient, absolute=0, membrane=0, bending=0,
         return y
 
     # diagonal of the regulariser
-    vx2 = voxel_size.square()
-    ivx2 = vx2.reciprocal()
-    smo = torch.zeros_like(gradient) if has_weights else 0
-    if absolute:
-        if wa is not None:
-            smo.add_(wa, alpha=absolute * vx2)
-        else:
-            smo += absolute * vx2
-    if membrane:
-        if wm is not None:
-            smo.add_(wm, alpha=2 * membrane * ivx2.sum() * vx2)
-        else:
-            smo += 2 * membrane * ivx2.sum() * vx2
-    if bending:
-        val = torch.combinations(ivx2, r=2).prod(dim=-1).sum()
-        if wb is not None:
-            smo.add_(wb, alpha=(8 * val + 6 * ivx2.square().sum()) * vx2)
-        else:
-            smo += bending * (8 * val + 6 * ivx2.square().sum()) * vx2
-    if lame[0]:
-        if wl[0] is not None:
-            smo.add_(wl[0], alpha=2 * lame[0] * (1 + ivx2.sum() / ivx2))
-        else:
-            smo += 2 * lame[0] * (1 + ivx2.sum() / ivx2)
-    if lame[1]:
-        if wl[1] is not None:
-            smo.add_(wl[1], alpha=2 * lame[1])
-        else:
-            smo += 2 * lame[1]
+    smo = regulariser_grid_diag(dim, absolute=absolute, membrane=membrane,
+                                bending=bending, lame=lame,
+                                voxel_size=voxel_size, bound=bound,
+                                weights=weights, **backend)
 
     if smo.shape[-1] > hessian.shape[-1]:
         hessian_smo = hessian + smo
@@ -1559,20 +1516,9 @@ def solve_grid_kernel(hessian, gradient, absolute=0, membrane=0, bending=0,
         return v
 
     # diagonal of the regulariser
-    vx2 = voxel_size.square()
-    ivx2 = vx2.reciprocal()
-    smo = 0
-    if absolute:
-        smo += absolute * vx2
-    if membrane:
-        smo += 2 * membrane * ivx2.sum() * vx2
-    if bending:
-        val = torch.combinations(ivx2, r=2).prod(dim=-1).sum()
-        smo += bending * (8 * val + 6 * ivx2.square().sum()) * vx2
-    if lame[0]:
-        smo += 2 * lame[0] * (1 + ivx2.sum() / ivx2)
-    if lame[1]:
-        smo += 2 * lame[1]
+    smo = regulariser_grid_diag(dim, absolute=absolute, membrane=membrane,
+                                bending=bending, lame=lame,
+                                voxel_size=voxel_size, bound=bound, **backend)
     hessian_smo = hessian.clone()
     hessian_smo[..., :dim] += smo
 

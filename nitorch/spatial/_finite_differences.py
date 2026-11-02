@@ -1367,6 +1367,11 @@ def _lincomb(slices, weights, dim, ref=None):
         if result is None:
             if len(new_chunks) == 1:
                 result = new_chunks[0]
+                # we accumulate into `result` in place: make sure it does
+                # not point to `ref` and is not an expanded tensor
+                if ((ref is not None and same_storage(ref, result))
+                        or any(s == 0 for s in result.stride())):
+                    result = result.clone()
             else:
                 result = torch.cat(new_chunks, dim)
         else:

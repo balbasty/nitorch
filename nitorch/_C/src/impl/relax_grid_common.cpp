@@ -1151,11 +1151,11 @@ void RelaxGridImpl<scalar_t,offset_t,reduce_t>::relax3d_all(
               + bound::get(sol1, z0+y1, sz0*sy1) - bound::get(sol1, z0+y0, sz0*sy0) )
       + ( absolute*c
         +(w110*(get(sol2, x0+y0, sx0*sy0) + get(sol2, x1+y0, sx1*sy0) +
-                get(sol2, x0+y1, sx1*sy1) + get(sol2, x1+y1, sx1*sy1))
+                get(sol2, x0+y1, sx0*sy1) + get(sol2, x1+y1, sx1*sy1))
         + w101*(get(sol2, x0+z0, sx0*sz0) + get(sol2, x1+z0, sx1*sz0) +
-                get(sol2, x0+z1, sx1*sz1) + get(sol2, x1+z1, sx1*sz1))
+                get(sol2, x0+z1, sx0*sz1) + get(sol2, x1+z1, sx1*sz1))
         + w011*(get(sol2, y0+z0, sy0*sz0) + get(sol2, y1+z0, sy1*sz0) +
-                get(sol2, y0+z1, sy1*sz1) + get(sol2, y1+z1, sy1*sz1)))
+                get(sol2, y0+z1, sy0*sz1) + get(sol2, y1+z1, sy1*sz1)))
         +(w200*(get(sol2, x00,   sx00)    + get(sol2, x11,   sx11))
         + w020*(get(sol2, y00,   sy00)    + get(sol2, y11,   sy11))
         + w002*(get(sol2, z00,   sz00)    + get(sol2, z11,   sz11))) ) / vx2 
@@ -1315,11 +1315,11 @@ void RelaxGridImpl<scalar_t,offset_t,reduce_t>::relax3d_bending(
         +  w020*(get(sol2, y00,   sy00)    + get(sol2, y11,   sy11))
         +  w002*(get(sol2, z00,   sz00)    + get(sol2, z11,   sz11)))
         + (w110*(get(sol2, x0+y0, sx0*sy0) + get(sol2, x1+y0, sx1*sy0) +
-                 get(sol2, x0+y1, sx1*sy1) + get(sol2, x1+y1, sx1*sy1))
+                 get(sol2, x0+y1, sx0*sy1) + get(sol2, x1+y1, sx1*sy1))
         +  w101*(get(sol2, x0+z0, sx0*sz0) + get(sol2, x1+z0, sx1*sz0) +
-                 get(sol2, x0+z1, sx1*sz1) + get(sol2, x1+z1, sx1*sz1))
+                 get(sol2, x0+z1, sx0*sz1) + get(sol2, x1+z1, sx1*sz1))
         +  w011*(get(sol2, y0+z0, sy0*sz0) + get(sol2, y1+z0, sy1*sz0) +
-                 get(sol2, y0+z1, sy1*sz1) + get(sol2, y1+z1, sy1*sz1))) ) / vx2 
+                 get(sol2, y0+z1, sy0*sz1) + get(sol2, y1+z1, sy1*sz1))) ) / vx2 
       );
   }
 
