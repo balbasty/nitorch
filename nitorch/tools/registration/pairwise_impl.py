@@ -902,11 +902,9 @@ class PairwiseRegisterStep:
                 right = spatial.affine_grid(aff_right, fixed.shape)
                 psi = regutils.smart_pull_grid(phi00, right, bound='zero')
                 psi += right
-            phi_right = psi
-            if _almost_identity(aff_left) and moving.shape == self.nonlin.shape:
-                left = None
-            else:
-                left = spatial.affine_grid(aff_left, self.nonlin.shape)
+            phi_right = psi  # fixed lattice -> nonlin voxels
+            if not (_almost_identity(aff_left) and
+                    moving.shape == self.nonlin.shape):
                 psi = spatial.affine_matvec(aff_left, psi)
 
             # ----------------------------------------------------------
@@ -969,11 +967,13 @@ class PairwiseRegisterStep:
             # chain rule -> derivatives wrt Lie parameters
             # ----------------------------------------------------------
 
-            def compose_grad(g, h, g_mu, g_aff):
+            def compose_grad(g, h, g_mu, g_aff, grid=None):
                 """
                 g, h : gradient/Hessian of loss wrt moving image
                 g_mu : spatial gradients of moving image
                 g_aff : gradient of affine matrix wrt Lie parameters
+                grid : coordinates the affine is applied to
+                       (default: the identity grid of the fixed lattice)
                 returns g, h: gradient/Hessian of loss wrt Lie parameters
                 """
                 # Note that `h` can be `None`, but the functions I
@@ -981,7 +981,7 @@ class PairwiseRegisterStep:
                 dim = g_mu.shape[-1]
                 g = regutils.jg(g_mu, g)
                 h = regutils.jhj(g_mu, h)
-                g, h = regutils.affine_grid_backward(g, h)
+                g, h = regutils.affine_grid_backward(g, h, grid=grid)
                 dim2 = dim * (dim + 1)
                 g = g.reshape([*g.shape[:-2], dim2])
                 g_aff = g_aff[..., :-1, :]
@@ -996,15 +996,23 @@ class PairwiseRegisterStep:
             if grad or hess:
                 g0, g = g, None
                 h0, h = h, None
+                # spatial gradients of the moving image, at the warped
+                # fixed voxels (moving voxel space)
+                mugrad = moving.pull_grad(psi, rotate=False)
                 if pos in 'ms':
-                    g_left = regutils.smart_push(g0, phi_right, shape=self.nonlin.shape)
-                    h_left = regutils.smart_push(h0, phi_right, shape=self.nonlin.shape)
-                    mugrad = moving.pull_grad(left, rotate=False)
-                    g_left, h_left = compose_grad(g_left, h_left, mugrad, gaff_left)
-                    g, h = g_left, h_left
+                    # warped(x) = mu(L phi_right(x)), so
+                    # dwarped(x)/dL = grad_mu(psi(x)) [phi_right(x); 1]':
+                    # computed on the fixed lattice, at the points
+                    # `phi_right(x)`. (Pushing `g` to the nonlin lattice
+                    # first and taking `grad_mu` and the coordinates at
+                    # its nodes is exact only if `phi_right` is the
+                    # identity -- never the case in the symmetric
+                    # position, whose right affine is the fixed half.)
+                    g, h = compose_grad(g0, h0, mugrad, gaff_left,
+                                        grid=phi_right)
+                del phi_right
                 if pos in 'fs':
                     g_right, h_right = g0, h0
-                    mugrad = moving.pull_grad(psi, rotate=False)
                     jac = spatial.grid_jacobian(phi00, right, type='disp', extrapolate=False)
                     jac = torch.matmul(aff_left[:-1, :-1], jac)
                     mugrad = linalg.matvec(jac.transpose(-1, -2), mugrad)
