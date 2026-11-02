@@ -17,7 +17,7 @@ def run(
     affine_optim=None,
     nonlin_optim=None,
     pyramid=True,
-    reg_modulation=4,
+    reg_modulation=1,
     interleaved=True,
     progressive=True,
     affine_then_nonlin=True,
@@ -43,16 +43,16 @@ def run(
         Instantiated nonlinear optimizer
     pyramid : bool, default=True
         Optimize pyramid levels in a coarse-to-fine manner
-    reg_modulation : float, default=4
+    reg_modulation : float, default=1
         Modulation of the nonlinear regularisation across pyramid levels:
         the regularisation is multiplied by `reg_modulation` each time the
         voxel size of the nonlinear grid doubles, i.e.,
         `factor[n] = factor[0] * reg_modulation ** log2(vx[n] / vx[0])`,
         where `vx[n]` is the voxel size at level `n` (0 = finest).
         The finest level always uses the user-defined regularisation.
-        `1` disables the modulation; the default (4) roughly compensates
-        for the sharper data term (less noise and fewer unmatchable
-        details) of coarse levels near convergence.
+        `1` (default) disables the modulation. Values > 1 (e.g., 4)
+        compensate for the sharper data term (less noise and fewer
+        unmatchable details) of coarse levels near convergence.
     interleaved : bool, default=False
         Fit the affine and nonlinear components in an interleaved manner
     progressive : bool
@@ -262,7 +262,7 @@ def run_pyramid(
     verbose=True,
     framerate=1,
     figure=None,
-    reg_modulation=4,
+    reg_modulation=1,
 ):
     """Run sequential pyramid registration
 
