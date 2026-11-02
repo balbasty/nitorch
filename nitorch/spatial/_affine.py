@@ -2594,8 +2594,10 @@ def compute_fov(mat, affines, shapes, pad=0, pad_unit='%'):
         Input shapes
     pad : [sequence of] float, default=0
         Amount of padding (or cropping) to add to the bounding box.
-    pad_unit : [sequence of] {'mm', '%'}, default='%'
-        Unit of the padding/cropping.
+    pad_unit : {'mm', 'vox', '%'}, default='%'
+        Unit of the padding/cropping. With '%', a percentage of the
+        bounding box size (split between both sides). Any other unit
+        than 'vox' or '%' is interpreted as millimetres.
 
     Returns
     -------
@@ -2628,9 +2630,12 @@ def compute_fov(mat, affines, shapes, pad=0, pad_unit='%'):
     if pad is None:
         pad = 0
     pad = utils.make_vector(pad, dim, **backend)
-    if pad_unit == '%':
+    if pad_unit in ('%', 'pct'):
         pad = pad / 100.
         pad = pad * (mx - mn) / 2.
+    elif pad_unit not in ('vox', 'voxel', 'voxels'):
+        # millimetres -> voxels of the output space
+        pad = pad / voxel_size(mat)
     mx = mx + pad
     mn = mn - pad
     return mn, mx

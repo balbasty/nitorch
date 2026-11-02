@@ -15,7 +15,7 @@ Output options:
     -o, --output PATH               Output path to mock mean image [{dir}/meanspace{ext}]
     -r, --resliced PATH             Output path to resliced image [{dir}/{base}.meanspace{ext}]
     -v, --voxel-size VAL [UNIT]     Voxel size and unit [100 %]
-    -p, --pad VAL [UNIT]            Pad field of view by some amount [0 %]
+    -p, --pad VAL [UNIT]            Pad field of view (UNIT: %, mm, vox) [0 %]
     -l, --layout LAYOUT             Voxel layout (RAS, LPS, ...) [majority]
 
 Other options:
