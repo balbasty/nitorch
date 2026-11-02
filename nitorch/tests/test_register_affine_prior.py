@@ -198,6 +198,9 @@ def test_dict_penalty_indices(dim, basis):
     expected = torch.as_tensor([{'t': 5., 's': 7.}.get(c, 0.)
                                 for c in GROUPS[dim, basis]], dtype=dt)
     assert torch.equal(a.penalty, expected)
+    # 's' is a short key for shear
+    a = _model(basis, dim, dict(t=5., s=7.))
+    assert torch.equal(a.penalty, expected)
 
 
 def test_dict_penalty_bad_key():

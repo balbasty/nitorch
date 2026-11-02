@@ -166,8 +166,6 @@ usage:
     FACTOR must be a scalar value [0] and is the precision lambda of a
     Gaussian prior N(0, (lambda I)^-1) on the (orthonormal) affine Lie
     parameters q, i.e. a penalty 1/2 lambda ||q||^2. 0 means no penalty.
-    (Per-component precisions are available through the Python API:
-    `AffineModel(penalty=[...])` or `penalty=dict(translation=..., ...)`.)
     Common options:
         -p, --position                  Position of the affine: [sym], mov, fix
         -g, --progressive               Progressive optimization (t -> r -> s -> a) [false]

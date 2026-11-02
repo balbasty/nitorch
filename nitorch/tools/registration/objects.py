@@ -2118,7 +2118,7 @@ def _affine_penalty_group(key):
         return 'rotation'
     if k == 'z' or k.startswith('zo') or k.startswith('sc'):
         return 'zoom'
-    if k.startswith('sh'):
+    if k == 's' or k.startswith('sh'):
         return 'shear'
     raise ValueError(f'Unknown affine penalty group: {key!r} (expected one '
                      f'of {_AFFINE_PENALTY_GROUPS})')
