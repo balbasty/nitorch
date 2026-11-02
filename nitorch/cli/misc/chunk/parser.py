@@ -61,7 +61,7 @@ def parse(args):
             while cli.next_isvalue(args):
                 val, *args = args
                 struct.output.append(val)
-        elif tag in ('t', '--transform'):
+        elif tag in ('-t', '--transform'):
             if not cli.next_isvalue(args):
                 struct.transform = ['{dir}{sep}{base}_2_{i}.lta']
             else:

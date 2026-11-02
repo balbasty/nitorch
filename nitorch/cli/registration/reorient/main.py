@@ -105,8 +105,8 @@ def reorient(inp, layout='RAS', output=None, transform=None):
     if isinstance(dat, io.MappedArray):
         dat = dat.data(numpy=True)
 
+    layout = spatial.volume_layout_to_name(layout)
     if output:
-        layout = spatial.volume_layout_to_name(layout)
         if is_file:
             output = output.format(dir=dir or '.', base=base, ext=ext,
                                    sep=os.path.sep, layout=layout)

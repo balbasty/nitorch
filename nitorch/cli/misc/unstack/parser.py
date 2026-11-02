@@ -49,12 +49,13 @@ def parse(args):
         if tag in ('-d', '--dim', '--dimension'):
             cli.check_next_isvalue(args, tag)
             struct.dim, *args = args
+            struct.dim = int(struct.dim)
         elif tag in ('-o', '--output'):
             struct.output = []
             while cli.next_isvalue(args):
                 val, *args = args
                 struct.output.append(val)
-        elif tag in ('t', '--transform'):
+        elif tag in ('-t', '--transform'):
             if not cli.next_isvalue(args):
                 struct.transform = ['{dir}{sep}{base}_2_{i}.lta']
             else:

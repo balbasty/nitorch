@@ -31,9 +31,11 @@ def _cli(args):
         return
 
     options.output = make_list(options.output, len(options.files))
-    for fname, ofname in zip(options.files, options.output):
-        reorient(fname, options.layout, ofname,
-                 transform=options.transform)
+    options.transform = make_list(options.transform or [None],
+                                  len(options.files))
+    for fname, ofname, tname in zip(options.files, options.output,
+                                    options.transform):
+        reorient(fname, options.layout, ofname, transform=tname)
 
 
 commands['reorient'] = cli
