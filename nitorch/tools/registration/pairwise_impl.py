@@ -620,8 +620,7 @@ class PairwiseRegisterStep:
         evaluating the data term."""
         if not (self.affine and self.nonlin):
             return
-        vel = self.nonlin.parameters()
-        self.llv = 0.5 * vel.flatten().dot(self.nonlin.regulariser(vel).flatten())
+        self.llv = self._nonlin_penalty(self.nonlin.parameters())
         if self.affine.penalty is not None:
             self.lla = self._affine_penalty(self.affine.parameters())
 
@@ -808,11 +807,7 @@ class PairwiseRegisterStep:
         # ==============================================================
         #                       REGULARIZATION
         # ==============================================================
-        vgrad = self.nonlin.regulariser(vel0)
-        llv = 0.5 * vel0.flatten().dot(vgrad.flatten())
-        if grad:
-            sumgrad += vgrad
-        del vgrad
+        llv = self._nonlin_penalty(vel0, sumgrad if grad else None)
 
         # ==============================================================
         #                           VERBOSITY
@@ -834,6 +829,18 @@ class PairwiseRegisterStep:
                 sumhess = self.nonlin.load(sumhess)
             out.append(sumhess)
         return tuple(out) if len(out) > 1 else out[0]
+
+    def _nonlin_penalty(self, vel, grad=None):
+        """Regularisation of the nonlinear parameters: `0.5 * <v, L v>`.
+
+        Its gradient (L v) is added to `grad` in place; its Hessian (L) is
+        not materialised (the nonlinear solvers apply it themselves).
+        Returns the value.
+        """
+        vgrad = self.nonlin.regulariser(vel)
+        if grad is not None:
+            grad += vgrad
+        return 0.5 * vel.flatten().dot(vgrad.flatten())
 
     def _affine_penalty(self, logaff, grad=None, hess=None):
         """L2 penalty on the (model-basis) affine log-parameters.
