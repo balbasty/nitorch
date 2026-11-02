@@ -231,3 +231,12 @@ def test_ext_in_output(tmp_path, images):
     metrics(['-p', fp, '-r', fr, '-m', 'mse',
              '-o', '{dir}{sep}{base}{ext}.json'])
     assert os.path.exists(str(tmp_path / 'pred.nii.gz.json'))
+
+
+def test_metrics_errors_return_status_1(tmp_path, capsys):
+    """Parser and runtime errors print one line and return 1."""
+    from nitorch.cli.misc.metrics.cli import cli
+    assert cli(['-m', 'nope']) == 1
+    assert cli(['-p', str(tmp_path / 'a.nii'), '-r', str(tmp_path / 'b.nii'),
+                '-m', 'dice', '-o', str(tmp_path / 'o.json')]) == 1
+    assert '[ERROR]' in capsys.readouterr().err
