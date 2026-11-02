@@ -39,8 +39,15 @@ def optimal_svf(svf, weights=None, squared=True, **prm):
 
     # compute log-optimal parameters
     N = len(labels)
-    K = len(svf)
     D = ndim
+
+    def complete_pairs(d, negate=True):
+        # add missing reverse directions (b, a) for every given (a, b).
+        # iterate over a snapshot: the dict grows during the loop.
+        d = dict(d)
+        for (a, b), v in list(d.items()):
+            d.setdefault((b, a), -v if negate else v)
+        return d
 
     def load(d):
         return {
@@ -53,14 +60,11 @@ def optimal_svf(svf, weights=None, squared=True, **prm):
 
         # ensure forward/backward are present
         # (avoids bias if some are and others are not)
-        svf = dict(svf)
-        for (a, b), v in svf.items():
-            svf.setdefault((b, a), -v)
+        svf = complete_pairs(svf)
+        K = len(svf)
 
         if weights:
-            weights = dict(weights)
-            for (a, b), w in weights.items():
-                weights.setdefault((b, a), w)
+            weights = complete_pairs(weights, negate=False)
             if set(svf.keys()) - set(weights.keys()):
                 meanw = sum(w.mean() for w in weights.values())
                 meanw /= len(weights)
@@ -148,9 +152,8 @@ def optimal_svf(svf, weights=None, squared=True, **prm):
 
         # ensure forward/backward are present
         # (avoids bias if some are and others are not)
-        svf = dict(svf)
-        for (a, b), v in svf.items():
-            svf.setdefault((b, a), -v)
+        svf = complete_pairs(svf)
+        K = len(svf)
 
         w = torch.zeros([K, N])
         for p, (i, j) in enumerate(svf.keys()):
