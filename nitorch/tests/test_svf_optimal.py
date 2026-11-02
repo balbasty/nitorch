@@ -1,7 +1,7 @@
 """Tests for `optimal_svf` (used by `nitorch vopt`)."""
 import torch
 import pytest
-from nitorch.spatial._svf_optimal import optimal_svf
+from nitorch.spatial._svf_optimal import optimal_svf, svf_labels
 
 SHAPE = (4, 4, 4)
 
@@ -50,3 +50,35 @@ def test_consistent_pairs_are_reproduced(weighted):
     assert torch.allclose(opt, z, atol=1e-3)
     for (i, j), v in svf.items():
         assert torch.allclose(opt[i] - opt[j], v, atol=1e-3)
+
+
+def test_mixed_weighted_unweighted_pairs():
+    svf = _one_direction(_subjects(2))
+    full = _ones(svf)
+    partial = {k: v for k, v in full.items() if k != (0, 2)}
+    z_full = optimal_svf(svf, full, dtype=torch.double)
+    z_part = optimal_svf(svf, partial, dtype=torch.double)
+    # missing weight is filled with the mean weight (== 1 here)
+    assert torch.allclose(z_part, z_full, atol=1e-6)
+
+
+def test_string_labels_deterministic_order():
+    z = _subjects(3)
+    names = ['b', 'c', 'a']  # z[0] is 'b', z[1] is 'c', z[2] is 'a'
+    svf = {(names[i], names[j]): v
+           for (i, j), v in _one_direction(z).items()}
+    assert svf_labels(svf) == ['a', 'b', 'c']
+    opt = optimal_svf(svf, dtype=torch.double).double()
+    for n, name in enumerate(['a', 'b', 'c']):
+        assert torch.allclose(opt[n], z[names.index(name)], atol=1e-3)
+
+
+def test_svf_labels_order():
+    assert svf_labels({(2, 0): 0, (1, 0): 0}) == [0, 1, 2]
+    # non-comparable labels: order of first appearance
+    assert svf_labels({('x', 1): 0, (0, 'y'): 0}) == ['x', 1, 0, 'y']
+
+
+def test_no_stray_prints(capsys):
+    optimal_svf(_one_direction(_subjects()), dtype=torch.double)
+    assert capsys.readouterr().out == ''
