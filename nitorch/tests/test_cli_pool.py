@@ -1,4 +1,4 @@
-"""`pool` command: padding parsing, `-p same`, and the `ssq` method."""
+"""`pool` command: padding parsing, `-p same`, and the `rms` method."""
 import numpy as np
 import pytest
 
@@ -82,11 +82,46 @@ def test_same_padding_shape(tmp_path, volume, window):
     assert np.allclose(np.diag(aff)[:3], 2)
 
 
-# --- ssq --------------------------------------------------------------------
+# --- rms (and deprecated ssq alias) ----------------------------------------
 
-def test_ssq_is_sum_of_squares(tmp_path, volume):
-    out, _ = run(tmp_path, volume, '-w', '2', '-m', 'ssq')
-    dat = volume[1]
-    ref = (dat ** 2).reshape([2, 2, 3, 2, 4, 2]).sum(axis=(1, 3, 5))
+def _numpy_rms(dat):
+    blocks = dat.reshape([2, 2, 3, 2, 4, 2]).astype('float64')
+    return np.sqrt((blocks ** 2).mean(axis=(1, 3, 5)))
+
+
+def test_rms_is_root_mean_square(tmp_path, volume):
+    out, _ = run(tmp_path, volume, '-w', '2', '-m', 'rms')
     assert out.shape == (2, 3, 4)
-    assert np.allclose(out, ref, rtol=1e-5)
+    assert np.allclose(out, _numpy_rms(volume[1]), rtol=1e-5)
+
+
+def test_ssq_deprecated_alias_of_rms(tmp_path, volume):
+    with pytest.warns((DeprecationWarning, FutureWarning), match='rms'):
+        out, _ = run(tmp_path, volume, '-w', '2', '-m', 'ssq')
+    ref, _ = run(tmp_path, volume, '-w', '2', '-m', 'rms')
+    assert np.allclose(out, ref)
+    assert np.allclose(out, _numpy_rms(volume[1]), rtol=1e-5)
+
+
+def test_parse_ssq_maps_to_rms():
+    with pytest.warns((DeprecationWarning, FutureWarning), match='rms'):
+        s = parse(['img.nii', '-m', 'ssq'])
+    assert s.method == 'rms'
+
+
+def test_help_lists_rms_not_ssq():
+    from nitorch.cli.misc.pool.parser import help
+    assert "'rms'" in help
+    assert 'ssq' not in help
+
+
+def test_spatial_pool_ssq_alias():
+    import torch
+    from nitorch import spatial
+    x = torch.randn(1, 4, 6, 8)
+    ref = spatial.pool(3, x, kernel_size=2, reduction='rms')
+    with pytest.warns((DeprecationWarning, FutureWarning), match='rms'):
+        out = spatial.pool(3, x, kernel_size=2, reduction='ssq')
+    assert torch.allclose(out, ref)
+    exp = x.reshape(1, 2, 2, 3, 2, 4, 2).square().mean(dim=(2, 4, 6)).sqrt()
+    assert torch.allclose(ref, exp, atol=1e-6)

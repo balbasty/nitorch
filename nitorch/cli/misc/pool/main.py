@@ -22,8 +22,9 @@ def pool(inp, window=3, stride=None, padding=0, bound='dct2',
         Padding on both sides.
     bound : [sequence of] str, default='dct2'
         Boundary condition(s) used for padding.
-    method : {'mean', 'sum', 'min', 'max', 'median', 'ssq'}, default='mean'
-        Pooling function ('ssq' = sum of squares).
+    method : {'mean', 'sum', 'min', 'max', 'median', 'rms'}, default='mean'
+        Pooling function ('rms' = root mean square).
+        'ssq' is accepted as a deprecated alias of 'rms'.
     dim : int, default=3
         Number of spatial dimensions.
     output : [sequence of] str, optional

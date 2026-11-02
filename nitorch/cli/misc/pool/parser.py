@@ -1,3 +1,4 @@
+import warnings
 from nitorch.core import cli
 from nitorch.core.cli import ParseError
 from nitorch.core.struct import Structure
@@ -28,8 +29,8 @@ usage:
                            An optional boundary type (default: dct2) can be
                            given first (applies to all axes) and/or after
                            each size (applies to that axis).
-    -m, --method METHOD    Pooling function: {'mean', 'sum', 'min', 'max', 'median', 'ssq'} (default: 'mean')
-                           ssq = sum of squares
+    -m, --method METHOD    Pooling function: {'mean', 'sum', 'min', 'max', 'median', 'rms'} (default: 'mean')
+                           rms = root mean square
     -d, --dimension DIM    Number of spatial dimensions (default: 3)
     -o, --output *FILES    Output filenames (default: {dir}/{base}.pool{ext})
     -cpu, -gpu             Device to use (default: cpu)
@@ -109,6 +110,11 @@ def parse(args):
         elif tag in ('-m', '--method'):
             cli.check_next_isvalue(args, tag)
             struct.method, *args = args
+            if struct.method.lower() == 'ssq':
+                warnings.warn("pool: method 'ssq' has been renamed to 'rms' "
+                              "(root mean square). 'ssq' will be removed in "
+                              "a future version.", FutureWarning)
+                struct.method = 'rms'
         elif tag in ('-cpu', '--cpu'):
             struct.device = 'cpu'
         elif tag in ('-gpu', '--gpu'):
