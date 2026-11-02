@@ -60,10 +60,8 @@ writes each moving image with the transformation applied. See
 [Outputs](#outputs).
 
 !!! warning "At least one transformation is needed"
-    If the command contains no transformation group (`-tr`, `-rig`, `-sim`,
-    `-aff`, `-ffd` or `-dif`), nothing is optimised: the images are only copied
-    to their output files. Contrary to what the built-in help suggests, there
-    is no default transformation.
+    There is no default transformation. If the command contains none of `-tr`,
+    `-rig`, `-sim`, `-aff`, `-ffd` or `-dif`, `autoreg` stops with an error.
 
 ## Command-line grammar
 
@@ -174,12 +172,11 @@ nitorch autoreg -all -nit 200 -mi -fix ... -mov ... -aff
 All images are rescaled before the registration, channel by channel, so that
 the 1st percentile of intensities maps to 0 and the 95th percentile to 1.
 
-Two limitations of the current version are worth knowing. For `-dice`, use
-floating-point probability maps (one channel per class): integer label volumes
-are meant to be converted to one-hot maps on the fly, but that conversion does
-not work in the current code. When you use `-oth`, add `-v 0` to your command;
-with the default verbosity, the summary printed at the start does not handle
-these groups.
+For `-dice`, the images can be soft segments (one channel per class) or
+integer label volumes, which are converted on the fly to one-hot maps, with one
+channel per label. When you use `-oth`, add `-v 0` to your command; with the
+default verbosity, the summary printed at the start does not handle these
+groups.
 
 #### Options common to all loss groups
 
@@ -210,8 +207,11 @@ each pair of channels.
 
 | Option | Value | Description | Default |
 | ------ | ----- | ----------- | ------- |
-| `-l`, `--labels` | `LABEL...` | Labels to use. | all labels except 0 |
-| `-w`, `--weights` | `WEIGHT...` | Weight of each label. Only the first value is retained in the current version. | unweighted |
+| `-l`, `--labels` | `LABEL...` | Labels to use. Each one becomes a channel of the one-hot maps built from integer label volumes. | all labels except 0 |
+| `-w`, `--weights` | `[WEIGHT...]` | Weight of each label (or channel). A single value is repeated for all labels. A bare `-w` weights each label by its size in the fixed image. | unweighted |
+
+The loss is the soft Dice coefficient averaged over labels; the background is
+excluded.
 
 ### Image block options
 
@@ -267,7 +267,7 @@ extent of the grid can be enlarged with `-pad`.
 | ------ | ----- | ----------- | ------- |
 | `-lr`, `--learning-rate` | `LR` | Learning rate of this transformation, relative to the learning rate of the optimiser (the two are multiplied). | `1` |
 | `-wd`, `--weight-decay` | `WD` | Weight decay of this transformation, relative to the optimiser's (the two are multiplied). | `0` |
-| `-init`, `--init` | `FILE` | Initial value, read from a file. Accepted by the parser, but its handling is incomplete in the current version; do not rely on it. | zero (identity) |
+| `-init`, `--init` | `FILE` | Initial value, read from a file. For a linear transformation, the file holds a matrix (for example a previous `.lta`), and the estimated refinement is composed on the left of it. For `-ffd` and `-dif`, it is a 3-channel field that keeps its own orientation and is downsampled to the coarsest `-pyr` level. | zero (identity) |
 | `-o`, `--output` | `[FILE]` | Output file for the estimated transformation; see [Outputs](#outputs). With no value, use the default. | `{name}{ext}` |
 | `-pyr`, `--pyramid` | `LEVEL...` | Resolution levels of a nonlinear field; see [Pyramids](#pyramids). Ignored for linear transformations. | `1` |
 
@@ -325,11 +325,6 @@ is not what the code does. No regulariser is placed on linear transformations.
 | `-pyr`, `--pyramid` | `LEVEL...` | Images and nonlinear fields | `1` |
 | `-o`, `--output` | `FILE` | Output name of the transformations | `{name}{ext}` |
 
-!!! warning "`-stop` inside `-all`"
-    In the current version, `-stop` in an `-all` group also discards the two
-    arguments that follow it. Put `-stop` in an optimiser group instead, or make
-    it the last thing on the command line.
-
 The built-in help also lists `-r`, `-init` and `-exc` as default options; the
 code does not accept them in an `-all` group.
 
@@ -343,9 +338,6 @@ code does not accept them in an `-all` group.
 | `-cpu`, `--cpu` | | Run on the CPU. This is the default device. | |
 | `-gpu`, `--gpu` | `[N]` | Run on a GPU, optionally the one numbered `N`. | |
 | `-h`, `--help` | | Print the built-in help and exit. | |
-
-Do not turn off progressive freeing (`-prg false`) when you give several pyramid levels
-to a nonlinear transformation: the registration would not terminate.
 
 ## Optimisation
 
@@ -362,8 +354,8 @@ parameters that are free so far, and then more parameters are freed. The order i
    [Pyramids](#pyramids)). Once free, the linear parameters keep being
    optimised.
 
-With `-prg false`, all parameters are free from the first stage and there is a
-single stage.
+With `-prg false`, all parameters are free from the first stage. A nonlinear
+field with several pyramid levels then gets one more stage for each finer level.
 
 Within a stage, the learning rate is reduced automatically when the loss stops
 improving (PyTorch's `ReduceLROnPlateau`). The stage stops after `-nit`
