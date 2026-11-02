@@ -82,3 +82,14 @@ def test_resize_no_size_option(tmp_path, volume, capsys):
     assert '[ERROR]' in captured.err
     assert 'Traceback' not in captured.err
     assert not (tmp_path / 'out.nii.gz').exists()
+
+
+def test_resize_failure_returns_nonzero_status(tmp_path, capsys):
+    """A failing resize returns 1, so the dispatcher exits non-zero."""
+    from nitorch.cli.registration.resize.main import resize
+    # missing -f/-v/-s: ParseError
+    assert resize([str(tmp_path / 'x.nii')]) == 1
+    # unreadable input: generic error
+    assert resize([str(tmp_path / 'missing.nii'), '-f', '2']) == 1
+    err = capsys.readouterr().err
+    assert '[ERROR]' in err
