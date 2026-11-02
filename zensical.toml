@@ -1,0 +1,154 @@
+[project]
+
+site_name = "NITorch"
+site_description = "NeuroImaging in PyTorch"
+site_author = "Yael Balbastre"
+site_url = "https://balbasty.github.io/nitorch/"
+repo_url = "https://github.com/balbasty/nitorch"
+repo_name = "balbasty/nitorch"
+edit_uri = "edit/master/docs/"
+
+copyright = """
+Copyright &copy; 2020&ndash;2026 The NITorch authors
+"""
+
+extra_css = ["stylesheets/extra.css"]
+
+nav = [
+  {"Home" = [
+    "index.md",
+    {"Installation" = "install/index.md"},
+    {"Compiled backend" = "install/compiled.md"},
+  ]},
+  {"Command line" = [
+    "cli/index.md",
+    {"Common conventions" = "cli/conventions.md"},
+    {"Reference" = [
+      "cli/reference/index.md",
+      {"Images" = [
+        "cli/reference/images/index.md",
+        {"info" = "cli/reference/images/info.md"},
+        {"convert" = "cli/reference/images/convert.md"},
+        {"crop" = "cli/reference/images/crop.md"},
+        {"pad" = "cli/reference/images/pad.md"},
+        {"chunk" = "cli/reference/images/chunk.md"},
+        {"unstack" = "cli/reference/images/unstack.md"},
+        {"extract_patches" = "cli/reference/images/extract_patches.md"},
+        {"pool" = "cli/reference/images/pool.md"},
+        {"smooth" = "cli/reference/images/smooth.md"},
+        {"inpaint" = "cli/reference/images/inpaint.md"},
+        {"metrics" = "cli/reference/images/metrics.md"},
+      ]},
+      {"Orientation & resampling" = [
+        "cli/reference/spatial/index.md",
+        {"orient" = "cli/reference/spatial/orient.md"},
+        {"reorient" = "cli/reference/spatial/reorient.md"},
+        {"resize" = "cli/reference/spatial/resize.md"},
+        {"reslice" = "cli/reference/spatial/reslice.md"},
+        {"compose" = "cli/reference/spatial/compose.md"},
+        {"vexp" = "cli/reference/spatial/vexp.md"},
+        {"meanspace" = "cli/reference/spatial/meanspace.md"},
+      ]},
+      {"Registration" = [
+        "cli/reference/registration/index.md",
+        {"register" = "cli/reference/registration/register.md"},
+        {"simplereg" = "cli/reference/registration/simplereg.md"},
+        {"affreg" = "cli/reference/registration/affreg.md"},
+        {"optinorm" = "cli/reference/registration/optinorm.md"},
+        {"affopt" = "cli/reference/registration/affopt.md"},
+        {"vopt" = "cli/reference/registration/vopt.md"},
+        {"autoreg" = "cli/reference/registration/autoreg.md"},
+      ]},
+      {"Quantitative MRI" = [
+        "cli/reference/qmri/index.md",
+        {"estatics" = "cli/reference/qmri/estatics.md"},
+        {"greeq" = "cli/reference/qmri/greeq.md"},
+        {"epic" = "cli/reference/qmri/epic.md"},
+        {"topup" = "cli/reference/qmri/topup.md"},
+      ]},
+      {"Denoising & segmentation" = [
+        "cli/reference/denoising/index.md",
+        {"denoise" = "cli/reference/denoising/denoise.md"},
+        {"denoise_mri" = "cli/reference/denoising/denoise_mri.md"},
+        {"uniseg" = "cli/reference/denoising/uniseg.md"},
+      ]},
+      {"Visualisation" = [
+        "cli/reference/viewer/index.md",
+        {"view" = "cli/reference/viewer/view.md"},
+      ]},
+    ]},
+    {"Tutorials" = [
+      "cli/tutorials/index.md",
+      {"Inspecting and preparing images" = "cli/tutorials/preparing.md"},
+      {"Registering two images" = "cli/tutorials/registration.md"},
+      {"Working with transformations" = "cli/tutorials/transforms.md"},
+    ]},
+  ]},
+  {"Python" = [
+    "python/index.md",
+  ]},
+]
+
+[project.theme]
+
+language = "en"
+logo = "images/nitorch_logo_v0.1.png"
+favicon = "images/nitorch_logo_v0.1.png"
+
+features = [
+  "content.code.copy",
+  "content.code.select",
+  "content.action.edit",
+  "content.code.annotate",
+  "content.tabs.link",
+  "navigation.indexes",
+  "navigation.tabs",
+  "navigation.sections",
+  "navigation.top",
+  "navigation.footer",
+  "search.highlight",
+  "toc.follow",
+]
+
+[[project.theme.palette]]
+scheme = "default"
+toggle.icon = "lucide/sun"
+toggle.name = "Switch to dark mode"
+
+[[project.theme.palette]]
+scheme = "slate"
+toggle.icon = "lucide/moon"
+toggle.name = "Switch to light mode"
+
+[project.theme.icon]
+repo = "fontawesome/brands/github"
+
+# ----------------------------------------------------------------------------
+# Markdown extensions
+# ----------------------------------------------------------------------------
+[project.markdown_extensions.abbr]
+[project.markdown_extensions.admonition]
+[project.markdown_extensions.attr_list]
+[project.markdown_extensions.def_list]
+[project.markdown_extensions.footnotes]
+[project.markdown_extensions.md_in_html]
+[project.markdown_extensions.tables]
+[project.markdown_extensions.toc]
+permalink = true
+toc_depth = 3
+[project.markdown_extensions.pymdownx.arithmatex]
+generic = true
+[project.markdown_extensions.pymdownx.highlight]
+anchor_linenums = true
+line_spans = "__span"
+pygments_lang_class = true
+[project.markdown_extensions.pymdownx.inlinehilite]
+[project.markdown_extensions.pymdownx.snippets]
+[project.markdown_extensions.pymdownx.superfences]
+[project.markdown_extensions.pymdownx.details]
+[project.markdown_extensions.pymdownx.tabbed]
+alternate_style = true
+[project.markdown_extensions.pymdownx.emoji]
+emoji_generator = "zensical.extensions.emoji.to_svg"
+emoji_index = "zensical.extensions.emoji.twemoji"
+[project.markdown_extensions.pymdownx.keys]
