@@ -57,8 +57,12 @@ def build_register_args(options):
     """
     if not options.moving or not options.fixed:
         raise ParseError('Both a moving (-m) and fixed (-f) image are required.')
-    if not options.do_affine and not options.do_nonlin:
-        raise ParseError('--no-affine and --no-nonlin cannot be used together.')
+    do_affine = options.do_affine and options.affine != 'none'
+    do_nonlin = options.do_nonlin and options.nonlin != 'none'
+    if not do_affine and not do_nonlin:
+        raise ParseError('Cannot disable both the affine (--affine none / '
+                         '--no-affine) and nonlinear (--nonlin none / '
+                         '--no-nonlin) transforms.')
 
     args = ['--verbose', str(options.verbose)]
     args += [f'--{options.device[0]}']
@@ -94,9 +98,9 @@ def build_register_args(options):
     args += ['-r', str(options.resliced)]
 
     # --- affine -------------------------------------------------------
-    if options.do_affine:
-        args += ['@affine', 'affine' if options.affine else 'rigid']
-        args += ['-o', str(options.output)]
+    if do_affine:
+        args += ['@affine', options.affine]
+        args += ['-o', str(options.output_affine)]
         optimizer = options.optimizer
         if not optimizer:
             # Powell for nmi (as nitorch affreg), else register's default
@@ -107,11 +111,11 @@ def build_register_args(options):
                  '-s', str(options.search)]
 
     # --- nonlinear ----------------------------------------------------
-    if options.do_nonlin:
+    if do_nonlin:
         args += ['@nonlin', options.nonlin]
         if options.penalty is not None:
             args += [str(options.penalty)]
-        args += ['-o', str(options.warp)]
+        args += ['-o', str(options.output_warp)]
         for key, flag in (('absolute', '-a'), ('membrane', '-m'),
                           ('bending', '-b')):
             if getattr(options, key) is not None:

@@ -8,8 +8,9 @@ This command is merely a wrapper around nitorch register, that exposes
 fewer parameters. It registers a single pair of images with an affine
 (rigid by default) transform and a nonlinear (stationary velocity field
 by default) transform, optimized jointly (interleaved).
-Use --no-nonlin for an affine-only registration (as nitorch affreg)
-or --no-affine for a nonlinear-only registration.
+Use --nonlin none (or --no-nonlin) for an affine-only registration
+(as nitorch affreg) or --affine none (or --no-affine) for a
+nonlinear-only registration.
 
 usage:
     nitorch simplereg -m MOVING -f FIXED [options]
@@ -29,13 +30,14 @@ Preprocessing options (applied to both images):
         --discretize [N]            Discretize images into N bins [no; N=256 if no value]
 
 Output options:
-    -o, --output PATH               Output path to the affine [{dir}/{name}.lta]
-    -w, --warp PATH                 Output path to the nonlinear field [{dir}/{name}.nii.gz]
+    -a, --output-affine PATH        Output path to the affine [{dir}/{name}.lta]
+    -w, --output-warp PATH          Output path to the nonlinear field [{dir}/{name}.nii.gz]
     -x, --moved PATH                Output path to moved image [{dir}/{base}.moved{ext}]
     -r, --resliced PATH             Output path to resliced image [false: not written]
     {dir} is the directory of the fixed image, {name} is the transform
-    type (rigid/affine for the affine; svf/shoot/smalldef for the nonlinear
-    field), and {base}/{ext} are the moving image's base name and extension.
+    type (the --affine type for the affine; svf/shoot/smalldef for the
+    nonlinear field), and {base}/{ext} are the moving image's base name
+    and extension.
 
 Loss options:
     -l, --loss                      Objective function
@@ -52,16 +54,16 @@ Loss options:
     -s, --symmetric                 Use a symmetric loss [false]
 
 Affine options:
-    -a, --affine                    12-param affine [default is 6-param rigid]
-        --no-affine                 Do not estimate an affine transform
+        --affine [TYPE]             Affine model {translation,rigid,similitude,affine,none} [rigid; affine if no value]
+        --no-affine                 Do not estimate an affine transform (= --affine none)
     -z, --optimizer [OPT]           Optimizer {gn,powell,lbfgs} [auto: powell for nmi, else as nonlin]
     -n, --max-iter VAL              Max number of iterations [50]
     -t, --tolerance VAL             Tolerance for early stopping [1e-5]
         --line-search VAL           Number of line search iterations [wolfe]
 
 Nonlinear options:
-        --nonlin NAME               Nonlinear model {svf,shoot,smalldef} [svf]
-        --no-nonlin                 Do not estimate a nonlinear transform
+        --nonlin NAME               Nonlinear model {svf,shoot,smalldef,none} [svf]
+        --no-nonlin                 Do not estimate a nonlinear transform (= --nonlin none)
         --penalty VAL               Global regularization factor [1]
         --absolute VAL              Penalty on absolute displacements [1e-4]
         --membrane VAL              Penalty on membrane energy [1e-3]
@@ -147,8 +149,8 @@ parser.add_option('discretize', '--discretize', nargs='?', default=None,
                   convert=int, action=cli.Actions.store_value(256))
 
 # Output options
-parser.add_option('output', ('-o', '--output'), nargs=1, default='{dir}/{name}.lta', convert=bool_or_str)
-parser.add_option('warp', ('-w', '--warp'), nargs=1, default='{dir}/{name}.nii.gz', convert=bool_or_str)
+parser.add_option('output_affine', ('-a', '--output-affine'), nargs=1, default='{dir}/{name}.lta', convert=bool_or_str)
+parser.add_option('output_warp', ('-w', '--output-warp'), nargs=1, default='{dir}/{name}.nii.gz', convert=bool_or_str)
 parser.add_option('moved', ('-x', '--moved'), nargs=1, default='{dir}/{base}.moved{ext}', convert=bool_or_str)
 parser.add_option('resliced', ('-r', '--resliced'), nargs=1, default=False, convert=bool_or_str)
 
@@ -162,8 +164,11 @@ parser.add_option('symmetric', ('-s', '--symmetric'), nargs='?', default=False,
                   convert=bool_or_str, action=cli.Actions.store_true)
 
 # Affine options
-parser.add_option('affine', ('-a', '--affine'), nargs='?', default=False,
-                  convert=bool_or_str, action=cli.Actions.store_true)
+# --affine (no value) = 12-param affine; absent = rigid; none = no affine
+affines = ['translation', 'rigid', 'similitude', 'affine', 'none']
+parser.add_option('affine', '--affine', nargs='?', default='rigid',
+                  action=cli.Actions.store_value('affine'),
+                  validation=cli.Validations.choice(affines))
 parser.add_option('do_affine', '--no-affine', nargs=0, default=True,
                   action=cli.Actions.store_false)
 optims = ['gn', 'lbfgs', 'powell']
@@ -174,7 +179,7 @@ parser.add_option('search', '--line-search', nargs=1, default='wolfe', convert=n
 
 # Nonlinear options.
 # None = not forwarded, i.e., nitorch register's default is used.
-nonlins = ['svf', 'shoot', 'smalldef']
+nonlins = ['svf', 'shoot', 'smalldef', 'none']
 parser.add_option('nonlin', '--nonlin', nargs=1, default='svf',
                   validation=cli.Validations.choice(nonlins))
 parser.add_option('do_nonlin', '--no-nonlin', nargs=0, default=True,

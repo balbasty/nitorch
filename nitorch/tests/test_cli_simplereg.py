@@ -59,8 +59,8 @@ def test_simplereg_defaults():
 
 def test_simplereg_options():
     opt = _register_options(
-        '-a', '-l', 'lcc', '-k', '5', 'vox', '-s', '-i', 'init.lta',
-        '-o', 'aff.lta', '-w', 'warp.nii.gz', '-r', 'res.nii.gz',
+        '--affine', '-l', 'lcc', '-k', '5', 'vox', '-s', '-i', 'init.lta',
+        '-a', 'aff.lta', '-w', 'warp.nii.gz', '-r', 'res.nii.gz',
         '--nonlin', 'shoot', '--penalty', '2', '--bending', '0.5',
         '--lame', '0.1', '0.3', '--nonlin-optimizer', 'lbfgs',
         '--nonlin-iter', '3', '--outer-iter', '2', '-n', '7', '-z', 'gn',
@@ -92,14 +92,66 @@ def test_simplereg_options():
     assert list(opt.pyramid.levels) == [1, 2]
 
 
-def test_simplereg_no_nonlin_no_affine():
-    opt = _register_options('--no-nonlin')
+@pytest.mark.parametrize('flag', [('--no-nonlin',), ('--nonlin', 'none')])
+def test_simplereg_no_nonlin(flag):
+    opt = _register_options(*flag)
     assert opt.affine and not opt.nonlin
-    opt = _register_options('--no-affine')
+    assert opt.affine.name == 'rigid'
+
+
+@pytest.mark.parametrize('flag', [('--no-affine',), ('--affine', 'none')])
+def test_simplereg_no_affine(flag):
+    opt = _register_options(*flag)
     assert opt.nonlin and not opt.affine
+    assert opt.nonlin.name == 'svf'
+
+
+@pytest.mark.parametrize('aff', [('--no-affine',), ('--affine', 'none')])
+@pytest.mark.parametrize('nl', [('--no-nonlin',), ('--nonlin', 'none')])
+def test_simplereg_no_nonlin_no_affine(aff, nl):
     with pytest.raises(ParseError):
-        build_register_args(parser.parse(
-            ['-m', 'm', '-f', 'f', '--no-affine', '--no-nonlin']))
+        build_register_args(parser.parse(['-m', 'm', '-f', 'f', *aff, *nl]))
+
+
+@pytest.mark.parametrize('args,name', [
+    ((), 'rigid'),
+    (('--affine',), 'affine'),
+    (('--affine', 'affine'), 'affine'),
+    (('--affine', 'rigid'), 'rigid'),
+    (('--affine', 'similitude'), 'similitude'),
+    (('--affine', 'translation'), 'translation'),
+])
+def test_simplereg_affine_type(args, name):
+    opt = _register_options(*args)
+    assert opt.affine.name == name
+    assert opt.affine.output == '{dir}/{name}.lta'
+
+
+def test_simplereg_bare_affine_before_other_option():
+    opt = _register_options('--affine', '-l', 'mse')
+    assert opt.affine.name == 'affine'
+    assert opt.loss[0].name == 'mse'
+
+
+def test_simplereg_bad_affine_type():
+    with pytest.raises(ParseError):
+        parser.parse(['-m', 'm', '-f', 'f', '--affine', 'foo'])
+
+
+def test_simplereg_output_paths():
+    opt = _register_options('-a', 'a.lta', '-w', 'w.nii.gz')
+    assert opt.affine.output == 'a.lta'
+    assert opt.nonlin.output == 'w.nii.gz'
+    opt = _register_options('--output-affine', 'b.lta',
+                            '--output-warp', 'v.nii.gz')
+    assert opt.affine.output == 'b.lta'
+    assert opt.nonlin.output == 'v.nii.gz'
+
+
+def test_simplereg_old_output_flags_removed():
+    for flag in ('-o', '--output', '--warp'):
+        with pytest.raises(ParseError):
+            parser.parse(['-m', 'm', '-f', 'f', flag, 'x'])
 
 
 def test_simplereg_no_pyramid():
@@ -119,7 +171,8 @@ def test_simplereg_smoke(tmp_path):
     cli(['simplereg', '-m', str(tmp_path / 'mov.nii.gz'),
          '-f', str(tmp_path / 'fix.nii.gz'), '-n', '2', '-p', '0',
          '--nonlin-iter', '2', '--outer-iter', '1',
-         '-o', str(tmp_path / 'xfm.lta'),
+         '--affine', 'similitude',
+         '-a', str(tmp_path / 'xfm.lta'),
          '-w', str(tmp_path / 'warp.nii.gz'),
          '-r', str(tmp_path / 'res.nii.gz')])
     assert (tmp_path / 'xfm.lta').exists()

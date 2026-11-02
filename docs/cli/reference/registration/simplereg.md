@@ -8,7 +8,7 @@ Pairwise **affine + nonlinear** registration of a moving image to a fixed
 image, with a classical `-m MOVING -f FIXED` interface. It is meant as the
 entry point for people who want a deformable registration without learning
 the nested syntax of [`register`](register.md). For an affine-only
-registration, use [`affreg`](affreg.md) (or `simplereg --no-nonlin`).
+registration, use [`affreg`](affreg.md) (or `simplereg --nonlin none`).
 
 === ":octicons-terminal-24: Synopsis"
 
@@ -16,11 +16,12 @@ registration, use [`affreg`](affreg.md) (or `simplereg --no-nonlin`).
     nitorch simplereg -m FILE -f FILE [-i FILE]
                       [--fwhm VAL [UNIT]] [--pad VAL [UNIT]] [--bound BND]
                       [--order N] [--rescale [MN] MX] [--discretize [N]]
-                      [-o FILE] [-w FILE] [-x FILE] [-r FILE]
+                      [-a FILE] [-w FILE] [-x FILE] [-r FILE]
                       [-l LOSS] [-k SIZE... [UNIT]] [-s [BOOL]]
-                      [-a [BOOL]] [--no-affine] [-z {gn,lbfgs,powell}]
+                      [--affine [{translation,rigid,similitude,affine,none}]]
+                      [--no-affine] [-z {gn,lbfgs,powell}]
                       [-n N] [-t TOL] [--line-search N]
-                      [--nonlin {svf,shoot,smalldef}] [--no-nonlin]
+                      [--nonlin {svf,shoot,smalldef,none}] [--no-nonlin]
                       [--penalty F] [--absolute F] [--membrane F]
                       [--bending F] [--lame F [F]]
                       [--nonlin-optimizer {gn,lbfgs}] [--nonlin-iter N]
@@ -56,8 +57,10 @@ affine, the regularisation of the nonlinear part, the pyramid and the output
 files applies here. What `simplereg` fixes for you:
 
 - One pair of images (one `-m`, one `-f`) and one loss.
-- An **affine** part, **rigid** (6 parameters) by default or a full
-  **affine** (12 parameters) with `-a`, placed symmetrically (`sym`).
+- An **affine** part, **rigid** (6 parameters) by default, placed
+  symmetrically (`sym`). `--affine TYPE` chooses another model
+  (`translation`, `similitude`, or `affine`); a bare `--affine` (no value)
+  fits a full **affine** (12 parameters).
 - A **nonlinear** part, a stationary velocity field (`svf`) by default, or
   geodesic shooting (`shoot`) or a small deformation field (`smalldef`) with
   `--nonlin`. Its regularisation defaults to those of `register`.
@@ -72,20 +75,22 @@ files applies here. What `simplereg` fixes for you:
   `--rescale`, `--discretize`) apply to **both** images. When they are not
   given, the defaults of `register` apply.
 
-Use `--no-nonlin` for an affine-only registration (then `simplereg` behaves
-like [`affreg`](affreg.md)), or `--no-affine` for a nonlinear-only one.
-The two cannot be combined.
+Use `--nonlin none` (or its alias `--no-nonlin`) for an affine-only
+registration (then `simplereg` behaves like [`affreg`](affreg.md)), or
+`--affine none` (or `--no-affine`) for a nonlinear-only one. The two cannot
+be combined.
 
 ### Outputs
 
 - **The affine**, in LTA format, written to `{dir}/{name}.lta`
-  (`rigid.lta` or `affine.lta`) in the directory of the fixed image. Use
-  `-o` to choose another path. Not written with `--no-affine`.
+  (`rigid.lta`, `affine.lta`, ... after the `--affine` type) in the
+  directory of the fixed image. Use `-a` (`--output-affine`) to choose
+  another path. Not written with `--affine none`.
 - **The nonlinear field**, written to `{dir}/{name}.nii.gz` (`svf.nii.gz`,
   `shoot.nii.gz` or `smalldef.nii.gz`) in the directory of the fixed image.
   It is a velocity field for `svf` and `shoot` (with a `shoot.json` file
-  next to it), a displacement field for `smalldef`. Use `-w` to choose
-  another path. Not written with `--no-nonlin`.
+  next to it), a displacement field for `smalldef`. Use `-w`
+  (`--output-warp`) to choose another path. Not written with `--nonlin none`.
 - **The moved images**, `{base}.moved{ext}`, in the directory of each input:
   each image carried halfway to the other one (*minimal reslicing*; see
   [Outputs of `register`](register.md#outputs)). `-x` changes the path of the
@@ -131,8 +136,8 @@ Applied to both images. When omitted, the default of `register` is used.
 
 | Option                | Value                 | Description                                                                                  | Default                    |
 | --------------------- | --------------------- | -------------------------------------------------------------------------------------------- | -------------------------- |
-| `-o`, `--output`      | `PATH`                | Where to write the affine. `{dir}` is the directory of the fixed image, `{name}` the model. | `{dir}/{name}.lta`         |
-| `-w`, `--warp`        | `PATH`                | Where to write the nonlinear field.                                                          | `{dir}/{name}.nii.gz`      |
+| `-a`, `--output-affine` | `PATH`              | Where to write the affine. `{dir}` is the directory of the fixed image, `{name}` the model. | `{dir}/{name}.lta`         |
+| `-w`, `--output-warp` | `PATH`                | Where to write the nonlinear field.                                                          | `{dir}/{name}.nii.gz`      |
 | `-x`, `--moved`       | `PATH` &vert; `false` | Where to write the moved moving image (minimal reslicing). `false` disables it.              | `{dir}/{base}.moved{ext}`  |
 | `-r`, `--resliced`    | `PATH`                | Where to write the moving image resliced on the fixed image grid.                            | not written                |
 
@@ -148,8 +153,8 @@ Applied to both images. When omitted, the default of `register` is used.
 
 | Option                | Value                               | Description                                                                                      | Default                                  |
 | --------------------- | ----------------------------------- | ------------------------------------------------------------------------------------------------ | ---------------------------------------- |
-| `-a`, `--affine`      | `[BOOL]`                            | Fit a full 12-parameter affine instead of a 6-parameter rigid transformation.                    | rigid                                    |
-| `--no-affine`         |                                     | Do not estimate an affine transformation.                                                        |                                          |
+| `--affine`            | `[TYPE]`                            | Affine model: `translation`, `rigid`, `similitude`, `affine` or `none` (no affine). With no value, `affine` (12 parameters). | `rigid`                                  |
+| `--no-affine`         |                                     | Do not estimate an affine transformation (same as `--affine none`).                              |                                          |
 | `-z`, `--optimizer`   | `gn` &vert; `lbfgs` &vert; `powell` | Affine optimiser.                                                                                | `powell` with `nmi`, else `register`'s   |
 | `-n`, `--max-iter`    | `N`                                 | Maximum number of affine iterations per outer iteration.                                        | `50`                                     |
 | `-t`, `--tolerance`   | `TOL`                               | Tolerance of the affine stopping criterion.                                                      | `1e-5`                                   |
@@ -159,8 +164,8 @@ Applied to both images. When omitted, the default of `register` is used.
 
 | Option                | Value                                  | Description                                                                              | Default              |
 | --------------------- | -------------------------------------- | ---------------------------------------------------------------------------------------- | -------------------- |
-| `--nonlin`            | `svf` &vert; `shoot` &vert; `smalldef` | Nonlinear model.                                                                         | `svf`                |
-| `--no-nonlin`         |                                        | Do not estimate a nonlinear transformation (affine only).                               |                      |
+| `--nonlin`            | `svf` &vert; `shoot` &vert; `smalldef` &vert; `none` | Nonlinear model; `none` for affine only.                                   | `svf`                |
+| `--no-nonlin`         |                                        | Do not estimate a nonlinear transformation (same as `--nonlin none`).                   |                      |
 | `--penalty`           | `F`                                    | Global regularisation factor, multiplying all the penalties below.                      | `1`                  |
 | `--absolute`          | `F`                                    | Penalty on absolute displacements.                                                       | `1e-4`               |
 | `--membrane`          | `F`                                    | Penalty on the membrane energy (first derivatives).                                     | `1e-3`               |
@@ -200,19 +205,26 @@ This writes `rigid.lta` and `svf.nii.gz` next to `T1w.nii.gz`.
 Full affine, a smoother deformation, and local correlation:
 
 ```shell
-nitorch simplereg -m sub01.nii.gz -f template.nii.gz -a \
+nitorch simplereg -m sub01.nii.gz -f template.nii.gz --affine \
     -l lcc -k 5 vox --penalty 5 -r sub01_in_template.nii.gz
 ```
 
 Affine only (equivalent to `affreg`):
 
 ```shell
-nitorch simplereg -m FLAIR.nii.gz -f T1w.nii.gz --no-nonlin
+nitorch simplereg -m FLAIR.nii.gz -f T1w.nii.gz --nonlin none
+```
+
+Similitude + SVF, with explicit output paths:
+
+```shell
+nitorch simplereg -m sub01.nii.gz -f template.nii.gz --affine similitude \
+    -a sub01_to_template.lta -w sub01_to_template.nii.gz
 ```
 
 ## See also
 
-- [`affreg`](affreg.md) — affine-only registration with the same interface.
+- [`affreg`](affreg.md) — affine-only registration with a similar interface.
 - [`register`](register.md) — full control: several image pairs or losses,
   per-image preprocessing, label maps, masks, other optimisation strategies.
 - [`reslice`](../spatial/reslice.md) — apply the transformations to other
