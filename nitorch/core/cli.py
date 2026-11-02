@@ -11,8 +11,20 @@ class ParseError(RuntimeError):
     pass
 
 
+def _isnumber(arg):
+    """Return true if the argument can be parsed as a float"""
+    try:
+        float(arg)
+        return True
+    except (ValueError, TypeError):
+        return False
+
+
 def istag(arg, symbol='-'):
     """Return true if the argument starts with a dash ('-') and is not a number
+
+    Anything that parses as a float (e.g., `-1`, `-0.5`, `-.5`, `-1e-3`,
+    `-inf`, `-nan`) is a value, not a tag.
 
     Parameters
     ----------
@@ -23,7 +35,8 @@ def istag(arg, symbol='-'):
     bool
 
     """
-    return arg.startswith(symbol) and len(arg) > 1 and arg[1] not in '0123456789'
+    return (arg.startswith(symbol) and len(arg) > 1
+            and arg[1] not in '0123456789' and not _isnumber(arg))
 
 
 def isvalue(arg, symbols='-'):
