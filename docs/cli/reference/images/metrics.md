@@ -94,6 +94,10 @@ exist.
 The values above only illustrate the layout. Ratios that are undefined, such as
 a precision for a label that the prediction never uses, are written as `NaN`.
 
+If anything goes wrong, for example a shape mismatch between the prediction and
+the reference, `metrics` prints a single `[ERROR] ...` line to the standard error
+stream and exits with status 1.
+
 ## Label metrics
 
 For each label $\ell$ that occurs in the reference image, the prediction and
@@ -255,8 +259,6 @@ See [Hardware](../../conventions.md#hardware) for the general behaviour of devic
 - `-s weighted` is ignored by the image metrics and by the Hausdorff distances.
 - `mad` is the median absolute *error*, not the median absolute deviation that
   its name and the built-in help suggest.
-- Errors other than a bad command line, for example a shape mismatch, are not
-  caught and are reported as a Python traceback.
 - Only the first prediction file names the output, so a call with several
   prediction files writes a single JSON file, and `--append` has no per-file key
   to tell their results apart.
