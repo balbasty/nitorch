@@ -1230,7 +1230,7 @@ def regulariser_grid_diag(dim, absolute=0, membrane=0, bending=0, lame=0,
 def _stack_last(values, **backend):
     """Stack a list of scalars and/or tensors along a new last dimension"""
     values = [torch.as_tensor(v, **backend) for v in values]
-    shape = torch.broadcast_shapes(*[v.shape for v in values])
+    shape = core.utils.expanded_shape(*[v.shape for v in values])
     return torch.stack([v.expand(shape) for v in values], -1)
 
 

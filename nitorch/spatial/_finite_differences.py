@@ -875,7 +875,8 @@ def frangi_nodiff(x, a=0.5, b=0.5, c=500, white_ridges=False, fwhm=range(1, 8, 2
         if verbose:
             print('Eigen...')
         if is_on_cpu:
-            torch.symeig(h, out=(v, torch.empty([])))
+            # only the upper triangular part of h is filled
+            v.copy_(linalg.eigvalsh(h, UPLO='U'))
         else:
             v.copy_(linalg.eig_sym_(h))
         # we must order eigenvalues by increasing *magnitude*
@@ -1002,7 +1003,8 @@ def frangi_diff(x, a=0.5, b=0.5, c=500, white_ridges=False, fwhm=range(1, 8, 2),
         if verbose:
             print('Eigen...')
         if is_on_cpu:
-            eig = torch.symeig(h, eigenvectors=True)[0]
+            # only the upper triangular part of h is filled
+            eig = linalg.eigvalsh(h, UPLO='U')
         else:
             eig = linalg.eig_sym_(h)
         _, perm = eig.abs().sort()
@@ -1241,7 +1243,8 @@ def hessian_eig(x, fwhm=1, dim=None, bound='replicate', sort='abs', verbose=Fals
     if verbose:
         print('Eigen...')
     if is_on_cpu:
-        eig = torch.symeig(h, eigenvectors=True)[0]
+        # only the upper triangular part of h is filled
+        eig = linalg.eigvalsh(h, UPLO='U')
     else:
         eig = linalg.eig_sym_(h)
     if sort:

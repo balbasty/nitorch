@@ -2,7 +2,7 @@ from nitorch.cli.cli import commands
 from .parser import parser, help, ParseError
 from nitorch.tools.denoising.epic import epic
 from nitorch import io, spatial
-from nitorch.core import py
+from nitorch.core import py, utils
 import torch
 import sys
 import os
@@ -112,13 +112,13 @@ def main(options):
                 io.savef(echo, out, like=input[0])
         else:
             output = output.format(dir=dir, sep=os.sep, base=base, ext=ext)
-            io.savef(torch.movedim(fit, 0, -1), output, like=input[0])
+            io.savef(utils.movedim(fit, 0, -1), output, like=input[0])
     elif len(output) == len(input):
         for i, (inp, out) in enumerate(zip(input, output)):
             dir, base, ext = py.fileparts(inp)
             out = out.format(dir=dir, sep=os.sep, base=base, ext=ext, n=i)
             ne = [*io.map(inp).shape, 1][3]
-            io.savef(fit[:ne].movedim(0, -1), out, like=inp)
+            io.savef(utils.movedim(fit[:ne], 0, -1), out, like=inp)
             fit = fit[ne:]
     else:
         assert len(output) == len(fit)

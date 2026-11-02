@@ -20,7 +20,7 @@ def _log(x, implicit=False):
     an implicit background class. Else, ensures that prob sum to one.
     Then, take the log."""
     x = _pad_norm(x, implicit=implicit)
-    return x.clamp(min=1e-7, max=1-1e-7).logit()
+    return math.binary_logit(x.clamp(min=1e-7, max=1-1e-7))
 
 
 def get_prob_explicit(x, logit=False, implicit=False):
@@ -44,7 +44,7 @@ def get_logprob_explicit(x, logit=False, implicit=False):
 def get_score_explicit(x, logit=True, implicit=False):
     """Return a tensor of "scores"" with all classes explicit"""
     if not logit:
-        x = x.logit()
+        x = math.binary_logit(x)
     if implicit:
         x = torch.cat((x.sum(dim=1, keepdim=True).neg(), x), dim=1)
     return x
@@ -77,7 +77,7 @@ def get_log_confusion(confusion, nb_classes_pred, nb_classes_ref, dim, **backend
     if confusion.dim() < dim + 3:
         confusion = utils.unsqueeze(confusion, 0, 1)  # batch shape
     confusion = confusion / confusion.sum(dim=[-1, -2], keepdim=True)
-    confusion = confusion.clamp(min=1e-7, max=1-1e-7).logit()
+    confusion = math.binary_logit(confusion.clamp(min=1e-7, max=1-1e-7))
     return confusion
 
 

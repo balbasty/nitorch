@@ -1,4 +1,5 @@
 from nitorch.core import utils, py
+from nitorch.core.math import nan_to_num_
 from .base import OptimizationLoss
 from .mse import weighted_precision, mse
 import torch
@@ -31,7 +32,7 @@ def mul_(x, mask):
 
 def mask_inf_(x):
     # same as x[~isfinite(x)] = 0, without the boolean mask
-    return torch.nan_to_num_(x, nan=0., posinf=0., neginf=0.)
+    return nan_to_num_(x, nan=0., posinf=0., neginf=0.)
 
 
 def laplace_weights_(s2, eps=1e-5):
@@ -208,7 +209,7 @@ class RobustLoss(OptimizationLoss):
         """
         dim = dim or fixed.dim() - 1
         # joint weights depend on the squared norm across the C channels
-        nb_channels = (torch.broadcast_shapes(moving.shape, fixed.shape)
+        nb_channels = (utils.expanded_shape(moving.shape, fixed.shape)
                        [-dim-1] if joint else 1)
         default = self.reweight_params(joint, nb_channels)
         for key in self.reweight_param:
@@ -294,7 +295,7 @@ class RobustLoss(OptimizationLoss):
         self._last_lam = lam
 
         # weighted precision lam * w, in a buffer that is free by now
-        shape = torch.broadcast_shapes(lam.shape, weights.shape)
+        shape = utils.expanded_shape(lam.shape, weights.shape)
         out = (weights if shape == weights.shape else
                tmp if shape == tmp.shape else None)
         lam = torch.mul(weights, lam, out=out)
@@ -336,7 +337,7 @@ class RobustLoss(OptimizationLoss):
                                  dim)[-1]
             finally:
                 self.lam, self._last_lam = state
-        nb_channels = (torch.broadcast_shapes(moving.shape, fixed.shape)
+        nb_channels = (utils.expanded_shape(moving.shape, fixed.shape)
                        [-dim-1] if self.joint else 1)
         prm = self.reweight_params(self.joint, nb_channels)
         weights = self.reweight(moving, fixed, lam=lam, joint=self.joint,

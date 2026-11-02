@@ -9,6 +9,7 @@ from nitorch.io import map, savef
 from nitorch.core.py import file_mod
 from nitorch.core.constants import pi
 from nitorch.core.linalg import (meanm, _expm, lmdiv, cholesky)
+from nitorch.core.math import floor_div
 
 
 def _format_input(img, device='cpu', rand=False, cutoff=None):
@@ -282,7 +283,7 @@ def _mean_space(Mat, Dim, vx=None):
         rdim = torch.abs(minR.mm(Dim[n, ...][..., None]-1))
         R2 = minR.inverse()
         R22 = R2.mm(
-            (torch.div(torch.sum(R2, dim=0, keepdim=True).t(), 2, rounding_mode='floor') - 1)*rdim            
+            (floor_div(torch.sum(R2, dim=0, keepdim=True).t(), 2) - 1)*rdim
         )
         minR = torch.cat((R2, R22), dim=1)
         minR = torch.cat((minR, torch.tensor([0, 0, 0, 1], device=device, dtype=dtype)[None, ...]), dim=0)

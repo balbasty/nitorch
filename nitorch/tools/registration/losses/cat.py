@@ -157,11 +157,11 @@ def cat_nolog(moving, fixed, dim=None, grad=True, hess=True, mask=None):
     moving = moving / moving.sum(-dim-1, keepdim=True).add_(1e-5).clamp_min_(1-1e-5)
     fixed = fixed.clamp_min(0)
     fixed = fixed / fixed.sum(-dim-1, keepdim=True).clamp_min_(1)
-    logmoving = moving.logit()
+    logmoving = math.binary_logit(moving)
     last_fixed = fixed.sum(-dim-1, keepdim=True).neg_().add_(1)
     last_moving = moving.sum(-dim-1, keepdim=True).neg_().add_(1)
     ll = (logmoving*fixed).sum(-dim-1, keepdim=True)
-    ll += last_fixed * last_moving.logit()
+    ll += last_fixed * math.binary_logit(last_moving)
     if mask is not None:
         ll = ll.mul_(mask)
     ll = ll.sum().neg() / nvox
