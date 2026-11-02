@@ -4,6 +4,7 @@ from nitorch.core.py import make_list
 from .parser import parser, help
 from .main import denoise
 import sys
+import warnings
 import torch
 
 
@@ -65,5 +66,6 @@ def _cli(args):
     denoise(*options.files, output=options.output,
             device=device, verbose=options.verbose,
             max_iter=options.max_iter, tol=options.tolerance,
-            lam=options.lam, sigma=options.sigma, jtv=options.joint)
+            lam=options.lam, sigma=options.sigma, jtv=options.joint,
+            optim=options.optim)
 
