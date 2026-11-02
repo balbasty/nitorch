@@ -1,8 +1,9 @@
 """Gauss-Newton optimisers on channel-first vector fields
 (`FieldCG`, `FieldRelax`) and the TOPUP code path that uses them.
 
-`search_direction` used to raise a NameError (`dim` undefined) whenever
-`reduce='mean'` (the default)."""
+`search_direction` used to raise a NameError (`dim` undefined) when
+normalising the regularisation factor. The factor is now used as given
+(callers normalise it consistently with their objective)."""
 import torch
 import pytest
 from nitorch import spatial
@@ -35,8 +36,7 @@ def make_field(nb_hess, seed=0):
 @pytest.mark.parametrize('penalty', ['membrane', 'bending'])
 def test_field_search_direction_runs(klass, fmg, nb_hess, penalty):
     grad, hess = make_field(nb_hess)
-    opt = klass(fmg=fmg, factor=1e-1, **{penalty: 1}, bound='dct2')
-    assert opt.reduce  # default
+    opt = klass(fmg=fmg, factor=1e-1 / NVOX, **{penalty: 1}, bound='dct2')
     step = opt.search_direction(grad.clone(), hess.clone())
     assert step.shape == grad.shape
     assert torch.isfinite(step).all()
@@ -45,18 +45,15 @@ def test_field_search_direction_runs(klass, fmg, nb_hess, penalty):
 
 
 @pytest.mark.parametrize('klass', [optm.FieldCG, optm.FieldRelax])
-@pytest.mark.parametrize('reduce', ['mean', 'sum'])
-def test_field_reduce_uses_spatial_voxels(klass, reduce):
+def test_field_factor_used_as_is(klass):
     """With an absolute penalty only, the system is solved in closed form:
-    step = -g / (h * (1 + tiny) + factor / N)  (or factor if 'sum'),
-    where N is the number of voxels of the channel-first field."""
+    step = -g / (h * (1 + tiny) + factor), with no extra normalisation."""
     grad, hess = make_field(K)
-    factor = 10.
-    opt = klass(factor=factor, absolute=1, reduce=reduce)
+    factor = 0.5
+    opt = klass(factor=factor, absolute=1)
     step = opt.search_direction(grad.clone(), hess.clone())
-    lam = factor / NVOX if reduce == 'mean' else factor
     maj = hess.abs().max(0, keepdim=True).values
-    expected = -grad / (hess + 1e-5 * maj + lam)
+    expected = -grad / (hess + 1e-5 * maj + factor)
     assert torch.allclose(step, expected)
 
 
@@ -74,10 +71,10 @@ def test_field_explicit_dim_with_batch():
     """Batched fields (B, K, *spatial) need an explicit `dim`."""
     grad, hess = make_field(K)
     grad, hess = torch.stack([grad, grad]), torch.stack([hess, hess])
-    opt = optm.FieldCG(factor=10., absolute=1, dim=3)
+    opt = optm.FieldCG(factor=0.5, absolute=1, dim=3)
     step = opt.search_direction(grad.clone(), hess.clone())
     maj = hess.abs().max(1, keepdim=True).values
-    expected = -grad / (hess + 1e-5 * maj + 10. / NVOX)
+    expected = -grad / (hess + 1e-5 * maj + 0.5)
     assert torch.allclose(step, expected)
 
 
@@ -86,9 +83,9 @@ def test_field_lr_and_bound():
     assert opt.lr == 0.5
     assert opt.bound == 'dft'
     grad, hess = make_field(K)
-    step1 = optm.FieldCG(membrane=1, factor=10.).search_direction(
+    step1 = optm.FieldCG(membrane=1, factor=0.1).search_direction(
         grad.clone(), hess.clone())
-    step2 = optm.FieldCG(membrane=1, factor=10., lr=0.5).search_direction(
+    step2 = optm.FieldCG(membrane=1, factor=0.1, lr=0.5).search_direction(
         grad.clone(), hess.clone())
     assert torch.allclose(step2, 0.5 * step1)
 

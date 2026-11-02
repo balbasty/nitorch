@@ -1,5 +1,5 @@
 from .base import SecondOrder
-from nitorch.core import linalg, py
+from nitorch.core import linalg
 from nitorch import spatial
 import torch
 
@@ -64,10 +64,15 @@ class GaussNewton(SecondOrder):
 
 
 class GridGaussNewton(SecondOrder):
-    """Base class for Gauss-Newton on displacement grids"""
+    """Base class for Gauss-Newton on displacement grids
+
+    `factor` is used as is: it must already be normalized consistently
+    with the objective function (e.g., divided by the number of voxels
+    if the loss is a mean).
+    """
 
     def __init__(self, lr=1, fmg=2, max_iter=2, factor=1, voxel_size=1,
-                 absolute=0, membrane=0, bending=0, lame=0, reduce='mean',
+                 absolute=0, membrane=0, bending=0, lame=0,
                  marquardt=True, preconditioner=None, **kwargs):
         super().__init__(lr, **kwargs)
         self.preconditioner = preconditioner
@@ -76,7 +81,6 @@ class GridGaussNewton(SecondOrder):
         self.membrane = membrane
         self.bending = bending
         self.lame = lame
-        self.reduce = reduce in ('mean', True)
         self.voxel_size = voxel_size
         self.marquardt = marquardt
         self.max_iter = max_iter
@@ -133,9 +137,6 @@ class GridCG(GridGaussNewton):
     def search_direction(self, grad, hess):
         grad, hess = self._add_marquardt(grad, hess, 1e-5)
         prm = self._get_prm()
-        dim = grad.shape[-1]
-        if self.reduce:
-            prm['factor'] = prm['factor'] / py.prod(grad.shape[-dim-1:-1])
         solver = spatial.solve_grid_fmg if self.fmg else spatial.solve_grid_sym
         step = solver(hess, grad, optim='cg', **prm)
         step.masked_fill_(torch.isfinite(step).bitwise_not_(), 0)
@@ -149,9 +150,6 @@ class GridRelax(GridGaussNewton):
     def search_direction(self, grad, hess):
         grad, hess = self._add_marquardt(grad, hess)
         prm = self._get_prm()
-        dim = grad.shape[-1]
-        if self.reduce:
-            prm['factor'] = prm['factor'] / py.prod(grad.shape[-dim-1:-1])
         solver = spatial.solve_grid_fmg if self.fmg else spatial.solve_grid_sym
         step = solver(hess, grad, optim='relax', **prm)
         step.masked_fill_(torch.isfinite(step).bitwise_not_(), 0)
@@ -165,9 +163,6 @@ class GridJacobi(GridGaussNewton):
     def search_direction(self, grad, hess):
         grad, hess = self._add_marquardt(grad, hess)
         prm = self._get_prm()
-        dim = grad.shape[-1]
-        if self.reduce:
-            prm['factor'] = prm['factor'] / py.prod(grad.shape[-dim-1:-1])
         solver = spatial.solve_grid_fmg if self.fmg else spatial.solve_grid_sym
         step = solver(hess, grad, optim='jacobi', **prm)
         step.mul_(-self.lr)
@@ -183,7 +178,7 @@ class FieldGaussNewton(SecondOrder):
     """
 
     def __init__(self, lr=1, fmg=2, max_iter=2, factor=1, voxel_size=1,
-                 absolute=0, membrane=0, bending=0, reduce='mean',
+                 absolute=0, membrane=0, bending=0,
                  marquardt=True, preconditioner=None, bound='dct2',
                  dim=None, **kwargs):
         """
@@ -196,13 +191,13 @@ class FieldGaussNewton(SecondOrder):
             Number of full multi-grid cycles (0 = single resolution solver)
         max_iter : int, default=2
             Number of iterations of the inner linear solver
-        factor : float, default=1
-            Global regularization factor
+        factor : [sequence of] float, default=1
+            Global regularization factor, used as is: it must already
+            be normalized consistently with the objective function
+            (e.g., divided by the number of voxels if the loss is a mean)
         voxel_size : [sequence of] float, default=1
         absolute, membrane, bending : float, default=0
             Regularization weights
-        reduce : {'mean', 'sum'} or bool, default='mean'
-            If 'mean', `factor` is divided by the number of voxels.
         marquardt : bool or float, default=True
             Levenberg-Marquardt regularization added to the Hessian diagonal
         bound : str, default='dct2'
@@ -217,7 +212,6 @@ class FieldGaussNewton(SecondOrder):
         self.absolute = absolute
         self.membrane = membrane
         self.bending = bending
-        self.reduce = reduce in ('mean', True)
         self.voxel_size = voxel_size
         self.marquardt = marquardt
         self.max_iter = max_iter
@@ -238,13 +232,6 @@ class FieldGaussNewton(SecondOrder):
                    voxel_size=self.voxel_size,
                    bound=self.bound,
                    dim=dim)
-        if self.reduce:
-            # fields are (..., K, *spatial): voxels are the last `dim` axes
-            nvox = py.prod(grad.shape[-dim:])
-            if isinstance(prm['factor'], (list, tuple)):
-                prm['factor'] = [f / nvox for f in prm['factor']]
-            else:
-                prm['factor'] = prm['factor'] / nvox
         if self.fmg:
             prm['nb_iter'] = self.max_iter
             prm['nb_cycles'] = self.fmg
@@ -256,8 +243,14 @@ class FieldGaussNewton(SecondOrder):
         if not self.marquardt:
             return grad, hess
         dim = self._get_dim(grad)
-        # channels live at dimension -dim-1; the first K (or 1)
-        # Hessian channels hold the diagonal
+        # Channels live at dimension -dim-1. The length of the diagonal
+        # is the number of channels K (not `dim`: e.g., topup has K=1,
+        # dim=3). The Hessian layout (see `spatial.solve_field`) is one of
+        #   K2 == 1          : a single value shared by all channels
+        #   K2 == K          : diagonal
+        #   K2 == K*(K+1)//2 : symmetric, diagonal first
+        #   K2 == 2*K-1      : ESTATICS, diagonal first
+        # so the diagonal is the first min(K, K2) channels.
         nb_channels = grad.shape[-dim-1]
         nb_diag = min(nb_channels, hess.shape[-dim-1])
         diag = hess.narrow(-dim-1, 0, nb_diag)
