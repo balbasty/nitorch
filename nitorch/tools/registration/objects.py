@@ -2288,6 +2288,10 @@ class AffineModel(TransformationModel):
               "translation", "rotation", "zoom" and "shear"
               (or "t", "r", "z", "sh"; "scale" for "zoom").
               Missing groups have precision 0.
+            The `register` CLI follows the @nonlin convention: the
+            precision of each group is the global FACTOR times the
+            group factor (`-t/-r/-z/-s`, default 1), and is passed here
+            as a float (all group factors 1) or a dict.
         optim : {'translation', 'rotation', 'rigid', 'similitude', 'affine'}
             Parameters to optimize.
         position : {'moving', 'fixed', 'symmetric'}, default='symmetric'

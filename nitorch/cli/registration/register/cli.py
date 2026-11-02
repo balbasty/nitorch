@@ -123,19 +123,23 @@ def _main(options):
                 affine_init = torch.eye(4)
                 affine_init[:-1, -1] = shift
 
-        # affine prior precision (FACTOR): 0 = no penalty
-        affine_penalty = options.affine.factor
-        if isinstance(affine_penalty, (list, tuple)):
-            affine_penalty = affine_penalty[0] if affine_penalty else 0.
-        affine_penalty = float(affine_penalty)
+        # affine prior precision: as for @nonlin, the precision of each
+        # group is FACTOR (global, 0 = no penalty) x its group factor
+        # (-t/-r/-z/-s, default 1)
+        factor = options.affine.factor
+        if isinstance(factor, (list, tuple)):
+            factor = factor[0] if factor else 0.
+        factor = float(factor)
         groups = ('translation', 'rotation', 'zoom', 'shear')
-        per_group = {g: getattr(options.affine, g, None) for g in groups}
-        if any(v is not None for v in per_group.values()):
-            # per-group precisions; FACTOR fills the groups not given
-            affine_penalty = {g: affine_penalty if v is None else float(v)
-                              for g, v in per_group.items()}
+        per_group = {g: getattr(options.affine, g, 1.) for g in groups}
+        per_group = {g: 1. if v is None else float(v)
+                     for g, v in per_group.items()}
+        if not factor:
+            affine_penalty = None
+        elif all(v == 1. for v in per_group.values()):
+            affine_penalty = factor     # lambda * I, as without -t/-r/-z/-s
         else:
-            affine_penalty = affine_penalty or None
+            affine_penalty = {g: factor * v for g, v in per_group.items()}
 
         # build affine object
         if options.affine.is2d is not False:

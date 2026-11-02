@@ -63,11 +63,11 @@ def test_group_options_parsed():
     assert options.affine.factor == [2.]
     assert options.affine.translation == 5.
     assert options.affine.shear == 7.
-    assert options.affine.rotation is None
-    assert options.affine.zoom is None
+    assert options.affine.rotation == 1.
+    assert options.affine.zoom == 1.
     options = parser.parse(IMAGES + ['@affine', 'affine', '2'])
     for g in ('translation', 'rotation', 'zoom', 'shear'):
-        assert getattr(options.affine, g) is None
+        assert getattr(options.affine, g) == 1.
     options = parser.parse(IMAGES + ['@affine', '--rotation-penalty', '3',
                                      '--zoom-penalty', '4',
                                      '--translation-penalty', '1',
@@ -99,14 +99,13 @@ def _cli_affine(tmp_path, monkeypatch, affine_args):
 
 
 @pytest.mark.parametrize('basis, args, values', [
-    # group option on its own: FACTOR (default 0) fills the rest
-    ('affine', ['-t', '5'], dict(t=5., r=0., z=0., s=0.)),
-    # FACTOR fills the groups not given
-    ('affine', ['2', '-r', '3', '-s', '7'], dict(t=2., r=3., z=2., s=7.)),
+    # precision = FACTOR x group factor (default 1), as for @nonlin
+    ('affine', ['2', '-r', '3', '-s', '7'], dict(t=2., r=6., z=2., s=14.)),
     ('affine', ['1', '--translation-penalty', '4', '--zoom-penalty', '6'],
      dict(t=4., r=1., z=6., s=1.)),
-    ('similitude', ['2', '-z', '9'], dict(t=2., r=2., z=9.)),
-    ('rigid', ['-r', '8'], dict(t=0., r=8.)),
+    ('affine', ['0.5', '-t', '0'], dict(t=0., r=.5, z=.5, s=.5)),
+    ('similitude', ['2', '-z', '9'], dict(t=2., r=2., z=18.)),
+    ('rigid', ['3', '-r', '8'], dict(t=3., r=24.)),
 ])
 def test_group_options_reach_model(tmp_path, monkeypatch, basis, args,
                                    values):
@@ -119,12 +118,32 @@ def test_group_options_reach_model(tmp_path, monkeypatch, basis, args,
     assert torch.equal(_model(basis, 3, model._penalty).penalty, expected)
 
 
-@pytest.mark.parametrize('args, expected', [([], None), (['2.5'], 2.5)])
+@pytest.mark.parametrize('args, expected', [
+    ([], None), (['2.5'], 2.5),
+    # FACTOR = 0 (default) means no penalty, whatever the group factors
+    (['-t', '5'], None), (['0', '-r', '3', '-s', '7'], None),
+    # all group factors 1: the scalar FACTOR (lambda I)
+    (['2.5', '-t', '1', '-z', '1'], 2.5),
+])
 def test_no_group_options_unchanged(tmp_path, monkeypatch, args, expected):
     # without group options the penalty is the scalar FACTOR, as before
     model = _cli_affine(tmp_path, monkeypatch, ['affine'] + args)
     assert model.penalty == expected
     assert isinstance(model.penalty, (float, type(None)))
+
+
+@pytest.mark.parametrize('factor', [0.5, 2., 3.])
+@pytest.mark.parametrize('comp', [0.25, 1., 4.])
+def test_effective_precision_is_factor_times_component(
+        tmp_path, monkeypatch, factor, comp):
+    model = _cli_affine(tmp_path, monkeypatch,
+                        ['affine', str(factor), '-t', str(comp),
+                         '-r', str(2 * comp), '-z', str(3 * comp),
+                         '-s', str(4 * comp)])
+    prec = _model('affine', 3, model._penalty).penalty
+    mult = dict(t=1., r=2., z=3., s=4.)
+    for c, p in zip(GROUPS[3, 'affine'], prec.tolist()):
+        assert p == pytest.approx(factor * comp * mult[c], rel=1e-12)
 
 
 def test_model_penalty_scalar():

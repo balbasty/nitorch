@@ -166,11 +166,12 @@ usage:
     FACTOR must be a scalar value [0] and is the precision lambda of a
     Gaussian prior N(0, (lambda I)^-1) on the (orthonormal) affine Lie
     parameters q, i.e. a penalty 1/2 lambda ||q||^2. 0 means no penalty.
-    Per-group precisions (default: FACTOR for groups not given):
-        -t, --translation-penalty LAM   Prior precision of translations
-        -r, --rotation-penalty LAM      Prior precision of rotations
-        -z, --zoom-penalty LAM          Prior precision of zooms
-        -s, --shear-penalty LAM         Prior precision of shears
+    Per-group factors, multiplied by FACTOR (as for @nonlin), so that the
+    precision of a group is FACTOR x its factor:
+        -t, --translation-penalty F     Penalty factor of translations [1]
+        -r, --rotation-penalty F        Penalty factor of rotations [1]
+        -z, --zoom-penalty F            Penalty factor of zooms [1]
+        -s, --shear-penalty F           Penalty factor of shears [1]
     Common options:
         -p, --position                  Position of the affine: [sym], mov, fix
         -g, --progressive               Progressive optimization (t -> r -> s -> a) [false]
@@ -576,9 +577,9 @@ for _grp, _flags in (('translation', ('-t', '--translation-penalty')),
                      ('rotation', ('-r', '--rotation-penalty')),
                      ('zoom', ('-z', '--zoom-penalty')),
                      ('shear', ('-s', '--shear-penalty'))):
-    affine.add_option(_grp, _flags, nargs=1, convert=float, default=None,
-                      help=f'Prior precision of the {_grp} parameters '
-                           f'[FACTOR]')
+    affine.add_option(_grp, _flags, nargs=1, convert=float, default=1.,
+                      help=f'Penalty factor of the {_grp} parameters '
+                           f'(times FACTOR)')
 affine.add_option('position', ('-p', '--position'), default='sym', nargs=1,
                   validation=cli.Validations.choice(['sym', 'mov', 'fix']),
                   help='Position of the affine transform in the model')
