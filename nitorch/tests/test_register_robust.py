@@ -349,12 +349,13 @@ def test_weighted_lam_uses_last_lam(cls, joint):
 @pytest.mark.parametrize('cls', [MAD, Tukey])
 def test_weighted_lam_fallback(cls):
     """Without a cached estimate (or with a fixed lam), `weighted_lam`
-    is the output of `irls`"""
+    is the output of `irls`, and does not update the cached lam"""
     mov, fix = make_noisy()
     for lam in (None, 2.):
         loss = cls(lam=lam, joint=True)
         ref = copy.deepcopy(loss).irls(mov, fix, loss.lam, None, True, 2)[-1]
         assert torch.equal(loss.weighted_lam(mov, fix, None, 2), ref)
+        assert loss.lam == lam and loss._last_lam is None
 
 
 def make_register_step(step_name, joint, seed=0):
@@ -426,6 +427,55 @@ def test_verbose_lam_no_extra_irls(step_name, joint, capsys):
         # (same up to the IRLS tolerance, |Δ log lam| < 1e-6; Tukey weights
         # close to zero, near |s| = c, are the most sensitive to it)
         assert torch.allclose(lam, ref, rtol=1e-5, atol=1e-5 * ref.max())
+
+
+
+@pytest.mark.parametrize('loss_name', ['tukey', 'mse'])
+def test_verbose_nonlin_same_objective(loss_name, monkeypatch, capsys):
+    """A nonlinear-only registration (no affine, so that the right
+    affine of the display is the identity, on 1.5 mm voxels) runs with
+    any verbosity, and gives the same result as verbose=0: the display
+    (`-v 3`) changes neither the objective nor the parameters (it used
+    to crash, or to update the cached lam)"""
+    from nitorch import spatial
+    from nitorch.tools.registration import objects, losses
+    from nitorch.tools.registration import pairwise_impl
+    from nitorch.tools.registration.pairwise_makeobj import make_nonlin_optim
+    dt = torch.double
+    shape = [10, 10, 10]
+    aff = spatial.affine_default(shape, 1.5, dtype=dt)
+    g = torch.Generator().manual_seed(0)
+    fix = torch.rand([1, *shape], dtype=dt, generator=g)
+    for _ in range(2):
+        for d in range(1, 4):
+            fix = (fix + fix.roll(1, d) + fix.roll(-1, d)) / 3
+    mov = fix.roll(1, 1) + 0.01 * torch.randn(fix.shape, dtype=dt,
+                                              generator=g)
+    shown = []
+    monkeypatch.setattr(pairwise_impl.PairwiseRegisterStep, 'mov2fix',
+                        lambda self, *a, lam=None, **k: shown.append(lam))
+    out = {}
+    for verbose in (0, 1, 3):
+        loss = (Tukey(lam=None, dim=3) if loss_name == 'tukey' else
+                losses.MSE(lam=100, dim=3))
+        sim = objects.Similarity(loss, objects.Image(mov, affine=aff),
+                                 objects.Image(fix, affine=aff))
+        nonlin = objects.SVFModel(steps=8, penalty=dict(
+            absolute=1e-4, membrane=1e-3, bending=1e-2, lame=(0, 0)))
+        nonlin.set_dat(shape, affine=aff, dtype=dt)
+        optim = make_nonlin_optim('gn', order=2, line_search=4, max_iter=3,
+                                  nonlin=nonlin)
+        reg = pairwise_impl.PairwiseRegister(
+            objects.SumSimilarity([sim]), None, nonlin, optim,
+            verbose=verbose, figure=object())
+        ll = reg.fit()
+        out[verbose] = (torch.as_tensor(ll), nonlin.parameters().clone())
+    for verbose in (1, 3):
+        assert torch.equal(out[verbose][0], out[0][0])
+        assert torch.equal(out[verbose][1], out[0][1])
+    assert out[0][1].abs().max() > 0             # it did move
+    assert shown                                 # the display ran
+    assert all((lam is not None) == (loss_name == 'tukey') for lam in shown)
 
 
 BASE = ['@@fix', 'fix.nii', '@@mov', 'mov.nii', '@nonlin', 'svf']

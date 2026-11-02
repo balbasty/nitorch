@@ -300,6 +300,7 @@ class RobustLoss(OptimizationLoss):
         evaluation of the loss (`_last_lam`) is reused, so that this
         costs one reweighting instead of an IRLS loop. Otherwise (fixed
         lam, or nothing estimated yet), this is the output of `irls`.
+        In both cases, the state of the loss (cached lam) is unchanged.
 
         Parameters
         ----------
@@ -320,7 +321,14 @@ class RobustLoss(OptimizationLoss):
         dim = dim or self.dim or (fixed.dim() - 1)
         lam = self._last_lam
         if lam is None or not self.compute_lam:
-            return self.irls(moving, fixed, self.lam, mask, self.joint, dim)[-1]
+            # (without updating the cached lam, so that displaying the
+            # weights does not change the next evaluation of the loss)
+            state = self.lam, self._last_lam
+            try:
+                return self.irls(moving, fixed, self.lam, mask, self.joint,
+                                 dim)[-1]
+            finally:
+                self.lam, self._last_lam = state
         prm = {k: getattr(self, k) for k in self.reweight_param}
         weights = self.reweight(moving, fixed, lam=lam, joint=self.joint,
                                 dim=dim, mask=1 if mask is None else mask,
@@ -546,7 +554,10 @@ class Tukey(RobustLoss):
         # κ(C) = E[w(S²) S²] / C (≈ 0.69, 0.62, 0.49 for C = 2, 3, 5).
         # (With c = 4.685, the Gaussian precision is a stable fixed
         # point of the IRLS for C ≤ 6 only: for larger C, c is too
-        # close to the typical norm of the noise, √C.)
+        # close to the typical norm of the noise, √C. For the same
+        # reason, the fraction of zero-weight voxels (outliers) above
+        # which lam diverges, 1 - κ(C) / max_a E[w(aS²) aS²] / C,
+        # shrinks with C: about 49%, 31%, 18%, 3% for C = 1, 2, 3, 5.)
         if nb_channels == 1:
             return _tukey_kappa(float(c))
         return _tukey_kappa_joint(float(c), int(nb_channels))
