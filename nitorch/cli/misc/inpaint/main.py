@@ -7,11 +7,13 @@ import torch
 
 def ensure_4d(f):
     while len(f.shape) > 4:
-        for d in reversed(range(len(f.shape))):
+        # squeeze a singleton non-spatial dimension
+        for d in reversed(range(3, len(f.shape))):
             if f.shape[d] == 1:
-                f.squeeze(d)
-                continue
-        raise ValueError('Too many channel dimensions')
+                f = f.squeeze(d)
+                break
+        else:
+            raise ValueError('Too many channel dimensions')
     while len(f.shape) < 4:
         f = f.unsqueeze(-1)
     return f
@@ -180,8 +182,7 @@ def do_inpaint(dat, voxel_size=1, max_iter_rls=50, max_iter_cg=32,
     forward_buf = dat.new_zeros(nmask)
     for n_iter_rls in range(1, max_iter_rls+1):
 
-        ll_x0 = ll_x
-        ll_w0 = ll_w
+        ll0 = ll_x + ll_w
 
         grad = spatial.membrane(dat, dim=3, voxel_size=voxel_size, weights=weights)
         grad = torch.masked_select(grad, mask, out=grad_buf)
@@ -211,7 +212,9 @@ def do_inpaint(dat, voxel_size=1, max_iter_rls=50, max_iter_cg=32,
         if verbose > 0:
             print(f'{n_iter_rls:3d} | {ll_x} + {ll_w} = {ll_x + ll_w}')
 
-        if abs(((ll_x0-ll_w0) - (ll_x+ll_w))/(ll_x0-ll_w0)) < tol_rls:
+        # relative change of the objective between successive iterations
+        ll = ll_x + ll_w
+        if abs((ll0 - ll) / ll0) < tol_rls:
             if verbose > 0:
                 print('Converged')
             break
