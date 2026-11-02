@@ -134,7 +134,7 @@ def _check_measure(measure):
 
 def lgmmh(moving, fixed, dim=None, bins=3, patch=20, stride=1,
           grad=True, hess=True, kernel='g', max_iter=128, measure='mi',
-          theta=None, return_theta=False):
+          theta=None, return_theta=False, mask=None):
     """Entropy estimated by a Local Gaussian Mixture Model
 
     The parameters of the joint mixture vary smoothly in space: they are
@@ -163,11 +163,15 @@ def lgmmh(moving, fixed, dim=None, bins=3, patch=20, stride=1,
         See `gmmh`.
     grad : bool, default=True
     hess : bool, default=True
+    mask : (..., *spatial) tensor, optional
+        Masked-out voxels do not contribute to the local fit, value,
+        gradient or Hessian (which are zero there). The value is
+        averaged over in-mask voxels.
 
     Returns
     -------
     l : () tensor
-        Loss (average across voxels)
+        Loss (average across (in-mask) voxels)
     g : (..., *spatial) tensor, if `grad`
         Gradient
     h : (..., *spatial) tensor, if `hess`
@@ -192,7 +196,8 @@ def lgmmh(moving, fixed, dim=None, bins=3, patch=20, stride=1,
 
     gmmfit = fit_lgmm2(moving, fixed, bins, max_iter, dim,
                        patch=patch, stride=stride, mode=kernel, theta=theta,
-                       cache=cache)
+                       cache=cache, mask=mask, return_mask=True)
+    gmmfit, lmask = gmmfit
 
     # drop unused variables
     get = gmmfit.get if return_theta else gmmfit.pop
@@ -208,6 +213,8 @@ def lgmmh(moving, fixed, dim=None, bins=3, patch=20, stride=1,
     ll = pop('nll')
     # the value is averaged across (batch and spatial) voxels
     nvox = z.numel() // z.shape[-dim-1]
+    if lmask is not None:
+        nvox = lmask.nvox
 
     moving = moving.unsqueeze(-dim-1)
     fixed = fixed.unsqueeze(-dim-1)
@@ -237,14 +244,22 @@ def lgmmh(moving, fixed, dim=None, bins=3, patch=20, stride=1,
             #   [Sigma^{-1}]_xx - 1/xvar = corr^2 / (xvar * (1 - corr^2))
             stats += [cov * cov * idet / xvar]
     if stats:
-        stats = list(bwd(torch.stack(stats), None, None).unbind(0))
+        stats = torch.stack(stats)
+        if lmask is None:
+            stats = bwd(stats, None, None)
+        else:
+            stats = lmask.push(bwd, stats)
+        stats = list(stats.unbind(0))
 
     if measure != 'joint':
         ixvar, ixmean, lx = stats[:3]
         stats = stats[3:]
         lx.addcmul_(ixvar, moving * moving).addcmul_(ixmean, moving, value=-2)
         lx.mul_(-0.5)
-        ll = ll + torch.logsumexp(lx, -dim-1).mean()
+        if lmask is None:
+            ll = ll + torch.logsumexp(lx, -dim-1).mean()
+        else:
+            ll = ll + lmask.average(torch.logsumexp(lx, -dim-1, keepdim=True))
     out = [ll]
 
     if grad:
@@ -257,12 +272,16 @@ def lgmmh(moving, fixed, dim=None, bins=3, patch=20, stride=1,
             w = torch.softmax(lx, -dim-1)
             g -= w.mul_(ixmean.neg_().addcmul_(ixvar, moving)).sum(-dim-1)
         g /= nvox
+        if lmask is not None:
+            g.mul_(lmask.mask.squeeze(-dim-1))
         out.append(g)
 
         if hess:
             h = xprec if measure == 'joint' else stats[3]
             h = h.mul_(z).sum(-dim-1)
             h /= nvox
+            if lmask is not None:
+                h.mul_(lmask.mask.squeeze(-dim-1))
             out.append(h)
 
     if return_theta:
@@ -575,7 +594,6 @@ class LGMMH(OptimizationLoss):
         kwargs.setdefault('max_iter', self.max_iter)
         kwargs.setdefault('measure', self.measure)
         kwargs['return_theta'] = self.cache
-        kwargs.pop('mask', None)  # TODO: masked local fit
         # Warm-start EM from the previous fit. Local parameters live on
         # the grid of patches, so they can only be reused if the images
         # and patches have not changed.
