@@ -54,7 +54,7 @@ def info(inp, meta=None, stat=False):
         layout = spatial.affine_to_layout(aff)
         layout = spatial.volume_layout_to_name(layout)
         print(f'{title("layout")} : {layout}')
-        center = torch.as_tensor(shape[:3], dtype=torch.float)/2
+        center = (torch.as_tensor(shape[:3], dtype=torch.float) - 1) / 2
         center = spatial.affine_matvec(aff, center)
         print(f'{title("center")} : {tuple(center.tolist())} mm (RAS)')
         if stat and torch.is_tensor(dat):

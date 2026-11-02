@@ -54,10 +54,11 @@ def chunk(inp, chunk_size=1, dim=-1, output=None, transform=None):
 
     dat, aff0 = inp
     ndim = aff0.shape[-1] - 1
+    dim = dim + dat.dim() if dim < 0 else dim
     nchunks = math.ceil(dat.shape[dim] / chunk_size)
-    if dim > ndim:
+    if dim >= ndim:
         # we didn't touch the spatial dimensions
-        aff = [aff0.clone() for _ in range(len(dat))]
+        aff = [aff0.clone() for _ in range(nchunks)]
     else:
         aff = []
         slicer = [slice(None) for _ in range(ndim)]

@@ -84,9 +84,7 @@ you will need a way to display graphics, such as X forwarding, or you must selec
 an interactive backend yourself.
 
 The viewer is meant for 3D volumes with a single value per voxel. Images with an
-extra channel or time dimension are not specifically supported. While you
-interact with the window, the command may print diagnostic lines (the cursor
-position and the shape of the slices) in the terminal.
+extra channel or time dimension are not specifically supported.
 
 ## Examples
 

@@ -91,17 +91,10 @@ the condition holds in any of the extra channels.
 **Combining them.** The built-in help says that only one of `-s`, `-k` and
 `-b` may be used, but the command does not check this. When several are given,
 an explicit `-s` or `-c` always takes precedence over the size or the centre
-that would be derived from `-k`, `-b` or `-t`, and `-k` takes precedence over
-`-b`.
-
-!!! warning "Current limitations of `-k` and `-b`"
-    In the present version, `-k` on its own stops with the error *At least one
-    of size/like/transform must be provided*: it only supplies the centre, so
-    you have to give `-s` as well (for example the shape of the reference).
-    `-b` stops with the error *'numpy.ndarray' object has no attribute
-    'numpy'* when the input is a file, after printing the voxel range. In
-    addition, the box it computes is shifted by one voxel along an axis whose
-    first non-zero index is odd.
+that would be derived from `-k` or `-b`, and `-k` takes precedence over `-b`.
+An explicit `-c` also takes precedence over the centre read from a `-t` file
+(`-s` cannot, since it turns `-t` into an output, see
+[Transformation files](#transformation-files)).
 
 ### How the orientation matrix changes
 
@@ -135,12 +128,10 @@ size, as long as the two share the same orientation layout. A file name is
 required in this case.
 
 !!! note "When is `-t` an input, and when an output?"
-    The built-in help says that `-t` names an output when `-s`, `-c` or `-k`
-    is given. In the code, `-t` is written only when `-k` or `-b` selects the
-    region (and `-b` currently fails, see above). In every other case it is
-    read. In particular `-s 64 64 64 -t crop.lta` tries to read `crop.lta`
-    and fails if it does not exist. To record a crop, derive it from a reference
-    with `-k` and `-s`.
+    `-t` is written whenever one of `-s`, `-k` or `-b` selects the region, for
+    example `-s 64 64 64 -t crop.lta`. It is read only when none of these
+    three is given; `-c` on its own does not change this, and then overrides
+    the centre stored in the file.
 
 ## Arguments
 
@@ -189,13 +180,19 @@ nitorch crop sub-01_T1w.nii.gz sub-01_FLAIR.nii.gz -s 96 96 64 -c 100 110 90 \
 
 Extract a region and keep it as a reference for other images, then cut the
 same region out of an image that lives in the same space. The reference
-provides the centre, and `-s` the size; the transformation file records the
-crop:
+provides the size and the centre; the transformation file records the crop:
 
 ```shell
 nitorch crop sub-01_T1w.nii.gz -s 96 96 64 -c 100 110 90 -o T1w_roi.nii.gz
-nitorch crop sub-01_FLAIR.nii.gz -k T1w_roi.nii.gz -s 96 96 64 \
+nitorch crop sub-01_FLAIR.nii.gz -k T1w_roi.nii.gz \
     -o FLAIR_roi.nii.gz -t FLAIR_roi.lta
+```
+
+Crop to the bounding box of the non-zero voxels of a mask, recording the crop
+so that it can be applied to other images later:
+
+```shell
+nitorch crop brain_mask.nii.gz -b -t mask_bbox.lta
 ```
 
 Apply a crop that has been recorded in a transformation file to another

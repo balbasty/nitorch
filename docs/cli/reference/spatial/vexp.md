@@ -27,10 +27,7 @@ Two choices define the output.
 
 **Type (`-t`).** With `d` (the default), the output is a *displacement field* $u$, such that the transformation is $\phi(x) = x + u(x)$. With `t`, the output is the *transformation field* $\phi(x)$ itself, that is, the coordinates to which every voxel is sent. Only the first letter is read, so `disp` and `trans` work too.
 
-**Unit (`-u`).** With `v` (the default), values are in voxels of the lattice of the file: displacements are voxel shifts, and coordinates are voxel indices. With `mm`, the output is multiplied by the orientation matrix of the input. This turns voxel coordinates into world coordinates in millimetres, which is what you want for `-t t`. Any value other than `mm` is treated as voxels.
-
-!!! warning "Use `-u mm` with `-t t` only"
-    For a displacement field (`-t d`), `-u mm` applies the *whole* orientation matrix to every vector, translation included. A displacement should be affected by the linear part of the matrix only, so the result is only a correct displacement in millimetres if the translation of the matrix is zero. Prefer the default voxel units for displacements, and use `-t t -u mm` when you need coordinates in world space.
+**Unit (`-u`).** With `v` (the default), values are in voxels of the lattice of the file: displacements are voxel shifts, and coordinates are voxel indices. With `mm`, the output is multiplied by the orientation matrix of the input. For a transformation field (`-t t`), the whole matrix is applied, which turns voxel coordinates into world coordinates in millimetres. For a displacement field (`-t d`), only the linear part of the matrix is applied, since a displacement is a vector and is not affected by the translation. Any value other than `mm` is treated as voxels.
 
 The exponential of a field is a *forward* transformation in the sense that it maps coordinates of the space in which $v$ lives to new coordinates in the same space. When you use the output with [`reslice`](reslice.md) or [`compose`](compose.md), it plays the role of a displacement field (`-d FILE`), mapping coordinates of the output space to coordinates of the input space; see [the conventions of `reslice`](reslice.md#how-transformations-are-chained). You rarely need to compute the inverse separately: `reslice` and `compose` accept the velocity field directly (`-v` and `-iv`) and exponentiate it themselves.
 
@@ -47,16 +44,13 @@ The output is written with the data type of the input file.
 | Option                  | Value          | Description                                                                                                  | Default                    |
 | ----------------------- | -------------- | ------------------------------------------------------------------------------------------------------------ | -------------------------- |
 | `-t`, `--type`          | `{d,t}`        | Output a displacement field (`d`, `disp`...) or a transformation field (anything starting with another letter, e.g. `t`). | `d`                        |
-| `-u`, `--unit`          | `{v,mm}`       | Voxels (`v`, or anything other than `mm`) or millimetres (`mm`). See the warning above.                       | `v`                        |
+| `-u`, `--unit`          | `{v,mm}`       | Voxels (`v`, or anything other than `mm`) or millimetres (`mm`). See above.                                   | `v`                        |
 | `-n`, `--nb-steps`      | `STEPS`        | Number of scaling-and-squaring steps $N$; the field is divided by $2^N$ before squaring.                      | `8`                        |
 | `-b`, `--bound`         | `BND`          | Boundary condition used when the field is resampled during squaring: `dft`, `dct1`, `dct2`, `dst1`, `dst2`, `zero` (aliases listed in [`resize`](resize.md#boundary-conditions) also work). | `dft` (circular)           |
-| `-inv`, `--inverse`     | `[BOOL]`       | Intended to output the inverse transformation. **Currently has no effect**: see below.                        | off                        |
+| `-inv`, `--inverse`     | `[BOOL]`       | Output the inverse transformation, the exponential of $-v$. The flag alone means `yes`; it also accepts `yes`/`no`, `true`/`false` or `1`/`0`. | off                        |
 | `-o`, `--output`        | `FILE...`      | Output filenames, one per input. [Templates](../../conventions.md#output-filenames) with `{dir}`, `{sep}`, `{base}` and `{ext}` are accepted. | `{dir}{sep}{base}.vexp{ext}` |
 | `-cpu`, `--cpu`         |                | Use the CPU.                                                                                                  | CPU                        |
 | `-gpu`, `--gpu`         | `[ID]`         | Use a GPU, optionally the one with this index (see [hardware](../../conventions.md#hardware)).               | off                        |
-
-!!! note "The `-inv` flag is ignored"
-    The option is parsed (it accepts an optional `yes`/`no`, `true`/`false` or `1`/`0`), but the value is not passed on, so the output is always the forward exponential. To obtain the inverse transformation, negate the velocity field instead, or use `-iv` in [`compose`](compose.md) or [`reslice`](reslice.md).
 
 If fewer output names than inputs are given, the last one is repeated (and would be overwritten), so give a template when you process several files.
 

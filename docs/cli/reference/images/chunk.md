@@ -12,7 +12,7 @@ slices of a fixed depth.
 === ":octicons-terminal-24: Synopsis"
 
     ```shell
-    nitorch chunk FILE... [-n SIZE] [-d DIM] [-o FILE...] [--transform [FILE...]]
+    nitorch chunk FILE... [-n SIZE] [-d DIM] [-o FILE...] [-t [FILE...]]
     ```
 
 ## Description
@@ -38,22 +38,15 @@ and its translation is moved forward by `(i - 1) * SIZE` voxels along the
 split axis. Chunks of a volume therefore overlay the original, and one another,
 without gaps. For a 2 mm volume whose third axis starts at `z = -30` mm, the
 second chunk of `-n 8 -d 2` starts at `z = -30 + 8 * 2 = -14` mm.
+When `DIM` is an extra (non-spatial) dimension, such as the time or echo axis
+of a 4D volume, every chunk keeps the orientation matrix of the input.
 
 `DIM` counts the dimensions of the array from 0, so `0`, `1` and `2` are the
 three spatial axes and `3` would be the first extra dimension of a 4D volume.
 A negative `DIM` counts from the end, and `-1`, the default, is the last
-dimension.
-
-!!! warning "Use non-negative dimensions, and 3D volumes, to get the right orientation"
-    The orientation matrix of each chunk is only computed correctly when `DIM`
-    is 0, 1 or 2, or when it is negative *and the volume is three-dimensional*.
-    For a 4D volume (a time series, several echoes), `-d 3` stops with an
-    error, and a negative `DIM`, including the default `-1`, splits the right
-    axis of the data but shifts the orientation matrix along the wrong spatial
-    axis: the pieces of a 4D file split with the default `-d` have a wrong
-    translation. If you need to split the extra dimension of a 4D volume, check
-    and fix the orientation matrix of the results afterwards, with
-    [`info`](info.md) and [`orient`](../spatial/orient.md).
+dimension. A negative `DIM` is converted to its positive equivalent before
+the orientation matrix is computed: for a 4D volume, `-1` is the extra
+dimension and `-2` is the third spatial axis.
 
 ### Output names
 
@@ -77,11 +70,6 @@ space, and no volume geometry. The default name is `{dir}{sep}{base}_2_{i}.lta`,
 which you get by giving `--transform` without a value; if you give a name, it
 is a template that can contain `{dir}`, `{sep}`, `{base}`, `{ext}` and `{i}`.
 
-!!! note "The short option `-t` does not work"
-    The built-in help lists `-t` for `--transform`, but the command only
-    recognises the long form: `-t` stops with *Unknown tag -t*. Write
-    `--transform`.
-
 ## Arguments
 
 | Name   | Description                                          |
@@ -95,7 +83,7 @@ is a template that can contain `{dir}`, `{sep}`, `{base}`, `{ext}` and `{i}`.
 | `-n`, `--chunk`                   | `SIZE`       | Number of voxels along `DIM` in each chunk. The last one may be smaller.    | `1`                            |
 | `-d`, `--dim`, `--dimension`      | `DIM`        | Dimension to split, counting from 0. A negative value counts from the end.  | `-1` (last dimension)          |
 | `-o`, `--output`                  | `FILE...`    | Output name template, one per input. Placeholders: `{dir}`, `{sep}`, `{base}`, `{ext}`, `{i}`. | `{dir}{sep}{base}.{i}{ext}` |
-| `--transform`                     | `[FILE...]`  | Write one `.lta` file per chunk, one template per input. [See above](#transformation-files). | none; `{dir}{sep}{base}_2_{i}.lta` if given with no value |
+| `-t`, `--transform`               | `[FILE...]`  | Write one `.lta` file per chunk, one template per input. [See above](#transformation-files). | none; `{dir}{sep}{base}_2_{i}.lta` if given with no value |
 | `-h`, `--help`                    |              | Print the built-in help and exit.                                           |                                |
 
 ## Examples

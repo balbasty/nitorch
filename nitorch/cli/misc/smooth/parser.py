@@ -31,7 +31,8 @@ parser.add_option('padding', ('-p', '--padding'), nargs=1, default='replicate',
 parser.add_option('output', ('-o', '--output'), nargs=1,
                   default='{dir}{sep}{base}.smooth{ext}')
 parser.add_option('gpu', '--gpu', nargs='?', default=('cpu', 0),
-                  convert=cli.Conversions.device,
+                  convert=cli.Conversions.device('gpu'),
                   action=cli.Actions.store_value(('gpu', 0)))
 parser.add_option('gpu', '--cpu', nargs='?',
+                  convert=cli.Conversions.device('cpu'),
                   action=cli.Actions.store_value(('cpu', 0)))

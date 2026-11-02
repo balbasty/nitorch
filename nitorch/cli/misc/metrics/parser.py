@@ -74,7 +74,8 @@ parser.add_option('gauss', '--ssim-gauss', nargs='?', default=False,
 parser.add_option('range', '--range', nargs='*2', default=[],
                   convert=cli.Conversions.number(float))
 parser.add_option('device', '--gpu', nargs='?', default=('cpu', 0),
-                  convert=cli.Conversions.device,
+                  convert=cli.Conversions.device('gpu'),
                   action=cli.Actions.store_value(('gpu', 0)))
 parser.add_option('device', '--cpu', nargs='?',
+                  convert=cli.Conversions.device('cpu'),
                   action=cli.Actions.store_value(('cpu', 0)))

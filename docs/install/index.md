@@ -94,18 +94,12 @@ are grouped into *extras* that you add in square brackets:
 | `io`     | `numpy`, `nibabel`, `tifffile`            | Reading and writing volumes: NIfTI and MGH (through `nibabel`) and TIFF (through `tifffile`). Required by essentially every command. |
 | `plot`   | `matplotlib`                              | Plotting, including [`view`](../cli/reference/viewer/view.md).              |
 | `data`   | `wget`, `appdirs`                         | Downloading pretrained models and datasets from the Python library.         |
-| `all`    | `numpy`, `nibabel`, `tiffile`, `wget`, `appdirs`, `matplotlib` | Everything above (see the note below).                 |
+| `all`    | `numpy`, `nibabel`, `tifffile`, `wget`, `appdirs`, `matplotlib` | Everything above.                                     |
 | `nibabel`| `numpy`, `nibabel`                        | Only the `nibabel`-based formats (NIfTI, MGH).                              |
 | `tiff`   | `numpy`, `tifffile`                       | Only TIFF.                                                                  |
 | `numpy`  | `numpy`                                   | Nothing beyond the core dependencies.                                       |
 
 Extras can be combined with commas, as in `nitorch[io,plot]`.
-
-!!! warning "The `all` extra installs `tiffile`, not `tifffile`"
-    `setup.cfg` spells the TIFF dependency of the `all` extra `tiffile`, which
-    is an old, unrelated package on PyPI, instead of `tifffile`. As a result,
-    `nitorch[all]` does not give you TIFF support. Use `nitorch[io,plot]`
-    (or `nitorch[all]` and then `pip install tifffile`) if you need it.
 
 Without `nibabel`, NITorch cannot open NIfTI or MGH files. If it finds a
 version of `nibabel` that cannot be imported with your version of NumPy

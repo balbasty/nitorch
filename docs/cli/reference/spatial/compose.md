@@ -49,8 +49,7 @@ A dense field needs a grid on which it is defined. It is the grid of `-t FILE` i
 
 At every voxel $x$ of the target grid, with $M$ the orientation matrix of the target, the position $y = T(Mx)$ is computed. The displacement written at $x$ is then $y - Mx$ in millimetres (`-ou mm`), or $M^{-1}y - x$ in voxels of the target grid (`-ou vox`, the default). The output file carries the orientation matrix of the target. In voxel units, it is a displacement field that can be given straight back to `reslice` or `compose` as a `-d` field, together with the same target, and it then reproduces the chain: see the last example.
 
-!!! note "Choose voxel units to reuse the field"
-    The displacement written in millimetres is a correct world-space displacement. However, the conversion that `reslice` and `compose` apply to an *input* displacement given in millimetres (`-u mm`) is not reliable in the current version. Keep the default voxel units if you plan to reuse the field.
+A displacement written in millimetres is a correct world-space displacement. To reuse it in `reslice` or `compose`, give it with `-d FILE -u mm`.
 
 ### Output files
 
@@ -72,10 +71,10 @@ Fields are written in floating point (32 bits). Matrices are written as FreeSurf
 | `-d`, `--displacement`              | `FILE`               | Dense displacement field.                                                                            |         |
 | `-v`, `--velocity`                  | `FILE`               | Stationary velocity field, exponentiated by scaling and squaring.                                    |         |
 | `-il`, `-id`, `-iv`                 | `FILE`               | The inverse of a linear transformation, of a displacement field, of a velocity field.                |         |
-| `-u`, `--unit`                      | `{vox,mm}`           | After `-d`/`-id` only: unit of the displacements. Voxels of the field's own grid, or millimetres. Not reliable with `mm`, see above. | `vox`   |
+| `-u`, `--unit`                      | `{vox,mm}`           | After `-d`/`-id` only: unit of the displacements. Voxels of the field's own grid, or millimetres.                                    | `vox`   |
 | `-n`, `--order`                     | `ORDER`              | After `-d`/`-id` only: order of the splines that encode the field (`0` to `7`; `1` is linear). | `1`     |
 
-At least one transformation is required. The long forms of the inverse (`--linear-inverse`, `--displacement-inverse`, `--velocity-inverse`) are listed in the built-in help, but they fail in the current version: use the short forms `-il`, `-id` and `-iv`.
+At least one transformation is required. The inverse forms also have long names: `--linear-inverse`, `--displacement-inverse` and `--velocity-inverse`.
 
 ### Output
 
