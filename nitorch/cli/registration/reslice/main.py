@@ -363,7 +363,7 @@ def write_volumes(options):
     output = py.make_list(options.output, len(options.volumes))
     for file, ofname in zip(options.volumes, output):
         is_label = isinstance(options.interpolation, str) and options.interpolation == 'l'
-        ofname = ofname.format(dir=file.dir, base=file.base, ext=file.ext)
+        ofname = ofname.format(dir=file.dir, base=file.base, ext=file.ext, sep=os.path.sep)
         if options.verbose:
             print(f'Reslicing:   {file.fname}\n'
                   f'          -> {ofname}')
