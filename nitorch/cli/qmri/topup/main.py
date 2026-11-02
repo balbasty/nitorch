@@ -139,8 +139,22 @@ def ras_to_layout(x, affine):
     return [x[i] for i in ras_to_layout]
 
 
-def get_kernel(kernel, affine, shape, level):
-    """Convert the provided kernel size (RAS mm or pct) to native voxels"""
+def get_kernel(kernel, affine, shape, affine0=None):
+    """Convert the provided kernel size (RAS mm, pct or vox) to native voxels
+
+    Parameters
+    ----------
+    kernel : list[float or str]
+        Kernel size, optionally followed by a unit {'vox', 'mm', 'pct'}
+    affine : tensor
+        Orientation matrix of the current (possibly downsampled) grid
+    shape : list[int]
+        Shape of the current (possibly downsampled) grid
+    affine0 : tensor, optional
+        Orientation matrix of the original (full-resolution) grid.
+        Kernel sizes expressed in voxels refer to voxels of this grid.
+        Default: `affine`.
+    """
     dim = affine.shape[-1] - 1
     kernel = py.make_list(kernel)
     unit = 'pct'
@@ -148,8 +162,10 @@ def get_kernel(kernel, affine, shape, level):
         *kernel, unit = kernel
     kernel = py.make_list(kernel, dim)
     unit = unit.lower()
-    if unit[0] == 'v':  # voxels
-        kernel = [p / 2**level for p in kernel]
+    if unit[0] == 'v':  # voxels of the original (full-resolution) grid
+        vx = spatial.voxel_size(affine).tolist()
+        vx0 = vx if affine0 is None else spatial.voxel_size(affine0).tolist()
+        kernel = [p * v0 / v for p, v0, v in zip(kernel, vx0, vx)]
     elif unit in ('m', 'mm', 'cm', 'um'):  # assume RAS orientation
         factor = (1e-3 if unit == 'um' else
                   1e1 if unit == 'cm' else
@@ -234,7 +250,7 @@ def main_fit(options):
         scl = py.prod(d00.shape) / py.prod(d0.shape)
         penalty = penalty * scl
 
-        kernel = get_kernel(options.kernel, aff, d0.shape[-dim:], dwn)
+        kernel = get_kernel(options.kernel, aff, d0.shape[-dim:], f0.affine)
 
         # prepare loss
         if options.loss == 'mse':
@@ -337,7 +353,8 @@ def main_apply(options):
         else:
             jac = None
             if options.modulation:
-                jac = spatial.diff1d(phi, dim=readout, bound='dct2', side='c')
+                # readout axis was moved to the last dimension
+                jac = spatial.diff1d(phi, dim=-1, bound='dct2', side='c')
                 jac += 1
         phi = spatial.add_identity_grid_(phi.unsqueeze(-1)).squeeze(-1)
 
@@ -352,7 +369,8 @@ def main_apply(options):
         else:
             jac = None
             if options.modulation:
-                jac = spatial.diff1d(phi, dim=readout, bound='dct2', side='c')
+                # readout axis was moved to the last dimension
+                jac = spatial.diff1d(phi, dim=-1, bound='dct2', side='c')
                 jac += 1
         phi = spatial.add_identity_grid_(phi.unsqueeze(-1)).squeeze(-1)
 
