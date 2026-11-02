@@ -559,6 +559,8 @@ class PairwiseRegisterStep:
             self._plot_pending.run()
 
     def print(self, step, ll, lla=None, llv=None, in_line_search=False):
+        # Assembles the total objective (data + llv + lla) and records it:
+        # must be called exactly once per evaluation, whatever `verbose`.
 
         if lla is None:
             lla = self.lla
@@ -808,6 +810,30 @@ class PairwiseRegisterStep:
             out.append(sumhess)
         return tuple(out) if len(out) > 1 else out[0]
 
+    def _affine_penalty(self, logaff, grad=None, hess=None):
+        """L2 penalty on the (model-basis) affine log-parameters.
+
+        Its gradient (P * q) and Hessian (diag(P)) live in the model
+        basis; they are mapped to the optimised basis (`-g`) with the
+        Gram matrix M of `_optim_grad`: M.T (P * q) and M.T diag(P) M.
+        `grad` and `hess` are updated in place. Returns the value.
+        """
+        penalty = self.affine.penalty
+        lla = logaff * penalty
+        if grad is not None or hess is not None:
+            par = self.affine.parameters()
+            gram = None
+            if par.optim not in (None, par.basis):
+                gram = par._gram(lla)
+            if grad is not None:
+                grad += lla if gram is None else gram.T.matmul(lla)
+            if hess is not None:
+                if gram is None:
+                    hess.diagonal(0, -1, -2).add_(penalty)
+                else:
+                    hess += (gram.T * penalty).matmul(gram)
+        return 0.5 * lla.dot(logaff)
+
     def do_affine(self, logaff, grad=False, hess=False, in_line_search=False):
         """Forward pass for updating the affine component (nonlin is not None)"""
 
@@ -997,13 +1023,9 @@ class PairwiseRegisterStep:
                        sumloss.add_(llx, alpha=factor))
 
         if self.affine.penalty is not None:
-            lla = logaff * self.affine.penalty
-            if grad:
-                sumgrad += lla
-            if hess:
-                sumhess.diagonal(0, -1, -2).add_(self.affine.penalty)
-            lla = 0.5 * lla.dot(logaff)
-            sumloss += lla
+            lla = self._affine_penalty(logaff, sumgrad if grad else None,
+                                       sumhess if hess else None)
+            # (the value is added to `sumloss` by `self.print`)
         else:
             lla = 0
 
@@ -1164,13 +1186,9 @@ class PairwiseRegisterStep:
                        sumloss.add_(llx, alpha=factor))
 
         if self.affine.penalty is not None:
-            lla = logaff * self.affine.penalty
-            if grad:
-                sumgrad += lla
-            if hess:
-                sumhess.diagonal(0, -1, -2).add_(self.affine.penalty)
-            lla = 0.5 * lla.dot(logaff)
-            sumloss += lla
+            lla = self._affine_penalty(logaff, sumgrad if grad else None,
+                                       sumhess if hess else None)
+            # (the value is added to `sumloss` by `self.print`)
         else:
             lla = 0
 
