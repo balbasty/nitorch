@@ -1,5 +1,5 @@
 ---
-icon: octicons/move-24
+icon: octicons/arrow-switch-24
 ---
 
 # Orientation & resampling
