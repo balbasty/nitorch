@@ -112,15 +112,17 @@ interchangeable.
 
 ### What counts as a tag, and what counts as a value
 
-An argument is a tag when it starts with a dash and its second character is
-**not** a digit. Everything else is a value. This has three consequences.
+An argument is a tag when it starts with a dash and is not a number, where
+"number" means anything Python's `float()` accepts. Everything else is a
+value. This has three consequences.
 
-- **Negative numbers are values.** `-2.5`, `-10` and `-1e-3` can be written
-  as is wherever a number is expected, for example `-c -12.4 6.4 3.2`.
-- **`-.5` is not a number to the parser.** A dash followed by a dot starts a
-  tag, and the command reports `Unknown tag -.5`. Write `-0.5` instead.
+- **Negative numbers are values.** `-2.5`, `-10`, `-.5`, `-1e-3`, `-inf` and
+  `-nan` can be written as is wherever a number is expected, for example
+  `-c -12.4 6.4 3.2`.
 - **A file name that starts with a dash and a letter cannot be used directly.**
   Prefix it with a directory to hide the dash, as in `./-odd-name.nii.gz`.
+- **`autoreg` is stricter.** It still treats any argument that starts with a
+  dash as a tag, so negative numbers cannot be given to it as values.
 
 A lone `-` is a value.
 
