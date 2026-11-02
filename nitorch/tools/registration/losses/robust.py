@@ -182,6 +182,11 @@ class RobustLoss(OptimizationLoss):
         κ(C) = E[w(S²) sₖ²] = E[w(S²) S²] / C. Otherwise, C = 1."""
         return 1.
 
+    def reweight_params(self, joint=False, nb_channels=1):
+        """Default parameters of `reweight` (e.g. Tukey's `c`), which may
+        depend on the number of channels that are jointly reweighted"""
+        return {key: getattr(self, key) for key in self.reweight_param}
+
     def irls(self, moving, fixed, lam, mask, joint, dim, **kwargs):
         """Compute IRLS weights (and estimate the precision)
 
@@ -202,9 +207,13 @@ class RobustLoss(OptimizationLoss):
         lam : weighted precision (lam * w)
         """
         dim = dim or fixed.dim() - 1
+        # joint weights depend on the squared norm across the C channels
+        nb_channels = (torch.broadcast_shapes(moving.shape, fixed.shape)
+                       [-dim-1] if joint else 1)
+        default = self.reweight_params(joint, nb_channels)
         for key in self.reweight_param:
             if kwargs.get(key, None) is None:
-                kwargs[key] = getattr(self, key)
+                kwargs[key] = default[key]
         if mask is not None:
             nvox = mask.sum(list(range(-dim, 0)), keepdim=True)
         else:
@@ -239,8 +248,6 @@ class RobustLoss(OptimizationLoss):
         res2 = (moving_ - fixed_).square_()
         res2 = mul_(res2, mask if torch.is_tensor(mask) else None)
         del fixed_, moving_
-        # joint weights depend on the squared norm across the C channels
-        nb_channels = res2.shape[-dim-1] if joint else 1
         kappa = self.kappa(nb_channels=nb_channels, **kwargs)
         spatial = list(range(-dim, 0))
         zero = (mask == 0) if torch.is_tensor(mask) else None
@@ -329,7 +336,9 @@ class RobustLoss(OptimizationLoss):
                                  dim)[-1]
             finally:
                 self.lam, self._last_lam = state
-        prm = {k: getattr(self, k) for k in self.reweight_param}
+        nb_channels = (torch.broadcast_shapes(moving.shape, fixed.shape)
+                       [-dim-1] if self.joint else 1)
+        prm = self.reweight_params(self.joint, nb_channels)
         weights = self.reweight(moving, fixed, lam=lam, joint=self.joint,
                                 dim=dim, mask=1 if mask is None else mask,
                                 **prm)
@@ -357,8 +366,7 @@ class RobustLoss(OptimizationLoss):
         dim = kwargs.pop('dim', self.dim)
         joint = kwargs.pop('joint', self.joint)
         mask = kwargs.pop('mask', None)
-        prm = {k: kwargs.pop(k, getattr(self, k, None))
-               for k in self.reweight_param}
+        prm = {k: kwargs.pop(k, None) for k in self.reweight_param}
         dim = dim or (fixed.dim() - 1)
 
         lll, llw, lam = self.irls(moving, fixed, lam, mask, joint, dim, **prm)
@@ -391,8 +399,7 @@ class RobustLoss(OptimizationLoss):
         dim = kwargs.pop('dim', self.dim)
         joint = kwargs.pop('joint', self.joint)
         mask = kwargs.pop('mask', None)
-        prm = {k: kwargs.pop(k, getattr(self, k, None))
-               for k in self.reweight_param}
+        prm = {k: kwargs.pop(k, None) for k in self.reweight_param}
         dim = dim or (fixed.dim() - 1)
 
         lll, llw, lam = self.irls(moving, fixed, lam, mask, joint, dim, **prm)
@@ -427,8 +434,7 @@ class RobustLoss(OptimizationLoss):
         dim = kwargs.pop('dim', self.dim)
         joint = kwargs.pop('joint', self.joint)
         mask = kwargs.pop('mask', None)
-        prm = {k: kwargs.pop(k, getattr(self, k, None))
-               for k in self.reweight_param}
+        prm = {k: kwargs.pop(k, None) for k in self.reweight_param}
         dim = dim or (fixed.dim() - 1)
 
         lll, llw, lam = self.irls(moving, fixed, lam, mask, joint, dim, **prm)
@@ -530,6 +536,67 @@ def _tukey_kappa_joint(c, nb_channels):
     return p1 - 2 * q2 * p2 + q3 * p3
 
 
+def _tukey_mean_ws2(a, c, nb_channels):
+    """E[w(aX) aX] / C for X ~ χ²(C): the expected mean(w sₖ²) when lam
+    is `a` times the precision of Gaussian noise (κ(C) at a = 1)"""
+    C, c2 = nb_channels, c * c
+    x = c2 / (2 * a)
+    p1, p2, p3 = (_gammainc_half(C + 2 * m, x) for m in (1, 2, 3))
+    return (a * p1 - 2 * a * a * (C + 2) / c2 * p2
+            + a ** 3 * (C + 2) * (C + 4) / (c2 * c2) * p3)
+
+
+def _tukey_breakdown(c, nb_channels):
+    """Largest fraction of zero-weight voxels (gross outliers) for which
+    the IRLS precision has a finite fixed point, with Gaussian inliers
+
+    With a fraction ε of outliers, mean(w sₖ²) = (1 - ε) g(a), with
+    g(a) = `_tukey_mean_ws2(a)`, so that lam = a × precision exists iff
+    (1 - ε) max_a g(a) ≥ κ = g(1): ε* = 1 - g(1) / max_a g(a).
+    (g rises then falls with a: golden-section search on log a.)
+    """
+    def f(t):
+        return _tukey_mean_ws2(math.exp(t), c, nb_channels)
+    r = (math.sqrt(5) - 1) / 2
+    lo, hi = math.log(1e-3), math.log(1e3)
+    t1, t2 = hi - r * (hi - lo), lo + r * (hi - lo)
+    f1, f2 = f(t1), f(t2)
+    for _ in range(80):
+        if f1 < f2:
+            lo, t1, f1 = t1, t2, f2
+            t2 = lo + r * (hi - lo)
+            f2 = f(t2)
+        else:
+            hi, t2, f2 = t2, t1, f1
+            t1 = hi - r * (hi - lo)
+            f1 = f(t1)
+    return 1 - _tukey_mean_ws2(1., c, nb_channels) / max(f1, f2)
+
+
+@lru_cache
+def _tukey_c(nb_channels, c=4.685):
+    """Tukey's c for joint weights across C channels
+
+    c(C) is such that the breakdown of the estimated precision
+    (`_tukey_breakdown`) is that of c with a single channel (48.7% for
+    c = 4.685), so that the IRLS is as robust for any C, and the
+    Gaussian precision is a stable fixed point. c(1) = c, and
+    c(C) ≈ 3.3 √C for large C (√C is the typical norm of the noise).
+    """
+    if nb_channels == 1:
+        return c
+    target = _tukey_breakdown(c, 1)
+    # the breakdown increases with c, and is smaller than target at c
+    lo, hi = c, c + 6 * math.sqrt(nb_channels)
+    for _ in range(64):
+        mid = (lo + hi) / 2
+        if _tukey_breakdown(mid, nb_channels) < target:
+            lo = mid
+        else:
+            hi = mid
+    return (lo + hi) / 2
+
+
 class Tukey(RobustLoss):
     """Tukey's biweight loss (using IRLS)"""
 
@@ -551,18 +618,16 @@ class Tukey(RobustLoss):
         # κ = 1 would bias lam. κ = E[w s²] under Gaussian noise
         # (≈ 0.76 for c = 4.685) makes lam consistent at the Gaussian.
         # With joint weights, w = w(S²) with S² ~ χ²(C), and
-        # κ(C) = E[w(S²) S²] / C (≈ 0.69, 0.62, 0.49 for C = 2, 3, 5).
-        # (With c = 4.685, the Gaussian precision is a stable fixed
-        # point of the IRLS for C ≤ 6 only: for larger C, c is too
-        # close to the typical norm of the noise, √C. For the same
-        # reason, the fraction of zero-weight voxels (outliers) above
-        # which lam diverges, 1 - κ(C) / max_a E[w(aS²) aS²] / C,
-        # shrinks with C: about 49%, 31%, 18%, 3% for C = 1, 2, 3, 5.)
+        # κ(C) = E[w(S²) S²] / C. With the default c, c = c(C) (see
+        # `reweight_params`): κ ≈ 0.786, 0.798, 0.808, 0.814, 0.816 for
+        # C = 2, 3, 5, 8, 10. (With a fixed c = 4.685 instead, it would
+        # be 0.685, 0.617, 0.493, and the Gaussian precision would not
+        # be a stable fixed point of the IRLS for C ≥ 7.)
         if nb_channels == 1:
             return _tukey_kappa(float(c))
         return _tukey_kappa_joint(float(c), int(nb_channels))
 
-    def __init__(self, lam=None, c=4.685, joint=False, dim=None, cache=True):
+    def __init__(self, lam=None, c=None, joint=False, dim=None, cache=True):
         """
 
         Parameters
@@ -570,7 +635,14 @@ class Tukey(RobustLoss):
         lam : (K|1,) tensor_like, optional
             Precision. If None, estimated by IRLS.
         c : float, default=4.685
-            Tukey parameter
+            Tukey parameter, in units of standardised residual.
+            If not provided (default) and `joint=True`, the threshold on
+            the norm of the C standardised residuals is c(C), for which
+            the estimated precision is as robust as with 4.685 and a
+            single channel (same breakdown, 49%):
+            c(C) = 4.685, 5.83, 6.75, 8.25, 10.05, 11.09 for C = 1, 2, 3,
+            5, 8, 10 (`scale_c`). A value that is provided is used as is
+            (a threshold on the joint norm).
         joint : bool, default=False
             Joint sparsity across channels
         dim : int, default=1fixed.dim() - 1`
@@ -579,4 +651,18 @@ class Tukey(RobustLoss):
             Cache estimated precision between calls.
         """
         super().__init__(lam, joint, dim, cache)
-        self.c = c
+        self.scale_c = c is None
+        self.c = 4.685 if c is None else c
+
+    def reweight_params(self, joint=False, nb_channels=1):
+        # With joint weights, ‖s‖² ~ χ²(C) under Gaussian noise, so a
+        # threshold c meant for one channel gets closer and closer to the
+        # typical norm √C: the fraction of outliers that the estimated
+        # lam tolerates drops (49%, 31%, 18%, 3% for C = 1, 2, 3, 5 with
+        # c = 4.685), and for C ≥ 7 the Gaussian precision is not even a
+        # stable fixed point of the IRLS. c(C) keeps the breakdown of
+        # c = 4.685 at C = 1 (49%), for any C.
+        c = self.c
+        if self.scale_c and joint and nb_channels > 1:
+            c = _tukey_c(int(nb_channels), float(c))
+        return dict(c=c)

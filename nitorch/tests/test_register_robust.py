@@ -1,8 +1,10 @@
 """Checks of the robust (IRLS) losses used by `nitorch register`
 (`nitorch.tools.registration.losses.robust`) and of their CLI aliases."""
+import contextlib
 import copy
 import importlib
 import math
+import warnings
 import torch
 import pytest
 from nitorch.tools.registration.losses.robust import MAD, Tukey, RobustLoss
@@ -175,8 +177,12 @@ def test_tukey_value_is_rho(lam):
 # ----------------------------------------------------------------------
 #   Estimated lam with C channels (joint or not)
 # ----------------------------------------------------------------------
-LAM = torch.as_tensor([4., 0.25, 1., 9., 2.], dtype=torch.double)
+LAM = torch.as_tensor([4., 0.25, 1., 9., 2., 0.5, 3., 1.5],
+                      dtype=torch.double)
 NB_CHANNELS = [1, 2, 3, 5]
+# Tukey's c scaled for joint weights across C channels (`_tukey_c`)
+TUKEY_C = [4.685, 5.8349, 6.7518, 7.5416, 8.2478, 8.8934, 9.4923, 10.0537,
+           10.5841, 11.0884]
 
 
 def make_gaussian(C, seed=0, n=256):
@@ -208,16 +214,70 @@ def test_tukey_kappa_closed_form():
         f = x * (1 - x / (c * c)).square() * logpdf.exp() / C
         ref = torch.trapezoid(f, x).item()
         assert Tukey.kappa(c=c, nb_channels=C) == pytest.approx(ref, rel=1e-6)
-    # values quoted in the docstring
+    # values quoted in the comments (unscaled c = 4.685)
     kappas = [Tukey.kappa(nb_channels=C) for C in NB_CHANNELS]
     assert kappas == pytest.approx([0.7578, 0.6853, 0.6170, 0.4929], abs=1e-4)
+    # with the scaled c(C)
+    kappas = [Tukey.kappa(c=robust._tukey_c(C), nb_channels=C)
+              for C in (2, 3, 5, 8, 10)]
+    assert kappas == pytest.approx([0.7857, 0.7975, 0.8078, 0.8139, 0.8159],
+                                   abs=1e-4)
     # one channel (non-joint, or joint with C = 1): unchanged
     assert Tukey.kappa(c=c) == robust._tukey_kappa(c)
     assert Tukey.kappa(c=c, nb_channels=1) == robust._tukey_kappa(c)
     assert MAD.kappa(nb_channels=5) == 1.
 
 
-@pytest.mark.parametrize('C', NB_CHANNELS)
+def _tukey_stable(c, C):
+    """d/da E[w(aX) aX] at a = 1 > 0 (X ~ χ²(C)): the Gaussian precision
+    is a stable fixed point of the IRLS"""
+    P, c2 = robust._gammainc_half, c * c
+    return (P(C + 2, c2 / 2) - 4 * (C + 2) / c2 * P(C + 4, c2 / 2)
+            + 3 * (C + 2) * (C + 4) / c2 ** 2 * P(C + 6, c2 / 2)) > 0
+
+
+def test_tukey_c_scaling():
+    """With joint weights and the default c, c(C) keeps the breakdown of
+    the estimated precision of c = 4.685 at C = 1 (49%), and the Gaussian
+    precision is a stable fixed point for any C (it is not for C >= 7
+    with c = 4.685). C = 1 is exactly 4.685."""
+    assert robust._tukey_c(1) == 4.685
+    cs = [robust._tukey_c(C) for C in range(1, 11)]
+    assert cs == pytest.approx(TUKEY_C, abs=1e-4)
+    target = robust._tukey_breakdown(4.685, 1)
+    assert target == pytest.approx(0.487, abs=1e-3)
+    for C in list(range(1, 11)) + [16, 32, 64]:
+        c = robust._tukey_c(C)
+        assert robust._tukey_breakdown(c, C) == pytest.approx(target, abs=1e-6)
+        assert _tukey_stable(c, C)
+        # (and the IRLS contracts: the maximum of E[w(aX) aX] is at a > 1)
+        g = [robust._tukey_mean_ws2(a, c, C) for a in (1., 1.1)]
+        assert g[1] > g[0]
+    # with a fixed c = 4.685: unstable for C >= 7, and less robust
+    assert all(_tukey_stable(4.685, C) for C in range(1, 7))
+    assert not any(_tukey_stable(4.685, C) for C in range(7, 11))
+    assert robust._tukey_breakdown(4.685, 5) < 0.05
+
+
+def test_tukey_c_used():
+    """The scaled c is used with joint weights and the default c only; a
+    c that is provided is used as is (a threshold on the joint norm)"""
+    assert Tukey().reweight_params(True, 3) == dict(c=robust._tukey_c(3))
+    assert Tukey().reweight_params(True, 1) == dict(c=4.685)
+    assert Tukey().reweight_params(False, 3) == dict(c=4.685)
+    assert Tukey(c=4.685).reweight_params(True, 3) == dict(c=4.685)
+    assert Tukey(c=6.).reweight_params(True, 3) == dict(c=6.)
+    # and in the loss: same value as an explicit c(C)
+    mov, fix = make_noisy()
+    ll = Tukey(lam=None, joint=True).loss(mov, fix)
+    ref = Tukey(lam=None, joint=True, c=robust._tukey_c(2)).loss(mov, fix)
+    assert torch.equal(ll, ref)
+    ll = Tukey(lam=2., joint=True).loss(mov, fix)
+    ref = Tukey(lam=2., joint=True, c=robust._tukey_c(2)).loss(mov, fix)
+    assert torch.equal(ll, ref)
+
+
+@pytest.mark.parametrize('C', NB_CHANNELS + [8])
 @pytest.mark.parametrize('joint', [False, True])
 def test_tukey_estimated_lam_gaussian_channels(joint, C):
     """On Gaussian noise, Tukey's lam matches the noise precision, also
@@ -228,6 +288,27 @@ def test_tukey_estimated_lam_gaussian_channels(joint, C):
     loss = Tukey(lam=None, joint=joint, dim=2)
     loss.loss(mov, fix)
     assert torch.allclose(loss.lam.flatten(), LAM[:C], rtol=0.03)
+
+
+@pytest.mark.parametrize('C', [5, 8])
+def test_tukey_joint_lam_with_outliers(C):
+    """Joint weights with C channels and 5% outliers in each channel
+    (1 - 0.95^C = 23% / 34% of the voxels): lam stays finite and close to
+    the precision with the scaled c (with c = 4.685, it diverges)"""
+    g = torch.Generator().manual_seed(0)
+    mov, fix = make_gaussian(C, n=64)
+    out = torch.rand(fix.shape, generator=g) < 0.05
+    mov[out] += 20 * torch.randn(int(out.sum()), dtype=torch.double,
+                                 generator=g)
+    loss = Tukey(lam=None, joint=True, dim=2)
+    loss.loss(mov, fix)
+    ratio = loss.lam.flatten() / LAM[:C]
+    assert (ratio > 1).all() and (ratio < 1.6).all(), ratio
+    with (pytest.warns(UserWarning, match='too small') if C >= 7 else
+          contextlib.nullcontext()):
+        loss = Tukey(lam=None, joint=True, dim=2, c=4.685)
+        loss.loss(mov, fix)
+    assert not torch.isfinite(loss.lam).all()
 
 
 @pytest.mark.parametrize('C', NB_CHANNELS)
@@ -270,19 +351,16 @@ def test_mad_estimated_lam_own_model(joint, C):
 
 
 @pytest.mark.parametrize('cls', [MAD, Tukey])
-@pytest.mark.parametrize('C', [3, 5])
+@pytest.mark.parametrize('C', [3, 5, 8])
 def test_robust_estimated_lam_grad_fd_joint_channels(cls, C):
-    """Joint weights with C > 2 channels: the finite differences of the
-    value still match the gradient.
-
-    (Outliers are whole voxels, and only 2% of them: with c = 4.685 and
-    5 joint channels, lam diverges with more than about 3% of voxels
-    with zero weight, see `Tukey.kappa`.)"""
+    """Joint weights with C > 2 channels (and 5% outliers in each
+    channel): the finite differences of the value still match the
+    gradient"""
     g = torch.Generator().manual_seed(0)
     fix = torch.randn([C, 32, 32], dtype=torch.double, generator=g)
     noise = torch.randn([C, 32, 32], dtype=torch.double, generator=g)
     mov = fix + LAM[:C, None, None].rsqrt() * noise
-    out = (torch.rand(fix.shape[1:], generator=g) < 0.02).expand(fix.shape)
+    out = torch.rand(fix.shape, generator=g) < 0.05
     mov[out] += 20 * torch.randn(int(out.sum()), dtype=torch.double,
                                  generator=g)
     loss = cls(lam=None, joint=True, cache=False)
@@ -300,10 +378,17 @@ def test_robust_estimated_lam_grad_fd_joint_channels(cls, C):
 
 
 def test_tukey_joint_unstable_warns():
-    """With too many channels for c, the Gaussian precision is not a
-    stable fixed point of the IRLS: warn"""
+    """With too many channels for a given c, the Gaussian precision is
+    not a stable fixed point of the IRLS: warn. The default (scaled) c
+    never warns."""
     with pytest.warns(UserWarning, match='too small'):
         Tukey.kappa(c=4.685, nb_channels=7)
+    mov, fix = make_gaussian(8, n=32)
+    with warnings.catch_warnings():
+        warnings.simplefilter('error')
+        for C in range(1, 11):
+            Tukey.kappa(c=robust._tukey_c(C), nb_channels=C)
+        Tukey(lam=None, joint=True, dim=2).loss(mov, fix)
 
 
 # ----------------------------------------------------------------------
@@ -354,7 +439,9 @@ def test_weighted_lam_fallback(cls):
     for lam in (None, 2.):
         loss = cls(lam=lam, joint=True)
         ref = copy.deepcopy(loss).irls(mov, fix, loss.lam, None, True, 2)[-1]
-        assert torch.equal(loss.weighted_lam(mov, fix, None, 2), ref)
+        # (two separate evaluations: not bitwise, see below)
+        out = loss.weighted_lam(mov, fix, None, 2)
+        assert torch.allclose(out, ref, rtol=1e-12, atol=1e-12 * ref.abs().max())
         assert loss.lam == lam and loss._last_lam is None
 
 
@@ -455,7 +542,7 @@ def test_verbose_nonlin_same_objective(loss_name, monkeypatch, capsys):
     monkeypatch.setattr(pairwise_impl.PairwiseRegisterStep, 'mov2fix',
                         lambda self, *a, lam=None, **k: shown.append(lam))
     out = {}
-    for verbose in (0, 1, 3):
+    for run, verbose in enumerate((0, 0, 1, 3)):
         loss = (Tukey(lam=None, dim=3) if loss_name == 'tukey' else
                 losses.MSE(lam=100, dim=3))
         sim = objects.Similarity(loss, objects.Image(mov, affine=aff),
@@ -469,11 +556,17 @@ def test_verbose_nonlin_same_objective(loss_name, monkeypatch, capsys):
             objects.SumSimilarity([sim]), None, nonlin, optim,
             verbose=verbose, figure=object())
         ll = reg.fit()
-        out[verbose] = (torch.as_tensor(ll), nonlin.parameters().clone())
-    for verbose in (1, 3):
-        assert torch.equal(out[verbose][0], out[0][0])
-        assert torch.equal(out[verbose][1], out[0][1])
-    assert out[0][1].abs().max() > 0             # it did move
+        out[run] = (torch.as_tensor(ll), nonlin.parameters().clone())
+    # On torch 1.13, the first evaluations run the TorchScript kernels
+    # unfused and later ones fused, which changes the last bits even
+    # without any display (as in #152). Over 3 GN iterations with IRLS,
+    # this grows to ~1e-9 in the first registration, so the first run
+    # (verbose=0) is only a warm-up, and the others are compared with
+    # a tight tolerance (in practice, they are bitwise equal).
+    for run in (2, 3):
+        for a, b in zip(out[run], out[1]):
+            assert torch.allclose(a, b, rtol=1e-12, atol=1e-12 * b.abs().max())
+    assert out[1][1].abs().max() > 0             # it did move
     assert shown                                 # the display ran
     assert all((lam is not None) == (loss_name == 'tukey') for lam in shown)
 
