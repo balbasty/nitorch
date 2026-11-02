@@ -6,7 +6,7 @@ from nitorch.tools.registration.pairwise_preproc import (
     map_image, load_image, preproc_image
 )
 from nitorch.tools.registration.pairwise_postproc import (
-    warp_images, MomentumWriter
+    warp_images
 )
 from nitorch.tools.registration.pairwise_pyramid import (
     pyramid_levels, concurrent_pyramid, sequential_pyramid
@@ -168,9 +168,8 @@ def _main(options):
     order = min(loss.order for loss in first_level.losses())
     interleaved = options.optim.name[0] == 'i'
 
-    odir = options.odir or py.fileparts(options.loss[0].fix.files[0])[0] or '.'
-
     affine_optim = None
+    momentum_output = None
     if affine and options.affine.optim.name != 'none':
         if not options.affine.optim.max_iter:
             options.affine.optim.max_iter = 50 if interleaved else 100
@@ -191,11 +190,7 @@ def _main(options):
         if not options.nonlin.optim.max_iter:
             options.nonlin.optim.max_iter = 10 if interleaved else 50
         optim_kwargs = dict(options.nonlin.optim)
-        momentum = optim_kwargs.pop('output', None)
-        if momentum:
-            optim_kwargs['output'] = MomentumWriter(
-                momentum, nonlin, odir=odir, name=options.nonlin.name,
-                verbose=options.verbose > 1)
+        momentum_output = optim_kwargs.pop('output', None)
         nonlin_optim = make_nonlin_optim(options.nonlin.optim.name, order,
                                          **optim_kwargs, nonlin=nonlin)
     elif nonlin and options.nonlin.optim.name == 'none':
@@ -238,6 +233,8 @@ def _main(options):
     # ------------------------------------------------------------------
     #                           WRITE RESULTS
     # ------------------------------------------------------------------
+    odir = options.odir or py.fileparts(options.loss[0].fix.files[0])[0] or '.'
+
     if affine:
         if options.affine.output:
             fname = options.affine.output.format(
@@ -263,6 +260,16 @@ def _main(options):
                     json.dump(prm, f)
             if options.verbose:
                 print('Nonlin ->', fname)
+
+        # final momentum of nes/ogm (`delta`: last step of the auxiliary
+        # sequence, on the lattice of the velocity)
+        delta = getattr(nonlin_optim, 'delta', None)
+        if momentum_output and torch.is_tensor(delta):
+            fname = momentum_output.format(
+                dir=odir, sep=os.path.sep, name=options.nonlin.name)
+            io.savef(delta, fname, affine=nonlin.affine)
+            if options.verbose:
+                print('Momentum ->', fname)
 
         hessian = options.nonlin.hessian
         if hessian and getattr(nonlin, 'hess', None) is not None:

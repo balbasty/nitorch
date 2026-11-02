@@ -1,4 +1,4 @@
-__all__ = ['warp_images', 'MomentumWriter']
+__all__ = ['warp_images']
 
 from nitorch import io
 from nitorch.core.py import fileparts, make_list
@@ -292,56 +292,3 @@ def warp_one_image(image, target, shape=None, affine=None, nonlin=None,
     else:
         warped = utils.movedim(warped, 0, -1)
     return warped
-
-
-class MomentumWriter:
-    """Write the momentum state of an accelerated optimizer after each step
-
-    An instance is passed as the `output` of an accelerated first-order
-    optimizer (`Nesterov`, `OGM`, `Momentum`) of a nonlinear model. After
-    each completed step, the optimizer calls it with its momentum state
-    (`delta`: the last step of the auxiliary sequence, with the same
-    shape and lattice as the velocity), which is written like the
-    velocity output: `io.savef(delta, fname, affine=nonlin.affine)`.
-
-    `fname` can contain the fields
-    `{dir}` (output directory), `{sep}` (path separator), `{name}`
-    (name of the nonlinear model) and `{iter}` (number of steps of
-    this optimizer written so far, starting at 1). `{iter}` keeps
-    counting across pyramid levels and interleaved passes, so that
-    files are not overwritten. At each pyramid level, the field is
-    written on the lattice of that level.
-    """
-
-    def __init__(self, fname, nonlin, odir='.', name=None, verbose=False):
-        """
-
-        Parameters
-        ----------
-        fname : str
-            Output path template, e.g. '{dir}{sep}momentum.{iter}.nii.gz'
-        nonlin : NonLinModel
-            Nonlinear model whose parameters are optimized. Its
-            (current) affine is used as the orientation matrix.
-        odir : str, default='.'
-            Output directory (`{dir}`)
-        name : str, optional
-            Name of the nonlinear model (`{name}`)
-        verbose : bool, default=False
-            Print the name of each file written
-        """
-        self.fname = fname
-        self.nonlin = nonlin
-        self.odir = odir
-        self.name = name
-        self.verbose = verbose
-        self.n_iter = 0
-
-    def __call__(self, delta):
-        self.n_iter += 1
-        fname = self.fname.format(dir=self.odir, sep=os.path.sep,
-                                  name=self.name, iter=self.n_iter)
-        io.savef(delta, fname, affine=self.nonlin.affine)
-        if self.verbose:
-            print('Momentum ->', fname)
-        return fname
