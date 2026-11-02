@@ -127,7 +127,15 @@ def _main(options):
         affine_penalty = options.affine.factor
         if isinstance(affine_penalty, (list, tuple)):
             affine_penalty = affine_penalty[0] if affine_penalty else 0.
-        affine_penalty = float(affine_penalty) or None
+        affine_penalty = float(affine_penalty)
+        groups = ('translation', 'rotation', 'zoom', 'shear')
+        per_group = {g: getattr(options.affine, g, None) for g in groups}
+        if any(v is not None for v in per_group.values()):
+            # per-group precisions; FACTOR fills the groups not given
+            affine_penalty = {g: affine_penalty if v is None else float(v)
+                              for g, v in per_group.items()}
+        else:
+            affine_penalty = affine_penalty or None
 
         # build affine object
         if options.affine.is2d is not False:

@@ -57,6 +57,75 @@ def test_factor_reaches_model(tmp_path, monkeypatch, factor, expected):
     assert seen['affine'].penalty == expected
 
 
+def test_group_options_parsed():
+    options = parser.parse(IMAGES + ['@affine', 'affine', '2',
+                                     '-t', '5', '-s', '7'])
+    assert options.affine.factor == [2.]
+    assert options.affine.translation == 5.
+    assert options.affine.shear == 7.
+    assert options.affine.rotation is None
+    assert options.affine.zoom is None
+    options = parser.parse(IMAGES + ['@affine', 'affine', '2'])
+    for g in ('translation', 'rotation', 'zoom', 'shear'):
+        assert getattr(options.affine, g) is None
+    options = parser.parse(IMAGES + ['@affine', '--rotation', '3',
+                                     '--zoom', '4', '--translation', '1',
+                                     '--shear', '6'])
+    assert (options.affine.translation, options.affine.rotation,
+            options.affine.zoom, options.affine.shear) == (1., 3., 4., 6.)
+
+
+def _cli_affine(tmp_path, monkeypatch, affine_args):
+    shape = [8, 8, 8]
+    aff = spatial.affine_default(shape)
+    fix, mov = str(tmp_path / 'f.nii.gz'), str(tmp_path / 'm.nii.gz')
+    io.savef(torch.rand(shape), fix, affine=aff)
+    io.savef(torch.rand(shape), mov, affine=aff)
+    seen = {}
+
+    class Stop(Exception):
+        pass
+
+    def fake_run(losses, affine, *a, **k):
+        seen['affine'] = affine
+        raise Stop
+    monkeypatch.setattr(register_cli, 'run', fake_run)
+    args = ['-v', '0', '--cpu', '@loss', 'mse', '@@fix', fix, '@@mov', mov,
+            '@affine'] + affine_args
+    with pytest.raises(Stop):
+        register_cli._cli(args)
+    return seen['affine']
+
+
+@pytest.mark.parametrize('basis, args, values', [
+    # group option on its own: FACTOR (default 0) fills the rest
+    ('affine', ['-t', '5'], dict(t=5., r=0., z=0., s=0.)),
+    # FACTOR fills the groups not given
+    ('affine', ['2', '-r', '3', '-s', '7'], dict(t=2., r=3., z=2., s=7.)),
+    ('affine', ['1', '--translation', '4', '--zoom', '6'],
+     dict(t=4., r=1., z=6., s=1.)),
+    ('similitude', ['2', '-z', '9'], dict(t=2., r=2., z=9.)),
+    ('rigid', ['-r', '8'], dict(t=0., r=8.)),
+])
+def test_group_options_reach_model(tmp_path, monkeypatch, basis, args,
+                                   values):
+    model = _cli_affine(tmp_path, monkeypatch, [basis] + args)
+    assert isinstance(model, objects.AffineModel)
+    # model.dat is only allocated by the fit: map the stored penalty to
+    # per-parameter indices on an allocated model of the same basis
+    expected = torch.as_tensor([values[c] for c in GROUPS[3, basis]],
+                               dtype=dt)
+    assert torch.equal(_model(basis, 3, model._penalty).penalty, expected)
+
+
+@pytest.mark.parametrize('args, expected', [([], None), (['2.5'], 2.5)])
+def test_no_group_options_unchanged(tmp_path, monkeypatch, args, expected):
+    # without group options the penalty is the scalar FACTOR, as before
+    model = _cli_affine(tmp_path, monkeypatch, ['affine'] + args)
+    assert model.penalty == expected
+    assert isinstance(model.penalty, (float, type(None)))
+
+
 def test_model_penalty_scalar():
     assert objects.AffineModel('rigid').penalty is None
     assert objects.AffineModel('rigid', penalty=0).penalty is None
