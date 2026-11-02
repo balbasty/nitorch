@@ -67,13 +67,20 @@ vel = ('-v', '--velocity')
 trf = [*lin, *disp, *vel]
 itrf = [t + '-inverse' if t.startswith('--') else '-i' + t[1:]
         for t in trf]
+# squared transforms are only defined for linear and velocity fields
+sqtrf = [*lin, *vel]
+isqtrf = [t + '-inverse' if t.startswith('--') else '-i' + t[1:]
+          for t in sqtrf]
 trf2 = [t + '-square' if t.startswith('--') else t + '2'
-        for t in trf]
+        for t in sqtrf]
 itrf2 = [t + '-square' if t.startswith('--') else t + '2'
-         for t in itrf]
+         for t in isqtrf]
 itrf2 += [t + '-inverse' if t.startswith('--') else '-i' + t[1:]
           for t in trf2]
 alltrf = trf + itrf + trf2 + itrf2
+# squared displacement fields are explicitly rejected
+disp2 = ['-d2', '--displacement-square', '-id2',
+         '--displacement-inverse-square', '--displacement-square-inverse']
 
 
 # --- TRF PARSER -------------------------------------------------------
@@ -153,7 +160,10 @@ def parse(args):
         tag, *args = args
 
         # Parse transforms
-        if tag in alltrf:
+        if tag in disp2:
+            raise cli.ParseError(f'Squared displacement fields are not '
+                                 f'supported ({tag})')
+        elif tag in alltrf:
             args = parse_transform([tag, *args], options)
 
         # Help -> return empty option

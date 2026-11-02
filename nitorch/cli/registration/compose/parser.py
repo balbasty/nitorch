@@ -158,7 +158,12 @@ def parse(args):
         tag, *args = args
 
         # Parse transforms
-        if tag in (*trf, *itrf, *trf2, *itrf2):
+        if tag in ('-d2', '-id2', '--displacement-square',
+                   '--displacement-inverse-square',
+                   '--displacement-square-inverse'):
+            raise ParseError(f'Squared displacement fields are not '
+                             f'supported ({tag})')
+        elif tag in (*trf, *itrf, *trf2, *itrf2):
             args = parse_transform([tag, *args], options)
 
         # Help -> return empty option
