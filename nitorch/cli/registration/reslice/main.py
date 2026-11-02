@@ -135,20 +135,13 @@ def read_info(options):
         f = f or io.volumes.map(fname)
         o.float = nitype(f.dtype).is_floating_point
         o.shape = squeeze_to_nd(f.shape, dim=3, channels=1)
-        o.channels = o.shape[-1]
+        o.channels = o.channels_in = o.shape[-1]
         o.shape = o.shape[:3]
         o.affine = f.affine.float()
 
         if options.channels is not None:
-            channels = py.make_list(options.channels)
-            channels = [
-                list(c) if isinstance(c, range) else
-                list(range(o.channels))[c] if isinstance(c, slice) else
-                c for c in channels
-            ]
-            if not all([isinstance(c, int) for c in channels]):
-                raise ValueError('Channel list should be a list of integers')
-            o.channels = len(channels)
+            o.channel_index = channel_index(options.channels, o.channels_in)
+            o.channels = len(o.channel_index)
 
         return o
 
@@ -183,6 +176,40 @@ def read_info(options):
                                       factor=factor, anchor='f')
 
 
+def channel_index(channels, nb_channels):
+    """Convert a list of channel specifications into a list of indices
+
+    Parameters
+    ----------
+    channels : [list of] int or range or slice
+        Channel indices and/or Python-style ranges.
+    nb_channels : int
+        Number of channels in the volume.
+
+    Returns
+    -------
+    index : list[int]
+        Non-negative channel indices.
+    """
+    all_channels = list(range(nb_channels))
+    index = []
+    for c in py.make_list(channels):
+        if isinstance(c, range):
+            # Python slicing semantics (negative/omitted bounds)
+            c = slice(c.start, c.stop, c.step)
+        try:
+            if isinstance(c, slice):
+                index.extend(all_channels[c])
+            else:
+                index.append(all_channels[int(c)])
+        except (IndexError, TypeError, ValueError):
+            raise ValueError(f'Invalid channel {c} for a volume with '
+                             f'{nb_channels} channels')
+    if not index:
+        raise ValueError(f'No channel selected by {channels}')
+    return index
+
+
 def collapse(options):
     options.transformations = collapse_transforms(options.transformations)
 
@@ -212,6 +239,19 @@ def collapse_transforms(transformations):
     return trfs
 
 
+# keys of the JSON sidecar (written by `nitorch register`) that are
+# forwarded to `spatial.shoot`
+_shoot_keys = ('absolute', 'membrane', 'bending', 'lame', 'factor',
+               'steps', 'fast')
+
+
+def load_shoot_parameters(fname):
+    """Read shooting parameters from a JSON sidecar"""
+    with open(fname) as f:
+        prm = json.load(f)
+    return {key: val for key, val in prm.items() if key in _shoot_keys}
+
+
 def exponentiate_transforms(transformations, **backend):
     for trf in transformations:
         if isinstance(trf, struct.Velocity):
@@ -223,8 +263,7 @@ def exponentiate_transforms(transformations, **backend):
             if trf.json:
                 if trf.square:
                     trf.dat.mul_(0.5)
-                with open(trf.json) as f:
-                    prm = json.load(f)
+                prm = load_shoot_parameters(trf.json)
                 prm['voxel_size'] = spatial.voxel_size(trf.affine)
                 trf.dat = spatial.shoot(trf.dat[None], displacement=True,
                                         return_inverse=trf.inv, **prm)
@@ -260,6 +299,37 @@ def invert_transforms(transformations):
     return transformations
 
 
+def _logit_implicit(options):
+    return (isinstance(options.logit, str) and
+            options.logit[:1].lower() == 'i')
+
+
+def pre_transform_intensities(dat, options):
+    """Map intensities to log/logit space. `dat` is channel-first."""
+    if not (options.log or options.logit):
+        return dat
+    pos = dat[dat.isfinite() & (dat > 0)]
+    mn = pos.min() if pos.numel() else 1e-5
+    dat = dat.clamp_min_(mn*1e-3)
+    if options.logit and _logit_implicit(options):
+        dat = logit(dat, dim=0, implicit=True, inplace=True)
+    else:
+        # --log, or explicit --logit: log-probabilities are mapped
+        # back with a softmax across channels
+        dat = dat.log_()
+    return dat
+
+
+def post_transform_intensities(dat, options):
+    """Map intensities back from log/logit space. `dat` is channel-first."""
+    if options.logit:
+        dat = softmax(dat, dim=0, implicit=_logit_implicit(options),
+                      inplace=True)
+    elif options.log:
+        dat = dat.exp_()
+    return dat
+
+
 def write_volumes(options):
 
     backend = dict(dtype=torch.float32, device=options.device)
@@ -268,43 +338,7 @@ def write_volumes(options):
         options.chunk = py.make_list(options.chunk, 3)
 
     # 1) Pre-exponentiate velocities
-    for trf in options.transformations:
-        if isinstance(trf, struct.Velocity):
-            f = io.volumes.map(trf.file)
-            trf.affine = f.affine
-            trf.shape = squeeze_to_nd(f.shape, 3, 1)
-            trf.dat = f.fdata(**backend).reshape(trf.shape)
-            trf.shape = trf.shape[:3]
-            if trf.json:
-                if trf.square:
-                    trf.dat.mul_(0.5)
-                with open(trf.json) as f:
-                    prm = json.load(f)
-                prm['voxel_size'] = spatial.voxel_size(trf.affine)
-                trf.dat = spatial.shoot(trf.dat[None], displacement=True,
-                                        return_inverse=trf.inv)
-                if trf.inv:
-                    trf.dat = trf.dat[-1]
-            else:
-                if trf.square:
-                    trf.dat.mul_(0.5)
-                trf.dat = spatial.exp(trf.dat[None], displacement=True,
-                                      inverse=trf.inv)
-            trf.dat = trf.dat[0]  # drop batch dimension
-            trf.inv = False
-            trf.square = False
-            trf.order = 1
-        elif isinstance(trf, struct.Displacement):
-            f = io.volumes.map(trf.file)
-            trf.affine = f.affine
-            trf.shape = squeeze_to_nd(f.shape, 3, 1)
-            trf.dat = f.fdata(**backend).reshape(trf.shape)
-            trf.shape = trf.shape[:3]
-            if trf.unit == 'mm':
-                # convert mm displacement to vox displacement
-                lin = trf.affine[:3, :3].to(trf.dat)
-                trf.dat = trf.dat.matmul(lin.inverse().transpose(-1, -2))
-                trf.unit = 'vox'
+    exponentiate_transforms(options.transformations, **backend)
 
     # 2) If the first transform is linear, compose it with the input
     #    orientation matrix
@@ -347,10 +381,8 @@ def write_volumes(options):
 
     # 3) If target is provided, we can build most of the transform once
     #    and just multiply it with a input-wise affine matrix.
-    if options.target:
-        if not options.chunk:
-            grid = build_from_target(options.target.affine, options.target.shape)
-        oaffine = options.target.affine
+    #    (built lazily, as it is not needed if processing chunkwise)
+    target_grid = None
 
     # 4) Loop across input files
     opt_pull0 = dict(interpolation=options.interpolation,
@@ -376,15 +408,8 @@ def write_volumes(options):
         else:
             # dat = io.volumes.loadf(file.fname, rand=False, **backend)
             opt_pull = opt_pull0
-        if options.channels is not None:
-            channels = py.make_list(options.channels)
-            channels = [
-                list(c) if isinstance(c, range) else
-                list(range(vol.shape[-1]))[c] if isinstance(c, slice) else
-                c for c in channels
-            ]
-            if not all([isinstance(c, int) for c in channels]):
-                raise ValueError('Channel list should be a list of integers')
+        if file.channel_index is not None:
+            channels = file.channel_index
         else:
             channels = slice(None)
 
@@ -412,7 +437,7 @@ def write_volumes(options):
         need_chunk = bool(options.chunk)
         if need_chunk:
             chunk = py.make_list(options.chunk, 3)
-            need_chunk = need_chunk and any(c < x for x, c in zip(file.shape, chunk))
+            need_chunk = need_chunk and any(c < x for x, c in zip(oshape, chunk))
 
         if resample and need_chunk:
 
@@ -423,7 +448,7 @@ def write_volumes(options):
 
             ncells = [
                 int(pymath.ceil(x/c))
-                for x, c in zip(file.shape, chunk)
+                for x, c in zip(oshape, chunk)
             ]
             pcells = [list(range(x)) for x in ncells]
             for cell in itertools.product(*pcells):
@@ -458,9 +483,9 @@ def write_volumes(options):
                     idatc = idatc.data(**backend_int)
                 else:
                     idatc = idatc.fdata(rand=False, **backend)
-                idatc = idatc[..., channels]
                 ishapec = idatc.shape[:3]
-                idatc = idatc.reshape([*ishapec, file.channels])
+                idatc = idatc.reshape([*ishapec, file.channels_in])
+                idatc = idatc[..., channels]
                 idatc = utils.movedim(idatc, -1, 0)
 
                 if options.clip:
@@ -468,19 +493,7 @@ def write_volumes(options):
                     imax = idatc[idatc.isfinite()].max()
 
                 # pre-transform intensities
-                if options.log or options.logit:
-                    mx = idatc.abs().max()
-                    idatc = idatc.clamp_min_(mx*1e-8)
-                    idatc = idatc.log_()
-
-                    if (
-                        options.logit and
-                        isinstance(options.logit, str) and
-                        options.logit[:1].lower() == "i"
-                    ):
-                        idatc = logit(idatc, implicit=True, inplace=True)
-                    else:
-                        idatc = idatc.log_()
+                idatc = pre_transform_intensities(idatc, options)
 
                 # reslice
                 if options.prefilter and not is_label:
@@ -488,15 +501,7 @@ def write_volumes(options):
                 idatc = helpers.pull(idatc, grid, **opt_pull)
 
                 # post-transform intensities
-                if options.log or options.logit:
-                    if options.logit:
-                        implicit = (
-                            isinstance(options.logit, str) and
-                            options.logit[:1].lower() == "i"
-                        )
-                        idatc = softmax(idatc, implicit=implicit, inplace=True)
-                    else:
-                        idatc = idatc.exp_()
+                idatc = post_transform_intensities(idatc, options)
 
                 if options.clip:
                     idatc.clamp_(imin, imax)
@@ -514,11 +519,15 @@ def write_volumes(options):
                 dat = vol.data(**backend_int)
             else:
                 dat = vol.fdata(rand=False, **backend)
+            dat = dat.reshape([*file.shape, file.channels_in])
             dat = dat[..., channels]
-            dat = dat.reshape([*file.shape, file.channels])
             dat = utils.movedim(dat, -1, 0)
 
-            if not options.target:
+            if options.target:
+                if target_grid is None:
+                    target_grid = build_from_target(oaffine, oshape)
+                grid = target_grid
+            else:
                 grid = build_from_target(oaffine, oshape, smart=not options.voxel_size)
             if grid is not None:
                 mat = file.affine.to(**backend)
@@ -529,18 +538,7 @@ def write_volumes(options):
                     imax = dat[dat.isfinite()].max()
 
                 # pre-transform intensities
-                if options.log or options.logit:
-                    mn = dat[dat.isfinite() & (dat > 0)].min()
-                    dat = dat.clamp_min_(mn*1e-3)
-
-                    if (
-                        options.logit and
-                        isinstance(options.logit, str) and
-                        options.logit[:1].lower() == "i"
-                    ):
-                        dat = logit(dat, implicit=True, inplace=True)
-                    else:
-                        dat = dat.log_()
+                dat = pre_transform_intensities(dat, options)
 
                 # reslice
                 if options.prefilter and not is_label:
@@ -548,15 +546,7 @@ def write_volumes(options):
                 dat = helpers.pull(dat, spatial.affine_matvec(imat, grid), **opt_pull)
 
                 # post-transform intensities
-                if options.log or options.logit:
-                    if options.logit:
-                        implicit = (
-                            isinstance(options.logit, str) and
-                            options.logit[:1].lower() == "i"
-                        )
-                        dat = softmax(dat, implicit=implicit, inplace=True)
-                    else:
-                        dat = dat.exp_()
+                dat = post_transform_intensities(dat, options)
 
                 if options.clip:
                     dat.clamp_(imin, imax)
@@ -574,43 +564,7 @@ def write_streamlines(options):
     backend = dict(dtype=torch.float32, device=options.device)
 
     # 1) Pre-exponentiate velocities
-    for trf in options.transformations:
-        if isinstance(trf, struct.Velocity):
-            f = io.volumes.map(trf.file)
-            trf.affine = f.affine
-            trf.shape = squeeze_to_nd(f.shape, 3, 1)
-            trf.dat = f.fdata(**backend).reshape(trf.shape)
-            trf.shape = trf.shape[:3]
-            if trf.json:
-                if trf.square:
-                    trf.dat.mul_(0.5)
-                with open(trf.json) as f:
-                    prm = json.load(f)
-                prm['voxel_size'] = spatial.voxel_size(trf.affine)
-                trf.dat = spatial.shoot(trf.dat[None], displacement=True,
-                                        return_inverse=trf.inv)
-                if trf.inv:
-                    trf.dat = trf.dat[-1]
-            else:
-                if trf.square:
-                    trf.dat.mul_(0.5)
-                trf.dat = spatial.exp(trf.dat[None], displacement=True,
-                                      inverse=trf.inv)
-            trf.dat = trf.dat[0]  # drop batch dimension
-            trf.inv = False
-            trf.square = False
-            trf.order = 1
-        elif isinstance(trf, struct.Displacement):
-            f = io.volumes.map(trf.file)
-            trf.affine = f.affine
-            trf.shape = squeeze_to_nd(f.shape, 3, 1)
-            trf.dat = f.fdata(**backend).reshape(trf.shape)
-            trf.shape = trf.shape[:3]
-            if trf.unit == 'mm':
-                # convert mm displacement to vox displacement
-                lin = trf.affine[:3, :3].to(trf.dat)
-                trf.dat = trf.dat.matmul(lin.inverse().transpose(-1, -2))
-                trf.unit = 'vox'
+    exponentiate_transforms(options.transformations, **backend)
 
     def deform_streamlines(streamlines):
         """Compose all transformations, starting from the final orientation"""

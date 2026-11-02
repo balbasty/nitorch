@@ -8,7 +8,7 @@ help = r"""[nitorch] Reslice volumes
 
 usage:
     nitorch reslice *FILES <*TRF> FILE [-t FILE] [-o *FILE]
-                    [-i ORDER] [-b BND] [-p] [-x] [-cpu|gpu]
+                    [-i ORDER] [-b BND] [-p [YES|NO]] [-x] [-cpu|gpu]
 
     <FILES> can be paths to volumes or to streamlines.
 
@@ -37,11 +37,12 @@ usage:
                             If not provided, minimal reslicing is performed.
     -o,  --output           Name of the output file (default: '*.resliced*')
     -i,  --interpolation    Interpolation order. Use `l` for labels. (1)
-    -p,  --prefilter        Apply spline prefilter (yes)
+    -p,  --prefilter        Apply spline prefilter [yes|no]; bare -p = yes (yes)
     -b,  --bound            Boundary conditions (dct2)
     -x,  --extrapolate      Extrapolate out-of-bounds data (no)
     -vx, --voxel-size       Voxel size of the resliced space (from target)
-    -c,  --channels         Channels to load. Can be a range start:stop:step (all)
+    -c,  --channels         Channels to load. Can be a list of indices and/or
+                            Python-style ranges start:stop:step (all)
     -k,  --chunk            Process data one chunk--of this size--at a time (no)
     -dt, --dtype            Output data type (from input)
          --log              Interpolate in log space (no)
@@ -193,12 +194,14 @@ def parse(args):
             cli.check_next_isvalue(args, tag)
             options.bound, *args = args
         elif tag in ('-p', '--prefilter'):
-            cli.check_next_isvalue(args, tag)
-            options.prefilter, *args = args
-            options.prefilter = (
-                True if options.prefilter.lower()[0] in 'ty' else
-                False if options.prefilter.lower()[0] in 'fn' else
-                bool(int(options.prefilter)))
+            # the value is optional: a bare `-p` means "yes"
+            options.prefilter = True
+            if cli.next_isvalue(args):
+                val, *args = args
+                options.prefilter = (
+                    True if val.lower()[0] in 'ty' else
+                    False if val.lower()[0] in 'fn' else
+                    bool(int(val)))
         elif tag in ('-x', '-ex', '--extrapolate'):
             options.extrapolate = True
         elif tag in ('-vx', '--voxel-size'):

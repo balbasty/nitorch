@@ -9,7 +9,9 @@ class FileWithInfo(Structure):
     dir: str = None                 # Directory
     base: str = None                # Base name (without extension)
     ext: str = None                 # Extension
-    channels: int = None            # Number of channels
+    channels: int = None            # Number of (selected) channels
+    channels_in: int = None         # Number of channels on disk
+    channel_index: list = None      # Indices of selected channels
     float: bool = True              # Is raw dtype floating point
     type: str = None
 
