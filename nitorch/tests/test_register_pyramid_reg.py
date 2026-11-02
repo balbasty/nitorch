@@ -26,7 +26,7 @@ class _RecordFit:
         ))
 
 
-def _run(model, eps, nb_levels=3, monkeypatch=None):
+def _run(model, power, nb_levels=3, monkeypatch=None):
     _RecordFit.records = []
     monkeypatch.setattr(pairwise_run, 'PairwiseRegister', _RecordFit)
     shape = [16, 16, 16]
@@ -36,16 +36,16 @@ def _run(model, eps, nb_levels=3, monkeypatch=None):
     optim = make_nonlin_optim('gn', 2, nonlin=nonlin)
     losses = [None] * nb_levels  # never evaluated
     pairwise_run.run_pyramid(losses, None, nonlin, optim,
-                             verbose=False, reg_eps=eps)
+                             verbose=False, reg_power=power)
     return nonlin, _RecordFit.records
 
 
 @pytest.mark.parametrize('model', [SVFModel, ShootModel])
-@pytest.mark.parametrize('eps', [0, 1, 1.5])
-def test_reg_scaling(model, eps, monkeypatch):
-    nonlin, records = _run(model, eps, monkeypatch=monkeypatch)
+@pytest.mark.parametrize('power', [0, 1, 1.5])
+def test_reg_scaling(model, power, monkeypatch):
+    nonlin, records = _run(model, power, monkeypatch=monkeypatch)
     # coarse to fine: voxel size ratio 4, 2, 1
-    expected = [2. * 4 ** eps, 2. * 2 ** eps, 2.]
+    expected = [2. * 4 ** power, 2. * 2 ** power, 2.]
     assert [r['shape'] for r in records] == [[4] * 3, [8] * 3, [16] * 3]
     for r, f in zip(records, expected):
         assert r['factor'] == pytest.approx(f)
