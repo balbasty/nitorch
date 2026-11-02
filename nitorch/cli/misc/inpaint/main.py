@@ -157,7 +157,12 @@ def do_inpaint(dat, voxel_size=1, max_iter_rls=50, max_iter_cg=32,
     dat : (channels, *spatial) tensor
 
     """
-    dat = torch.as_tensor(dat)
+    # `masked_scatter_` and `masked_select` must agree on element order.
+    # On torch < 2.0, `masked_scatter_` into a non-contiguous tensor
+    # (e.g., Fortran-ordered data loaded from NIfTI) fills elements in
+    # memory order rather than logical order, which scrambles the CG
+    # operator and makes it diverge. Work on a contiguous tensor.
+    dat = torch.as_tensor(dat).contiguous()
     backend = utils.backend(dat)
     voxel_size = utils.make_vector(voxel_size, dat.dim()-1, **backend)
     voxel_size = voxel_size / voxel_size.mean()
