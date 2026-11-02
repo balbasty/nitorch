@@ -24,7 +24,7 @@ Unlike [`reslice`](reslice.md), `resize` has no target space and applies no tran
 
 The three options are used in this order of precedence:
 
-- `-v` gives the voxel size of the output, in millimetres (the units of the orientation matrix). The zoom factor is the input voxel size divided by this value, axis by axis. It cannot be combined with `-f`.
+- `-v` gives the voxel size of the output, in millimetres (the units of the orientation matrix). The zoom factor is the input voxel size divided by this value, axis by axis. It cannot be combined with `-f`: using both is an error.
 - `-f` gives the zoom factor directly. A factor above 1 yields more, smaller voxels; a factor below 1 yields fewer, larger voxels. Fractions such as `1/2` are accepted.
 - `-s` gives the shape of the output, in voxels. Used alone, the zoom factor is the ratio of output to input shape.
 
@@ -83,7 +83,7 @@ Exactly one of the following is needed. `-f` and `-v` are mutually exclusive.
 | `-i`, `--interpolation`  | `ORDER...`   | Interpolation order, 0 to 6 as a number, or a name from `nearest` to `seventh`; one per axis if needed.               | `1`       |
 | `-b`, `--bound`          | `BND...`     | Boundary condition; one per axis if needed. [See below](#boundary-conditions).                                         | `dct2`    |
 | `-p`, `--prefilter`      | `BOOL`       | Apply the spline pre-filter: `yes`, `no` (also `true`, `false`, `1`, `0`).                                             | `yes`     |
-| `-g`, `--grid`           | `{d,t}`      | Treat the input as a displacement (`d`) or transformation (`t`) field. **Currently fails**: see the note below.        | off       |
+| `-g`, `--grid`           | `{d,t}`      | Treat the input as a displacement (`d`) or transformation (`t`) field. [See below](#resizing-displacement-and-transformation-fields). | off       |
 
 ### Output and hardware
 
@@ -107,8 +107,9 @@ The device flags of this command must be written with two dashes (`--cpu`, `--gp
 | `dst2`       | `antireflect`, `dirichlet`               | Mirror about the outer edge and change sign: `-b -a │ a b c d │ -d -c`. |
 | `dst1`       | `antimirror`                             | Mirror about the border voxel and change sign: `-a 0 │ a b c d │ 0 -d`. |
 
-!!! warning "Resizing displacement fields (`-g`) is not working at present"
-    With `-g`, the input would be treated as a displacement field whose values are rescaled to the new voxel units. In the current version, the command stops with an error when this option is used. Moreover, the `t` setting is handled like `d`. Use `-g` only after checking a small case.
+### Resizing displacement and transformation fields
+
+With `-g`, the input is a field with three components (stored as the last dimension), expressed in voxels of the input grid. After resampling, its values are rescaled so that they are expressed in voxels of the output grid. With `-g d` (displacement), each component is divided by the ratio of output to input voxel size: for example, with `-f 2` and `-a first` a displacement of 1 voxel becomes 2 voxels. With `-g t` (transformation, i.e. absolute voxel coordinates), the coordinates are also shifted so that they index the output grid.
 
 ## Examples
 

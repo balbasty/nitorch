@@ -24,6 +24,9 @@ def resize(argv=None):
         if options.help:
             print(help)
             return
+        if options.voxel_size and options.factor:
+            raise ParseError('Options -f/--factor and -v/--voxel-size '
+                             'are mutually exclusive.')
 
         files = read_info(options.files)
         write_data(files, options)
@@ -129,8 +132,6 @@ def write_data(files, options):
         # compute resizing factor
         input_vx = spatial.voxel_size(file.affine)
         if options.voxel_size:
-            if options.factor:
-                raise ValueError('Cannot use both factor and voxel size')
             factor = input_vx / utils.make_vector(options.voxel_size, 3)
         elif options.factor:
             factor = utils.make_vector(options.factor, 3)
@@ -156,9 +157,12 @@ def write_data(files, options):
             prefilter=options.prefilter,
         )
         if options.grid:
+            # resize_grid returns (grid, affine), both with a batch dim
+            grid_type = 'grid' if options.grid == 't' else 'displacement'
             dat, affine = spatial.resize_grid(dat[None], factor, output_shape,
-                                              type=options.grid,
-                                              affine=file.affine, **opt)[0]
+                                              type=grid_type,
+                                              affine=file.affine, **opt)
+            dat, affine = dat[0], affine[0]
         else:
             dat = utils.movedim(dat, -1, 0)
             dat, affine = spatial.resize(dat[None], factor, output_shape,
