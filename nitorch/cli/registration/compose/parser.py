@@ -90,7 +90,7 @@ def parse_transform(args, options):
     if tag in itrf:
         inv = True
         if tag.startswith('--'):
-            tag = tag.split('--inverse')[0]
+            tag = tag[:-len('-inverse')]
         else:
             tag = '-' + tag[2:]
 
@@ -109,7 +109,7 @@ def parse_transform(args, options):
             cli.check_next_isvalue(args, tag)
             opt.order, *args = args
             opt.order = int(opt.order)
-        if isinstance(opt, Displacement) and tag in ('-u', '--unit'):
+        elif isinstance(opt, Displacement) and tag in ('-u', '--unit'):
             cli.check_next_isvalue(args, tag)
             opt.unit, *args = args
         else:

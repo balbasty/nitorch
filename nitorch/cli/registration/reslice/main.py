@@ -247,8 +247,8 @@ def exponentiate_transforms(transformations, **backend):
             trf.shape = trf.shape[:3]
             if trf.unit == 'mm':
                 # convert mm displacement to vox displacement
-                trf.dat = spatial.affine_lmdiv(trf.affine, trf.dat[..., None])
-                trf.dat = trf.dat[..., 0]
+                lin = trf.affine[:3, :3].to(trf.dat)
+                trf.dat = trf.dat.matmul(lin.inverse().transpose(-1, -2))
                 trf.unit = 'vox'
     return transformations
 
@@ -302,8 +302,8 @@ def write_volumes(options):
             trf.shape = trf.shape[:3]
             if trf.unit == 'mm':
                 # convert mm displacement to vox displacement
-                trf.dat = spatial.affine_lmdiv(trf.affine, trf.dat[..., None])
-                trf.dat = trf.dat[..., 0]
+                lin = trf.affine[:3, :3].to(trf.dat)
+                trf.dat = trf.dat.matmul(lin.inverse().transpose(-1, -2))
                 trf.unit = 'vox'
 
     # 2) If the first transform is linear, compose it with the input
@@ -608,8 +608,8 @@ def write_streamlines(options):
             trf.shape = trf.shape[:3]
             if trf.unit == 'mm':
                 # convert mm displacement to vox displacement
-                trf.dat = spatial.affine_lmdiv(trf.affine, trf.dat[..., None])
-                trf.dat = trf.dat[..., 0]
+                lin = trf.affine[:3, :3].to(trf.dat)
+                trf.dat = trf.dat.matmul(lin.inverse().transpose(-1, -2))
                 trf.unit = 'vox'
 
     def deform_streamlines(streamlines):
