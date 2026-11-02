@@ -1,0 +1,58 @@
+name: Documentation
+
+on:
+  push:
+    branches:
+      - master
+    paths:
+      - docs/**
+      - scripts/check_cli_pages.py
+      - nitorch/cli/**
+      - zensical.toml
+      - .github/workflows/docs.yml
+  pull_request:
+    paths:
+      - docs/**
+      - scripts/check_cli_pages.py
+      - nitorch/cli/**
+      - zensical.toml
+      - .github/workflows/docs.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: docs-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: 3.x
+      - run: pip install -r docs/requirements.txt
+      - name: Check that every command is documented
+        run: python scripts/check_cli_pages.py
+      - run: zensical build --clean
+      - uses: actions/upload-pages-artifact@v4
+        if: github.event_name != 'pull_request'
+        with:
+          path: site
+
+  deploy:
+    if: github.event_name != 'pull_request'
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/configure-pages@v5
+      - uses: actions/deploy-pages@v4
+        id: deployment

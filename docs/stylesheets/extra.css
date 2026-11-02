@@ -1,0 +1,17 @@
+/* Mark external links with a discreet arrow. */
+.md-content
+a[href^="http"]
+:not([href*="balbasty.github.io/nitorch"])
+:not(:has(img))::after {
+    content: " \2197";
+    font-size: 0.85em;
+    margin-left: 0.1em;
+    display: inline-block;
+    color: inherit;
+    opacity: 0.7;
+}
+
+/* Keep option names on one line in reference tables. */
+.md-typeset table:not([class]) td:first-child code {
+    white-space: nowrap;
+}
