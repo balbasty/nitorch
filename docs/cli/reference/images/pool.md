@@ -86,7 +86,8 @@ their own:
 
 For example, `-p 1 zero 2 dft` pads the first axis by 1 voxel with zeros and
 the remaining axes by 2 voxels with wrap-around, whereas `-p zero 1 2 dft`
-pads the first two axes with zeros and the third one with wrap-around. A
+pads the first axis by 1 voxel with zeros and the others by 2 voxels with
+wrap-around (here `zero` is the default, which the first size inherits). A
 boundary condition that does not follow a size is an error, unless it comes
 first.
 
