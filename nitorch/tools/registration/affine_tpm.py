@@ -126,7 +126,9 @@ def align_tpm(dat, tpm=None, weights=None, spacing=(8, 4), device=None,
     progressive : bool, default=False
         Fit prameters progressively (translation then rigid then affine)
     flexi : bool, default=False
-        Assume that the header can be wrong and try all possible orientations
+        Assume that the header can be wrong and try all possible orientations.
+        Each orientation (and the header) is fitted at the first sampling
+        distance `spacing[0]`, and the one with the largest 𝓛/N is kept.
 
     Optimization parameters
     -----------------------
@@ -246,9 +248,16 @@ def align_tpm(dat, tpm=None, weights=None, spacing=(8, 4), device=None,
         opt1 = dict(opt)
         opt1['verbose'] = 0
 
-        # first: trust header
-        sp = spacing[0] * 2
+        # All candidates are fitted, and compared (on 𝓛/N), at the first
+        # sampling distance: the resolution at which the selected
+        # candidate is then refined. At 2 * spacing[0], as before, the
+        # data can be too coarse to tell orientations apart: with few
+        # voxels, 𝑯 (J × K) and 𝜙 overfit, so that wrong orientations
+        # reach a larger 𝓛/N than the right one.
+        sp = spacing[0]
         dat, affine_dat1, weights = do_spacing(sp)
+
+        # first: trust header
         dat_com1 = torch.as_tensor(dat.shape[2:]).to(affine_dat1).sub_(1).div_(2)
         dat_com1 = mv(affine_dat1[:-1, :-1], dat_com1).add_(affine_dat1[:-1, -1])
         best_name = spatial.volume_layout_to_name(spatial.affine_to_layout(affine_dat0))

@@ -264,6 +264,55 @@ def test_flexi_uses_logtpm_and_subsampled_affine(monkeypatch, capsys):
         assert torch.allclose(fov, torch.full_like(fov, n)), fov
 
 
+def make_chiral_tpm(n):
+    """Three-class TPM with no symmetry that an affine map can undo:
+    an ellipsoid with three off-centre inner blobs of different sizes"""
+    g = spatial.identity_grid([n] * 3, dtype=dt) - (n - 1) / 2
+    s = n / 32
+    radii = torch.tensor([12., 10., 11.], dtype=dt) * s
+    outer = torch.sigmoid((1 - (g / radii).square().sum(-1).sqrt()) * 8)
+    inner = 0
+    for c, rad in (((6., 0., 0.), 4.), ((0., 5., 1.), 3.),
+                   ((-2., -2., 5.), 2.5)):
+        c = torch.as_tensor(c, dtype=dt) * s
+        r = ((g - c) / (rad * s)).square().sum(-1).sqrt()
+        inner = inner + torch.sigmoid((1 - r) * 6)
+    p1 = (inner * outer).clamp(0, 1)
+    p2 = (outer - p1).clamp(0, 1)
+    p3 = (1 - p1 - p2).clamp(0, 1)
+    tpm = torch.stack([p1, p2, p3]) + 1e-3
+    return tpm / tpm.sum(0, keepdim=True)
+
+
+@pytest.mark.slow
+def test_flexi_recovers_orientation():
+    # The voxel axes of the image are a permutation (with a flip) of
+    # those of the TPM, but both headers are the identity: a fit that
+    # trusts the header cannot recover this. The right orientation is
+    # among the flexi candidates. They used to be compared at
+    # 2 * spacing[0] (8³ voxels here), where a wrong orientation reached
+    # a larger 𝓛/N, and the final error was 16 mm. At spacing[0] (16³),
+    # the error is ~1 mm, as for a fit started at the true transform.
+    n = 32
+    tpm = make_chiral_tpm(n)
+    g = torch.Generator().manual_seed(1)
+    means = torch.tensor([100., 60., 15.], dtype=dt)
+    img = means[tpm.argmax(0)] + 8 * torch.randn([n] * 3, dtype=dt,
+                                                 generator=g)
+    # image voxel (i, j, k) is TPM voxel (j, i, n-1-k)
+    img = img.permute(1, 0, 2).flip(2)
+    affine = spatial.affine_default([n] * 3, dtype=dt)
+    aff = at.align_tpm((img, affine), (tpm, affine), spacing=2, flexi=True,
+                       verbose=0)
+    vox = spatial.identity_grid([n] * 3, dtype=dt)
+    true = torch.stack([vox[..., 1], vox[..., 0], n - 1 - vox[..., 2]], -1)
+    true = linalg.matvec(affine[:3, :3], true) + affine[:3, -1]
+    mat = aff.matmul(affine)
+    fit = linalg.matvec(mat[:3, :3], vox) + mat[:3, -1]
+    err = (fit - true).norm(dim=-1).mean().item()
+    assert err < 2, err
+
+
 def test_fit_translation_recovery():
     dat, logtpm, affine, prm_true = make_problem()
     mi, aff, prm = at.fit_affine_tpm(dat, logtpm, affine, affine,
