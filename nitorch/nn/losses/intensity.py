@@ -286,7 +286,7 @@ class MutualInfoLoss(Loss):
         def pnorm(x, dims=-1):
             """Normalize a tensor so that it's sum across `dims` is one."""
             dims = make_list(dims)
-            x = x.clamp_min_(eps(x.dtype))
+            x = x.clamp_min(eps(x.dtype))
             x = x / nansum(x, dim=dims, keepdim=True)
             return x
 

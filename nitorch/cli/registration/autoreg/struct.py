@@ -139,8 +139,26 @@ class DiceLoss(MatchingLoss):
     weights: bool or list = False   # Weight per label
 
     def call(self, x, y):
-        fn = nn.DiceLoss(one_hot_map=self.labels, weighted=self.weights)
-        loss = fn(x[None], y[None])
+        """Soft Dice loss between (K, *spatial) probability maps.
+
+        Hard label maps have been converted to one-hot maps (one channel
+        per label in `labels`) when the data was loaded.
+        """
+        x = x.reshape([len(x), -1])
+        y = y.reshape([len(y), -1])
+        inter = (x * y).sum(-1)
+        union = x.sum(-1) + y.sum(-1)
+        dice = 2 * inter / union.clamp_min(1e-5)
+        weights = self.weights
+        if weights is True:
+            # weight each class by its size in the reference
+            weights = y.sum(-1)
+        elif weights is False or weights is None:
+            weights = torch.ones_like(dice)
+        else:
+            weights = make_vector(weights, len(dice),
+                                  dtype=dice.dtype, device=dice.device)
+        loss = 1 - (dice * weights).sum() / weights.sum().clamp_min(1e-5)
         if self.factor != 1:
             loss = loss * self.factor
         return loss
@@ -646,7 +664,7 @@ class AutoReg(Base):
         def read_info1(image, loss):
             """Read info from one image"""
             image.files = [info(fname) for fname in image.files]
-            image.channels = sum(sum(file.subchannels) for file in image.files)
+            image.channels = sum(len(file.subchannels) for file in image.files)
             if not allsame(file.shape for file in image.files):
                 raise RuntimeError('All files should have the same (spatial) '
                                    'shape for multi-file inputs.')

@@ -47,6 +47,7 @@ usage:
             -g, --grid *SIZE            Number of nodes (10)
         -dif, --diffeo              Diffeomorphic field
             -sd --smalldef              Penalize the exponentiated transform (False)
+    At least one transformation is required (there is no default).
     Only one of -tr, -rig, -sim, -aff can be used.
     Only one of -ffd and -diffeo can be used.
     The ffd and diffeomorphic fields always live in the (mean) space of the 
@@ -73,7 +74,7 @@ usage:
         -ex,    --extrapolate        Extrapolate out-of-bounds data (no)
         -o,     --output             Output file name or directory
         -r,     --resliced           Output file name or directory
-        -init,  --init               Initial value: file or values (0) 
+        -init,  --init               Initial transform file (identity)
         -nit,   --max-iterations     Maximum number of iterations (1000)
         -lr,    --learning-rate      Initial learning rate (0.1)
         -stop,  --stop               Minimum LR value -> early stopping (lr*1e-4)
@@ -96,7 +97,7 @@ usage:
 
 examples:
     # rigid registration between two images
-    autoreg -mi -fix target.nii -mov source.nii
+    autoreg -mi -fix target.nii -mov source.nii -rig
 
     # diffeo + similitude registration between two images
     autoreg -mi -fix target.nii -mov source.nii -dif -sim
@@ -332,7 +333,7 @@ def parse_moving_and_target(args, opt):
                 val, *args = args
                 if isinstance(opt.weights, bool):
                     opt.weights = []
-                    opt.weights.append(float(val))
+                opt.weights.append(float(val))
         elif isinstance(opt, struct.DiceLoss) and tag in ('-l', '--labels'):
             opt.labels = []
             while next_isvalue(args):
@@ -521,7 +522,6 @@ def parse_defaults(args, options):
             check_next_isvalue(args, tag)
             opt.stop, *args = args
             opt.stop = float(opt.stop)
-            args = args[2:]
         elif tag in ('-ls', '--line-search'):
             opt.ls = True
             if next_isvalue(args):
@@ -613,5 +613,9 @@ def parse(args):
         else:
             raise ParseError(f'Argument {tag} does not seem to '
                              f'belong to a group')
+
+    if not options.transformations:
+        raise ParseError('No transformation specified. Use at least one of '
+                         '-tr, -rig, -sim, -aff, -ffd or -dif.')
 
     return options
