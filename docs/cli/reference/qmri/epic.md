@@ -4,7 +4,7 @@ icon: octicons/terminal-24
 
 # epic
 
-Corrects geometric distortions and denoises multi-echo gradient-echo data acquired with a bipolar readout, using a pre-computed field map. It uses the exponential decay of the signal across echoes to make the correction robust to an imperfect field map. Use it when your echoes alternate readout polarity and you have a B0 field map or voxel shift map, for example from [`topup`](topup.md).
+Corrects geometric distortions and denoises multi-echo gradient-echo data acquired with a bipolar readout, using a pre-computed field map, or only denoises them when none is given. It uses the exponential decay of the signal across echoes to make the correction robust to an imperfect field map. Use it when your echoes alternate readout polarity and you have a B0 field map or voxel shift map, for example from [`topup`](topup.md).
 
 === ":octicons-terminal-24: Synopsis"
 
@@ -12,7 +12,7 @@ Corrects geometric distortions and denoises multi-echo gradient-echo data acquir
     nitorch epic ECHOES... [-f FIELDMAP] [-r ECHOES...] [-o FILE...]
                  [-d DIRECTION] [-p {+,-}] [-b BW] [-x] [-e [BOOL]]
                  [-s [CHUNKSIZE]] [--penalty VAL] [-m IRLS [CG]]
-                 [-t IRLS [CG]] [-v [LVL] | -q] {--cpu | --gpu [ID]}
+                 [-t IRLS [CG]] [-v [LVL] | -q] [--cpu | --gpu [ID]]
     ```
 
 ## Description
@@ -36,16 +36,13 @@ The field map `-f` is a 3D volume, either in Hz or already a voxel shift map. Th
 - for a field map in Hz, give the readout bandwidth in Hz/pixel with `-b`;
 - for a voxel shift map, leave `-b` at its default of 1.
 
-`-p -` declares that the first echo has the negative polarity, which flips the sign of the field map; use it if your field map was computed for the opposite readout polarity. The command does not require a field map: without `-f`, no geometric model is applied and the command only denoises the echoes. (The built-in help lists `-f` as mandatory.)
+`-p -` declares that the first echo has the negative polarity, which flips the sign of the field map; use it if your field map was computed for the opposite readout polarity. The field map is optional: without `-f`, no geometric model is applied and the command only denoises the echoes.
 
 Reversed-polarity echoes acquired for real are passed with `-r`, in the same order and with the same number of echoes as the main series. They replace the synthesised echoes, and the first and last echoes are then used as any other.
 
 ### Readout direction
 
-The readout direction is set with `-d` using anatomical axis letters, for example `ap`, `lr` or `is` (one letter, such as `a`, also works). The command picks the first voxel axis of the first echo file whose orientation, as computed from the orientation matrix, matches one of the letters. Without `-d`, the axis with the most voxels is used.
-
-!!! warning "The readout cannot be the first voxel axis"
-    In the present implementation, a readout along the first voxel axis (index 0) of the file is not handled correctly: the command mixes the echo dimension with the readout dimension. Make sure that the readout lies along another axis of the image array before running the command.
+The readout direction is set with `-d` using anatomical axis letters, for example `ap`, `lr` or `is` (one letter, such as `a`, also works). Either end of an axis designates the axis, so `l` and `r` both mean left–right. The command picks the first voxel axis of the first echo file whose orientation, as computed from the orientation matrix, matches one of the letters. A letter that matches no axis is an error. Without `-d`, the axis with the most voxels is used. The readout can lie along any of the three voxel axes.
 
 ### Output files
 
@@ -62,10 +59,7 @@ The first matching row below applies.
 | As many `-o` values as echoes | One 3D file per echo, named after the first input file. |
 | Any other number | An error. |
 
-The default template is `{dir}{sep}{base}_epic{ext}`, so with a single 4D input `echoes.nii.gz`, the result is `echoes_epic.nii.gz`.
-
-!!! warning "Give a directory in the input path, or use -o"
-    When an input path has no directory part (`echoes.nii.gz`), `{dir}` is empty and the default template expands to `/echoes_epic.nii.gz`, at the root of the file system. Write the input as `./echoes.nii.gz`, or give `-o` explicitly.
+The default template is `{dir}{sep}{base}_epic{ext}`, so with a single 4D input `echoes.nii.gz`, the result is `echoes_epic.nii.gz`. When the input path has no directory part, `{dir}` is the current directory.
 
 ## Arguments
 
@@ -82,7 +76,7 @@ The default template is `{dir}{sep}{base}_epic{ext}`, so with a single 4D input 
 | `-f`, `--fieldmap`    | `FILE`           | B0 field map, in Hz, or voxel shift map along the readout direction. | none (denoising only) |
 | `-r`, `--reversed`    | `ECHOES...`      | Echoes acquired with reversed-polarity readout. | synthesised |
 | `-d`, `--direction`   | `DIR`            | Readout direction: one of `r`, `l`, `a`, `p`, `i`, `s`, `rl`, `lr`, `ap`, `pa`, `is`, `si`. | voxel axis with the most voxels |
-| `-p`                  | `{+,-}`          | Readout polarity of the first echo. `-` flips the sign of the field map. (There is no long form: `--penalty` is a different option.) | `+` |
+| `-p`, `--polarity`    | `{+,-}`          | Readout polarity of the first echo. `-` flips the sign of the field map. | `+` |
 | `-b`, `--bandwidth`   | `BW`             | Readout bandwidth in Hz/pixel. The field map is divided by it. | `1` |
 
 ### Model
@@ -106,46 +100,43 @@ The default template is `{dir}{sep}{base}_epic{ext}`, so with a single 4D input 
 | Option                | Value       | Description | Default |
 | --------------------- | ----------- | ----------- | ------- |
 | `-o`, `--output`      | `FILE...`   | Output path template(s). See [Output files](#output-files). | `{dir}{sep}{base}_epic{ext}` |
-| `--cpu`               |             | Run on the CPU. | see below |
-| `--gpu`               | `[ID]`      | Run on a CUDA device. `ID` is the device index; without it, the default CUDA device. Falls back to the CPU, with a warning, when CUDA is not available. | see below |
+| `--cpu`               |             | Run on the CPU. | `--cpu` |
+| `--gpu`               | `[ID]`      | Run on a CUDA device. `ID` is the device index; without it, the default CUDA device. Falls back to the CPU, with a warning, when CUDA is not available. | |
 | `-v`, `--verbose`     | `[LVL]`     | Verbosity. Alone, the flag means `2`, which prints one line per iteration. | `1` |
 | `-q`, `--quiet`       |             | No progress output. | |
 | `-h`, `--help`        |             | Print the built-in help. | |
-
-!!! warning "Pass --cpu or --gpu explicitly"
-    The device option is not given a valid default in the current implementation. Always include `--cpu` or `--gpu`; otherwise the command stops with an unpacking error. On a machine without CUDA, `--gpu` also gives a CPU run.
 
 ## Examples
 
 Correct a 4D multi-echo file with a field map in Hz, for a readout bandwidth of 780 Hz/pixel and a readout along the antero-posterior axis:
 
 ```shell
-nitorch epic ./echoes.nii.gz -f ./fieldmap_hz.nii.gz -b 780 -d ap --cpu
+nitorch epic ./echoes.nii.gz -f ./fieldmap_hz.nii.gz -b 780 -d ap
 ```
 
 Use a voxel shift map, which needs no bandwidth (for example one estimated with [`topup`](topup.md) and `-bw 1`), and write each echo to its own file:
 
 ```shell
-nitorch epic ./echoes.nii.gz -f ./echoes_topup_b0.nii.gz -d ap -o './epic/echo-{n}.nii.gz' --cpu
+nitorch epic ./echoes.nii.gz -f ./echoes_topup_b0.nii.gz -d ap -o './epic/echo-{n}.nii.gz'
 ```
 
 Pass echoes that were acquired as separate 3D files, with the polarity of the first echo reversed:
 
 ```shell
 nitorch epic ./e1.nii.gz ./e2.nii.gz ./e3.nii.gz ./e4.nii.gz \
-    -f ./fieldmap_hz.nii.gz -b 780 -p - --cpu
+    -f ./fieldmap_hz.nii.gz -b 780 -p -
 ```
 
 Use reversed-polarity echoes that were acquired for real, instead of synthesising them:
 
 ```shell
-nitorch epic ./echoes.nii.gz -r ./echoes_reversed.nii.gz -f ./fieldmap_hz.nii.gz -b 780 --cpu
+nitorch epic ./echoes.nii.gz -r ./echoes_reversed.nii.gz -f ./fieldmap_hz.nii.gz -b 780
 ```
 
 Process large data slab by slab, four slices at a time, with a stronger penalty:
 
 ```shell
-nitorch epic ./echoes.nii.gz -f ./fieldmap_hz.nii.gz -b 780 -s 4 --penalty 300 --cpu
+nitorch epic ./echoes.nii.gz -f ./fieldmap_hz.nii.gz -b 780 -s 4 --penalty 300
 ```
 
 ## References
