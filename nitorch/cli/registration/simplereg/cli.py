@@ -40,40 +40,99 @@ def _cli(args):
         print(options)
         print('')
 
+    return cli_register(build_register_args(options))
+
+
+def build_register_args(options):
+    """Translate parsed `simplereg` options into `nitorch register` arguments.
+
+    Parameters
+    ----------
+    options : simplereg options (output of `parser.parse`)
+
+    Returns
+    -------
+    args : list[str]
+        Command line for `nitorch register`.
+    """
+    if not options.moving or not options.fixed:
+        raise ParseError('Both a moving (-m) and fixed (-f) image are required.')
+    if not options.do_affine and not options.do_nonlin:
+        raise ParseError('--no-affine and --no-nonlin cannot be used together.')
+
     args = ['--verbose', str(options.verbose)]
     args += [f'--{options.device[0]}']
     if options.device[1] is not None:
         args += [str(options.device[1])]
+
+    # --- loss + images ------------------------------------------------
     args += ['@loss', options.loss]
     if options.loss in ('lcc', 'lgmm'):
         args += ['-p'] + [str(p) for p in options.kernel]
     if options.symmetric:
         args += ['--symmetric']
-    args += ['@@fix', options.fixed]
-    args += ['@@mov', options.moving]
+
+    preproc = []
+    if options.fwhm is not None:
+        preproc += ['-f'] + [str(x) for x in options.fwhm]
+    if options.pad is not None:
+        preproc += ['-z'] + [str(x) for x in options.pad]
+    if options.bound is not None:
+        preproc += ['-b', options.bound]
+    if options.order is not None:
+        preproc += ['-n', str(options.order)]
+    if options.rescale is not None:
+        preproc += ['-s'] + [str(x) for x in options.rescale]
+    if options.discretize:
+        preproc += ['-d', str(options.discretize)]
+
+    args += ['@@fix', options.fixed] + preproc
+    args += ['@@mov', options.moving] + preproc
     if options.init:
         args += ['-a', options.init]
     args += ['-o', str(options.moved)]
     args += ['-r', str(options.resliced)]
-    args += ['@affine']
-    if options.affine:
-        args += ['affine']
-    if not options.optimizer:
-        if options.loss == 'nmi':
-            options.optimizer = 'powell'
-        else:
-            options.optimizer = 'gn'
-    if options.output:
-        args += ['-o', options.output]
-    args += ['@@optim', options.optimizer,
-             '-n', options.max_iter,
-             '-t', options.tolerance,
-             '-s', options.search]
+
+    # --- affine -------------------------------------------------------
+    if options.do_affine:
+        args += ['@affine', 'affine' if options.affine else 'rigid']
+        args += ['-o', str(options.output)]
+        optimizer = options.optimizer
+        if not optimizer:
+            # Powell for nmi (as nitorch affreg), else register's default
+            optimizer = 'powell' if options.loss == 'nmi' else 'unset'
+        args += ['@@optim', optimizer,
+                 '-n', str(options.max_iter),
+                 '-t', str(options.tolerance),
+                 '-s', str(options.search)]
+
+    # --- nonlinear ----------------------------------------------------
+    if options.do_nonlin:
+        args += ['@nonlin', options.nonlin]
+        if options.penalty is not None:
+            args += [str(options.penalty)]
+        args += ['-o', str(options.warp)]
+        for key, flag in (('absolute', '-a'), ('membrane', '-m'),
+                          ('bending', '-b')):
+            if getattr(options, key) is not None:
+                args += [flag, str(getattr(options, key))]
+        if options.lame is not None:
+            args += ['-l'] + [str(x) for x in options.lame]
+        args += ['@@optim', options.nonlin_optimizer or 'unset']
+        if options.nonlin_iter is not None:
+            args += ['-n', str(options.nonlin_iter)]
+
+    # --- joint optimization -------------------------------------------
+    args += ['@optim', 'interleaved']
+    if options.outer_iter is not None:
+        args += ['-n', str(options.outer_iter)]
+
     args += ['@pyramid', '--levels']
-    for level in options.pyramid:
+    levels = options.pyramid or [0]
+    for level in levels:
         if isinstance(level, range):
             args += [str(l) for l in level]
         else:
             args += [str(level)]
 
-    return cli_register(args)
+    return args

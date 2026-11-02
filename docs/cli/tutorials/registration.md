@@ -337,9 +337,9 @@ common case of aligning one image to another:
 - [`affreg`](../reference/registration/affreg.md) is an affine registration with
   options named `-m` (moving), `-f` (fixed), `-l` (loss), `-r` (resliced
   output), and `-a` for a full affine instead of the default rigid model.
-- [`simplereg`](../reference/registration/simplereg.md) takes the same options.
-  It performs an affine registration only. Use `register` for a nonlinear
-  one.
+- [`simplereg`](../reference/registration/simplereg.md) takes the same options
+  and adds a nonlinear part (an SVF by default, `--no-nonlin` to skip it),
+  with a few options for its model and regularisation.
 
 For example, the affine registration of step 1 can be written:
 

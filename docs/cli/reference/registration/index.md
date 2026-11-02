@@ -60,9 +60,9 @@ Consider it for existing pipelines, or for the two things `register` does not
 offer: free-form deformations (cubic B-splines) and the joint total variation
 loss. For new work, prefer `register`.
 
-[`simplereg`](simplereg.md) was meant as a simplified front end alongside
-`affreg`. In this version of NITorch it is an affine-only equivalent of
-`affreg`, and its page explains what that means.
+[`simplereg`](simplereg.md) is the nonlinear counterpart of `affreg`: the
+same flat `-m`/`-f` interface, for a joint affine + nonlinear (SVF by
+default) registration of one pair of images.
 
 Once a registration has been run, the transformations it wrote can be
 applied to images with [`reslice`](../spatial/reslice.md), composed with
@@ -74,7 +74,7 @@ applied to images with [`reslice`](../spatial/reslice.md), composed with
 | Command                       | Summary                                                                                                              |
 | ----------------------------- | -------------------------------------------------------------------------------------------------------------------- |
 | [`register`](register.md)     | Pairwise registration with an affine and/or nonlinear model, many losses, and full control of the optimisation.      |
-| [`simplereg`](simplereg.md)   | Intended as a simplified wrapper of `register`; currently an affine-only equivalent of `affreg`.                    |
+| [`simplereg`](simplereg.md)   | Affine + nonlinear registration of two images with a simple `-m`/`-f` interface; a wrapper of `register`.           |
 | [`affreg`](affreg.md)         | Affine (rigid or full) registration of two images with a simple `-m`/`-f` interface; a wrapper of `register`.        |
 | [`optinorm`](optinorm.md)     | Unbiased groupwise alignment of several scans of one subject to their mean space, with affine then nonlinear steps.  |
 | [`affopt`](affopt.md)         | Computes optimal template-to-subject affine matrices from pairwise subject-to-subject matrices.                      |

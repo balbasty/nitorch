@@ -200,7 +200,7 @@ nitorch affreg -m sub-01_T1w.nii.gz -f template_T1w.nii.gz \
 ## See also
 
 - [`register`](register.md) — the command `affreg` wraps, with full control.
-- [`simplereg`](simplereg.md) — a sibling wrapper with the same interface.
+- [`simplereg`](simplereg.md) — the same interface, with an additional nonlinear part.
 - [`reslice`](../spatial/reslice.md) — apply the resulting matrix to other
   images.
 - [Registering two images](../../tutorials/registration.md) — a tutorial.
