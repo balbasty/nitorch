@@ -252,9 +252,8 @@ usage:
             --min-vx                    Minimum voxel size along a dimension
         -l, --levels *LVL               Pyramid levels. Can be a range start:stop:step [:3]
         -c, --concurrent                Register pyramid levels concurrently [false]
-        -p, --reg-power POW             Scale the nonlin regularisation across levels [2]:
-                                        reg[n] = reg[0] * (vx[n] / vx[0]) ** POW
-                                        (0 = same regularisation at all levels)
+        -m, --reg-modulation MOD        Multiply the nonlin regularisation by MOD each time
+                                        the voxel size doubles [4] (1 = same at all levels)
 
 General options:
     --cpu [THREADS], --gpu [ID]     Device to use [cpu]
@@ -656,9 +655,9 @@ pyr.add_option('max_vx', '--max-vx', nargs=1, convert=float)
 pyr.add_option('levels', ('-l', '--levels'), nargs='1*', convert=parse_range, default=[range(3)])
 pyr.add_option('concurrent', ('-c', '--concurrent'), nargs='?', convert=bool_or_str,
                default=False, action=cli.Actions.store_true)
-pyr.add_option('reg_power', ('-p', '--reg-power'), nargs=1, convert=float, default=2.,
-               help='Scaling exponent of the nonlinear regularisation across '
-                    'pyramid levels: reg[n] = reg[0] * (vx[n]/vx[0]) ** POW')
+pyr.add_option('reg_modulation', ('-m', '--reg-modulation'), nargs=1, convert=float, default=4.,
+               help='Multiply the nonlinear regularisation by MOD each time '
+                    'the voxel size doubles across pyramid levels')
 
 # register groups
 parser.add_group(loss)
