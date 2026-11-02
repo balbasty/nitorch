@@ -12,7 +12,7 @@ two images, or to prepare data for an algorithm that expects smooth input.
 
     ```shell
     nitorch smooth FILE... [-f FWHM... [UNIT]] [-m METHOD] [-b BASIS]
-                           [-p BOUND] [-o FILE] [--cpu | --gpu [ID]]
+                           [-p BOUND] [-o FILE] [--cpu [N] | --gpu [ID]]
     ```
 
 ## Description
@@ -73,13 +73,6 @@ The basis (`-b`) can be `tri`, the default, which treats the image as a linear
 interpolation of the voxel values, or `rect`, which treats each voxel as a
 constant block.
 
-!!! warning "Two options do not currently do what they say"
-    `-m tri` is accepted by the parser but stops with an error
-    (`KeyError: 'tri'`) when the kernel is built. And `-b rect` is accepted but
-    has the same effect as `-b tri`, because any non-empty basis name is
-    treated as the linear basis. Use `gauss` or `rect` for the method, and
-    leave the basis at its default.
-
 ### Boundaries
 
 Near the edges of the volume, the filter needs voxels that lie outside the
@@ -109,11 +102,11 @@ around. The full list of accepted names is given in the table below.
 | Option                | Value              | Description                                                                                             | Default                          |
 | --------------------- | ------------------ | ------------------------------------------------------------------------------------------------------- | -------------------------------- |
 | `-f`, `--fwhm`        | `FWHM... [UNIT]`   | Full width at half maximum, one to three numbers, followed by an optional unit. [See above](#giving-the-fwhm). | `1 mm`                           |
-| `-m`, `--method`      | `METHOD`           | Smoothing function: `gauss`, `rect` or `tri` (`tri` currently fails, [see above](#filter-shapes)).       | `gauss`                          |
-| `-b`, `--basis`       | `BASIS`            | Basis function: `tri` or `rect` (no practical difference at the moment, [see above](#filter-shapes)).    | `tri`                            |
+| `-m`, `--method`      | `METHOD`           | Smoothing function: `gauss`, `rect` or `tri`. [See above](#filter-shapes).                               | `gauss`                          |
+| `-b`, `--basis`       | `BASIS`            | Basis function: `tri` (linear) or `rect` (constant). [See above](#filter-shapes).                        | `tri`                            |
 | `-p`, `--padding`     | `BOUND`            | Boundary condition used outside the image. [See above](#boundaries).                                     | `replicate`                      |
 | `-o`, `--output`      | `FILE`             | Output file name or template. Only one value is accepted; it is reused for every input.                 | `{dir}{sep}{base}.smooth{ext}`   |
-| `--cpu`               | `[N]`              | Compute on the CPU. The optional number is read but has no effect.                                      | CPU                              |
+| `--cpu`               | `[N]`              | Compute on the CPU. `N` is the number of threads; 0 (the default) keeps the PyTorch default.        | CPU                              |
 | `--gpu`               | `[ID]`             | Compute on a GPU. `ID` is the index of the device. Falls back silently to the CPU if CUDA is not available. |                                  |
 | `-h`, `--help`        |                    | Print the built-in help and exit.                                                                       |                                  |
 

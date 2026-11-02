@@ -15,7 +15,7 @@ peak signal-to-noise ratio, and so on).
     nitorch metrics -p FILE... -r FILE... -m METRIC... [-s AVERAGE...]
                     [-x LABEL...] [-o FILE] [-a [BOOL]]
                     [--ssim-fwhm FWHM... [UNIT]] [--ssim-gauss] [--range [MIN] MAX]
-                    [--cpu | --gpu [ID]]
+                    [--cpu [N] | --gpu [ID]]
     ```
 
 ## Description
@@ -230,7 +230,7 @@ The output template accepts `{dir}` (directory of the first prediction, `.` if n
 
 | Option    | Value  | Description                                                                                      | Default |
 | --------- | ------ | ------------------------------------------------------------------------------------------------ | ------- |
-| `--cpu`   |        | Compute on the CPU. It takes no value.                                                           | CPU     |
+| `--cpu`   | `[N]`  | Compute on the CPU. `N` is the number of threads; 0 (the default) keeps the PyTorch default.| CPU     |
 | `--gpu`   | `[ID]` | Compute on a GPU; `ID` is the device index. Falls back to the CPU, with a warning, if CUDA is not available. |         |
 
 See [Hardware](../../conventions.md#hardware) for the general behaviour of device options.
