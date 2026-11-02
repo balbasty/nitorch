@@ -2211,10 +2211,10 @@ class AffineModel(TransformationModel):
             Affine basis name
         factor : float, default=1
             Regularization factor
-        penalty : float or list[float] or dict(), optional
-            L2 penalty
-            If a list, one value per parameters.
-            If a dict, keys "translation", "rotation", "zoom", "shear"
+        penalty : float, optional
+            Precision lambda of a Gaussian prior N(0, (lambda I)^-1) on
+            the (orthonormal, model-basis) Lie parameters q, i.e. the
+            penalty 1/2 lambda ||q||^2. None or 0 means no penalty.
         optim : {'translation', 'rotation', 'rigid', 'similitude', 'affine'}
             Parameters to optimize.
         position : {'moving', 'fixed', 'symmetric'}, default='symmetric'
@@ -2226,8 +2226,7 @@ class AffineModel(TransformationModel):
             Pre-allocated log-parameters.
         """
         self.factor = factor
-        self._penalty = penalty or None  # regutils.defaults_affine()
-        self._penalty_list = None
+        self.penalty = penalty
         self._basis = basis
         self._optim = optim
         self.position = position.lower()[0]
@@ -2242,65 +2241,24 @@ class AffineModel(TransformationModel):
 
     @property
     def penalty(self):
-        if not self.dat or self._penalty is None:
-            return None
-        if self._penalty_list is None:
-            B = self._basis[0].lower()
-            D = self._truedim
-            nb_t = D
-            nb_r = (D*(D-1))//2
-            nb_z0 = 1
-            nb_z1 = D
-            nb_z = nb_z0 if B == 's' else nb_z1
-            nb_s = (D*(D-1))//2
-            nb_p = nb_t
-            if B != 't':
-                nb_p += nb_r
-            if B not in 'tr':
-                nb_p += nb_z
-            if B not in 'trs':
-                nb_p += nb_s
-            backend = dict(dtype=self.dat.dtype, device=self.dat.device)
-            penalty = torch.zeros([nb_p], **backend)
-            if isinstance(self._penalty_list, dict):
-                for key, val in self._penalty_list.items():
-                    key = key.lower()[0]
-                    if key == 't':
-                        penalty[:nb_t] = val
-                    elif key == 'r':
-                        penalty[nb_t:nb_t+nb_r] = val
-                    elif key == 's':
-                        penalty[nb_t+nb_r:nb_t+nb_r+nb_z] = val
-                    elif key == 'a':
-                        penalty[nb_t+nb_r+nb_z:] = val
-            else:
-                penalty0 = torch.as_tensor(self._penalty, **backend)
-                B0 = ('a' if len(penalty0) == nb_t+nb_r+nb_z1+nb_s else
-                      's' if len(penalty0) == nb_t+nb_r+nb_z0 else
-                      'r' if len(penalty0) == nb_t+nb_r else
-                      't' if len(penalty0) == nb_t else
-                      '')
-                if not B0 or B == B0:
-                    penalty[...] = penalty0
-                elif B in 'tr':
-                    N = min(len(penalty), len(penalty0))
-                    penalty[:N] = penalty0[:N]
-                else:
-                    N = min(len(penalty), len(penalty0), nb_t+nb_r)
-                    penalty[:N] = penalty0[:N]
-                    if B == 's' and B0 == 'a':
-                        penalty[nb_t+nb_r] = penalty[nb_t+nb_r:nb_t+nb_r+nb_z1].mean()
-                    elif B == 'a' and B0 == 's':
-                        penalty[nb_t+nb_r:nb_t+nb_r+nb_z1] = penalty0[nb_t+nb_r]
-            self._penalty_list = penalty
-        return self._penalty_list
+        """Precision lambda of the prior N(0, (lambda I)^-1), or None (off)"""
+        return self._penalty
+
+    @penalty.setter
+    def penalty(self, value):
+        if value is not None:
+            if torch.is_tensor(value):
+                value = value.item()
+            value = float(value)
+            if value < 0:
+                raise ValueError('Affine penalty must be non-negative')
+        self._penalty = value or None
 
     def switch_basis(self, basis):
         obj = copy.deepcopy(self)
         if obj.dat:
             obj.dat = obj.dat.switch_basis(basis)
         obj._basis = basis
-        obj._penalty_list = None
         return obj
 
     def set_dat(self, dat=None, dim=None, **backend):
@@ -2371,7 +2329,7 @@ class AffineModel(TransformationModel):
         s += [f'factor={self.factor}']
         s += [f'position={self.position}']
         if self.penalty is not None:
-            s += [f'penalty={self.penalty.tolist()}']
+            s += [f'penalty={self.penalty}']
         s = ', '.join(s)
         return f'{self.__class__.__name__}({s})'
 

@@ -15,7 +15,7 @@ from nitorch import spatial
 from nitorch.core import utils, linalg
 import torch
 from . import optim as optm, utils as regutils
-from .objects import SVFModel, ShootModel, MeanSpace, Nonlin2dModel, SumSimilarity
+from .objects import SVFModel, ShootModel, MeanSpace, Nonlin2dModel, SumSimilarity, AffineModel
 
 
 # TODO:
@@ -811,15 +811,18 @@ class PairwiseRegisterStep:
         return tuple(out) if len(out) > 1 else out[0]
 
     def _affine_penalty(self, logaff, grad=None, hess=None):
-        """L2 penalty on the (model-basis) affine log-parameters.
+        """Gaussian prior N(0, (lambda I)^-1) on the model-basis log-parameters.
 
-        Its gradient (P * q) and Hessian (diag(P)) live in the model
-        basis; they are mapped to the optimised basis (`-g`) with the
-        Gram matrix M of `_optim_grad`: M.T (P * q) and M.T diag(P) M.
+        Value: 1/2 lambda ||q||^2. Its gradient (lambda q) and Hessian
+        (lambda I) live in the model basis; they are mapped to the
+        optimised basis (`-g`) with the Gram matrix M of `_optim_grad`:
+        M.T (lambda q) and lambda M.T M.
         `grad` and `hess` are updated in place. Returns the value.
         """
-        penalty = self.affine.penalty
-        lla = logaff * penalty
+        lam = self.affine.penalty
+        if isinstance(logaff, AffineModel.Parameters):
+            logaff = logaff.dat     # model-basis tensor
+        lla = logaff * lam
         if grad is not None or hess is not None:
             par = self.affine.parameters()
             gram = None
@@ -829,9 +832,9 @@ class PairwiseRegisterStep:
                 grad += lla if gram is None else gram.T.matmul(lla)
             if hess is not None:
                 if gram is None:
-                    hess.diagonal(0, -1, -2).add_(penalty)
+                    hess.diagonal(0, -1, -2).add_(lam)
                 else:
-                    hess += (gram.T * penalty).matmul(gram)
+                    hess += gram.T.matmul(gram) * lam
         return 0.5 * lla.dot(logaff)
 
     def do_affine(self, logaff, grad=False, hess=False, in_line_search=False):

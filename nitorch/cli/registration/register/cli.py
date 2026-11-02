@@ -123,6 +123,12 @@ def _main(options):
                 affine_init = torch.eye(4)
                 affine_init[:-1, -1] = shift
 
+        # affine prior precision (FACTOR): 0 = no penalty
+        affine_penalty = options.affine.factor
+        if isinstance(affine_penalty, (list, tuple)):
+            affine_penalty = affine_penalty[0] if affine_penalty else 0.
+        affine_penalty = float(affine_penalty) or None
+
         # build affine object
         if options.affine.is2d is not False:
             if isinstance(losses[0], objects.SumSimilarity):
@@ -131,10 +137,10 @@ def _main(options):
                 affine0 = losses[0].fixed.affine
             affine = make_affine_2d(options.affine.is2d, affine0,
                                     options.affine.name, options.affine.position,
-                                    init=affine_init)
+                                    penalty=affine_penalty, init=affine_init)
         else:
             affine = make_affine(options.affine.name, options.affine.position,
-                                 init=affine_init)
+                                 penalty=affine_penalty, init=affine_init)
 
     # ------------------------------------------------------------------
     #                           BUILD DENSE
