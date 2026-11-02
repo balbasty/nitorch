@@ -5,10 +5,17 @@ from .linesearch import LineSearch
 import torch
 
 
+#: Default relative tolerance on the loss below which the zoom phase of the
+#: strong Wolfe line search stops. Single-precision losses summed over
+#: millions of voxels are not resolved much below this.
+FTOL = 1e-6
+
+
 class StrongWolfe(FirstOrder):
     """Optimize along a search direction until Wolfe conditions are enforced"""
 
-    def __init__(self, lr=1, c1=1e-4, c2=0.9, tol=1e-9, max_iter=25, **kwargs):
+    def __init__(self, lr=1, c1=1e-4, c2=0.9, tol=1e-9, max_iter=25,
+                 ftol=FTOL, **kwargs):
         """
 
         Parameters
@@ -20,15 +27,21 @@ class StrongWolfe(FirstOrder):
         c2 : float, default=0.9
             Wolfe condition on gradients
         tol : float, default=1e-9
-            Tolerance for early stopping
+            Tolerance for early stopping (on the bracket width)
         max_iter : int, default=25
             Maximum number of iterations
+        ftol : float, default=1e-6
+            Relative tolerance on the loss for early stopping: once a
+            bracket is found, the search stops as soon as a new trial is
+            within `ftol * max(|f_best|, |f0|)` of the best point (the
+            loss is flat to numerical precision). 0 disables this test.
         """
         super().__init__(lr=lr, iter=0, **kwargs)
         self.c1 = c1
         self.c2 = c2
         self.tol = tol
         self.max_iter = max_iter
+        self.ftol = ftol
 
     def iter(self, *args, **kwargs):
         # No point iterating a Line search
@@ -247,13 +260,33 @@ class StrongWolfe(FirstOrder):
                 # non-finite inside the bracket: stop and keep the best point
                 break
             debug('new:', new_a, new_f.item(), "\\" if new_dg < 0 else '//')
+            # `f` is the lowest value of the bracket
+            stagnated = self._stagnated(new_f, f, f0)
             success, (a, a1), (f, f1), (g, g1), (dg, dg1) \
                 = update_bracket(new_a, new_f, new_g, new_dg,
                                  (a, a1), (f, f1), (g, g1), (dg, dg1))
+            if stagnated and not success:
+                # The trial is within `ftol` of the best point: the loss is
+                # flat (to numerical precision) within the bracket and
+                # zooming further wastes evaluations (typically near
+                # convergence). Keep the best point.
+                debug('stagnate', new_f.item(), f.item())
+                break
 
         if not math.isfinite(f) or f > f0:
             return 0, f0, g0
         return a, f, g
+
+    def _stagnated(self, f_new, f_best, f0):
+        """True if `f_new` and `f_best` are equal up to `ftol` (relative to
+        the magnitude of the loss): the trial neither improved on the best
+        point nor was meaningfully worse, i.e., the loss is flat to
+        numerical precision. (A trial that is clearly worse is a normal
+        backtracking step and does not count as stagnation.)"""
+        if not self.ftol:
+            return False
+        f_new, f_best, f0 = float(f_new), float(f_best), float(f0)
+        return abs(f_best - f_new) <= self.ftol * max(abs(f_best), abs(f0))
 
     @staticmethod
     def sort_bracket(ba, bf, bg, bdg):
@@ -395,11 +428,11 @@ class StrongWolfe(FirstOrder):
 class StrongWolfeLineSearch(LineSearch):
 
     def repr_keys(self):
-        keys = super().repr_keys() + ['c1', 'c2', 'max_iter']
+        keys = super().repr_keys() + ['c1', 'c2', 'max_iter', 'ftol']
         return keys
 
     def __init__(self, optim=None, lr=1, c1=0, c2=0.9, tol=1e-9, max_iter=25,
-                 store_value=False, **kwargs):
+                 ftol=FTOL, store_value=False, **kwargs):
         """
 
         Parameters
@@ -416,13 +449,17 @@ class StrongWolfeLineSearch(LineSearch):
             Tolerance for early stopping
         max_iter : int, default=25
             Maximum number of iterations
+        ftol : float, default=1e-6
+            Relative tolerance on the loss for stopping the zoom phase
+            early (see `StrongWolfe`). 0 disables this test.
         store_value : bool or float, default=False
             Whether to store the successful parameter in `optim`.
             If False, the original value is restored at the end of the
             line search. If a float, the successful parameter is modulated
             by that value before being stored.
         """
-        self.wolfe = StrongWolfe(lr=lr, c1=c1, c2=c2, tol=tol, max_iter=max_iter)
+        self.wolfe = StrongWolfe(lr=lr, c1=c1, c2=c2, tol=tol,
+                                 max_iter=max_iter, ftol=ftol)
         super().__init__(optim, **kwargs)
         self.store_value = store_value
 
@@ -430,6 +467,7 @@ class StrongWolfeLineSearch(LineSearch):
     c2 = _wrapped_prop('c2', 'wolfe')
     tol = _wrapped_prop('tol', 'wolfe')
     max_iter = _wrapped_prop('max_iter', 'wolfe')
+    ftol = _wrapped_prop('ftol', 'wolfe')
     lr = _wrapped_prop('lr', 'wolfe')
 
     def step(self, param=None, closure=None, **kwargs):
