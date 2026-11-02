@@ -31,7 +31,8 @@ usage:
 
     -l, --layout LAYOUT    Target orientation (default: RAS)
     -o, --output *FILES    Output filenames (default: {dir}/{base}.{layout}{ext})
-    -t, --transform        Output transformation filename (default: none)
+    -t, --transform        Output transformation filename (default: none,
+                           or {dir}/{base}_2_{layout}.lta if no value)
 """
 
 
@@ -67,9 +68,9 @@ def parse(args):
             while cli.next_isvalue(args):
                 val, *args = args
                 struct.output.append(val)
-        elif tag in ('t', '--transform'):
+        elif tag in ('-t', '--transform'):
             if not cli.next_isvalue(args):
-                struct.transform = ['{dir}{sep}{base}_2_{orientation}.lta']
+                struct.transform = ['{dir}{sep}{base}_2_{layout}.lta']
             else:
                 struct.transform = []
             while cli.next_isvalue(args):
