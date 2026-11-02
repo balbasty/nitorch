@@ -238,9 +238,17 @@ streamlines stored in TrackVis `.trk` files.
 
 ## Output filenames
 
-Commands that write a modified copy of an input do not overwrite the input by
-default. They build the output name from the input name and write it **next to
-the input**. Options such as `-o`, `--output` or `-t`, `--transform` let you
+Commands that write a modified copy of an input build the output name from
+the input name and write it **next to the input**, usually with a suffix such
+as `.crop` or `.pad`, so that the input is left untouched.
+
+!!! warning "`convert` is the exception"
+    The default output template of [`convert`](reference/images/convert.md)
+    is `{dir}{sep}{base}{ext}`, which is the input name itself. Unless you
+    change the format (`-f`) or give an output name (`-o`), `convert`
+    overwrites its input.
+
+Options such as `-o`, `--output` or `-t`, `--transform` let you
 choose another name, and the name you give is a *template*: it may contain
 placeholders in braces, which the command replaces for each input file.
 
