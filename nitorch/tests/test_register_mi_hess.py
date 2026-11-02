@@ -261,3 +261,35 @@ def test_jointhist_backward2_exact(fwhm):
     ref = torch.einsum('ab,abnk->nk', gg[0], jac.reshape(BINS, BINS, n, 2))
     out = hist.backward(gg, x, w=w, min=mn, max=mx)[0]
     assert relerr(out, ref) < 1e-10, relerr(out, ref)
+
+
+# --- derivatives along a subset of the sample components (#158) -----------
+
+
+def _hist_problem(batch=(), seed=0, n=300):
+    g = torch.Generator().manual_seed(seed)
+    x = torch.rand([*batch, n, 2], dtype=torch.double, generator=g)
+    w = torch.rand([*batch, n], dtype=torch.double, generator=g)
+    gg = torch.randn([*batch, BINS, BINS], dtype=torch.double, generator=g)
+    return x, w, gg
+
+
+@pytest.mark.parametrize('order', [1, 2, 3])
+@pytest.mark.parametrize('fwhm', [0, 2])
+@pytest.mark.parametrize('axes', [[0], [1], [0, 1], [1, 0]])
+@pytest.mark.parametrize('batch', [(), (2,)])
+def test_jointhist_axes(order, fwhm, axes, batch):
+    """`axes` selects components; `backward_grad_hess` == both calls"""
+    x, w, gg = _hist_problem(batch)
+    hist = JointHistCount(bins=BINS, order=order, fwhm=fwhm)
+    full_g = hist.backward(gg, x, w=w)
+    full_h = hist.backward_hess(gg, x, w=w)
+    g = hist.backward(gg, x, w=w, axes=axes)
+    h = hist.backward_hess(gg, x, w=w, axes=axes)
+    assert g.shape == h.shape == (*batch, x.shape[-2], len(axes))
+    assert torch.equal(g, full_g[..., axes])
+    assert torch.allclose(h, full_h[..., axes], rtol=1e-12, atol=0)
+    g2, h2 = hist.backward_grad_hess(gg, x, w=w, axes=axes)
+    assert torch.allclose(g2, full_g[..., axes], rtol=1e-10, atol=1e-12)
+    assert torch.allclose(h2, full_h[..., axes], rtol=1e-10, atol=1e-12)
+
