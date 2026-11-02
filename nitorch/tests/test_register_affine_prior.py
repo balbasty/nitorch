@@ -68,9 +68,10 @@ def test_group_options_parsed():
     options = parser.parse(IMAGES + ['@affine', 'affine', '2'])
     for g in ('translation', 'rotation', 'zoom', 'shear'):
         assert getattr(options.affine, g) is None
-    options = parser.parse(IMAGES + ['@affine', '--rotation', '3',
-                                     '--zoom', '4', '--translation', '1',
-                                     '--shear', '6'])
+    options = parser.parse(IMAGES + ['@affine', '--rotation-penalty', '3',
+                                     '--zoom-penalty', '4',
+                                     '--translation-penalty', '1',
+                                     '--shear-penalty', '6'])
     assert (options.affine.translation, options.affine.rotation,
             options.affine.zoom, options.affine.shear) == (1., 3., 4., 6.)
 
@@ -102,7 +103,7 @@ def _cli_affine(tmp_path, monkeypatch, affine_args):
     ('affine', ['-t', '5'], dict(t=5., r=0., z=0., s=0.)),
     # FACTOR fills the groups not given
     ('affine', ['2', '-r', '3', '-s', '7'], dict(t=2., r=3., z=2., s=7.)),
-    ('affine', ['1', '--translation', '4', '--zoom', '6'],
+    ('affine', ['1', '--translation-penalty', '4', '--zoom-penalty', '6'],
      dict(t=4., r=1., z=6., s=1.)),
     ('similitude', ['2', '-z', '9'], dict(t=2., r=2., z=9.)),
     ('rigid', ['-r', '8'], dict(t=0., r=8.)),

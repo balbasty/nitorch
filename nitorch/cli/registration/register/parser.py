@@ -167,10 +167,10 @@ usage:
     Gaussian prior N(0, (lambda I)^-1) on the (orthonormal) affine Lie
     parameters q, i.e. a penalty 1/2 lambda ||q||^2. 0 means no penalty.
     Per-group precisions (default: FACTOR for groups not given):
-        -t, --translation LAM           Prior precision of translations
-        -r, --rotation LAM              Prior precision of rotations
-        -z, --zoom LAM                  Prior precision of zooms
-        -s, --shear LAM                 Prior precision of shears
+        -t, --translation-penalty LAM   Prior precision of translations
+        -r, --rotation-penalty LAM      Prior precision of rotations
+        -z, --zoom-penalty LAM          Prior precision of zooms
+        -s, --shear-penalty LAM         Prior precision of shears
     Common options:
         -p, --position                  Position of the affine: [sym], mov, fix
         -g, --progressive               Progressive optimization (t -> r -> s -> a) [false]
@@ -572,10 +572,10 @@ affine_choices = cli.Positional('name', nargs='?', default='rigid',
 affine = cli.NamedGroup('affine', affine_choices, '@affine', n='?', make_default=False)
 affine.add_positional('factor', nargs='*', default=[0.], convert=float,
                       help='Prior precision (0 = no penalty)')
-for _grp, _flags in (('translation', ('-t', '--translation')),
-                     ('rotation', ('-r', '--rotation')),
-                     ('zoom', ('-z', '--zoom')),
-                     ('shear', ('-s', '--shear'))):
+for _grp, _flags in (('translation', ('-t', '--translation-penalty')),
+                     ('rotation', ('-r', '--rotation-penalty')),
+                     ('zoom', ('-z', '--zoom-penalty')),
+                     ('shear', ('-s', '--shear-penalty'))):
     affine.add_option(_grp, _flags, nargs=1, convert=float, default=None,
                       help=f'Prior precision of the {_grp} parameters '
                            f'[FACTOR]')
