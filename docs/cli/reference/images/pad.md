@@ -80,15 +80,19 @@ prefer [`crop`](crop.md).
 
 ### Boundary conditions
 
-`-b` chooses the values given to the new voxels.
+`-b` chooses the values given to the new voxels. It takes a single boundary
+condition, or a single constant value, which is applied to all axes.
 
 | Value         | New voxels                                                                   |
 | ------------- | ---------------------------------------------------------------------------- |
 | `zero`        | Zero. This is the default.                                                   |
-| a number      | That constant, for example `-b 1000` or `-b -1`.                            |
+| a number      | That constant, for example `-b 1000`, `-b -1`, `-b -0.5` or `-b -inf`.      |
 | `replicate`   | The value of the nearest voxel at the edge of the image.                     |
 | `dct2`        | The image mirrored about its edge, with the edge voxel repeated.             |
 | `dft`         | The image wrapped around, as if it were periodic.                            |
+
+Any number is accepted as a constant, including negative ones: `-b -1`,
+`-b -0.5`, `-b -.5` and `-b -inf` all fill the new voxels with that value.
 
 The other boundary names and aliases used throughout NITorch are accepted as
 well: `dct` (an alias of `dct2`), `dct1`, `dst1`, `dst2`, and the SciPy and
@@ -158,7 +162,7 @@ of one image to others.
 | Option               | Value               | Description                                                                              | Default                      |
 | -------------------- | ------------------- | ---------------------------------------------------------------------------------------- | ---------------------------- |
 | `-s`, `--size`       | `SIZE... [SPACE]`   | Amount of padding per axis: a number, or a pair `(lower, upper)`. The last entry is repeated for missing axes. [See above](#padding-amounts). | none, required unless `-k` or `-t` is given |
-| `-b`, `--bound`      | `BOUND`             | Boundary condition: `zero`, a number, `replicate`, `dct2`, `dft` or another bound name. [See above](#boundary-conditions). | `zero`                       |
+| `-b`, `--bound`      | `BOUND`             | Boundary condition, applied to all axes: `zero`, a number (negative values included), `replicate`, `dct2`, `dft` or another bound name. [See above](#boundary-conditions). | `zero`                       |
 | `-k`, `--like`       | `FILE`              | Reference volume whose shape and position define the padding. [See above](#using-a-reference-image). | none                         |
 | `-o`, `--output`     | `FILE...`           | Output name template, one per input. Placeholders: `{dir}`, `{sep}`, `{base}`, `{ext}`.  | `{dir}{sep}{base}.pad{ext}`  |
 | `-t`, `--transform`  | `[FILE...]`         | Name of a `.lta` file to write or read, one per input. [See above](#transformation-files). | none; `{dir}{sep}{base}.pad.lta` if given with no value |
