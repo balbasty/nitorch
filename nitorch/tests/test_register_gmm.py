@@ -407,3 +407,106 @@ def test_gmm_float32_more_classes_than_tissues(local):
     for o32, o64 in zip(out32, out64):
         assert torch.isfinite(o32).all()
     assert torch.allclose(out32[0].double(), out64[0], rtol=1e-3, atol=1e-3)
+
+
+# --- masked local GMM ------------------------------------------------------
+
+
+def _lgmm_masked_data():
+    mov, fix = make_data([10, 10])
+    mask = torch.ones_like(fix)
+    mask[..., :3] = 0
+    return mov, fix, mask
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize('measure', ['joint', 'mi'])
+def test_lgmm_masked_ignores_masked_voxels(measure):
+    """Masked-out voxels (here outliers) have no influence on the value,
+    gradient or Hessian, which are exactly zero outside the mask.
+    (The mask used to be silently dropped.)"""
+    mov, fix, mask = _lgmm_masked_data()
+    kw = dict(dim=2, bins=3, patch=4, max_iter=16, measure=measure,
+              mask=mask)
+    out = []
+    for mval, fval in ((50., -30.), (-7., 2.)):
+        m, f = mov.clone(), fix.clone()
+        m[..., :3] = mval
+        f[..., :3] = fval
+        out.append(lgmmh(m, f, **kw))
+    (ll1, g1, h1), (ll2, g2, h2) = out
+    assert torch.isfinite(ll1) and torch.isfinite(g1).all()
+    assert torch.isfinite(h1).all()
+    assert torch.allclose(ll1, ll2, rtol=1e-10), (ll1.item(), ll2.item())
+    assert torch.allclose(g1, g2, rtol=1e-8, atol=1e-14)
+    assert torch.allclose(h1, h2, rtol=1e-8, atol=1e-14)
+    assert (g1[..., :3] == 0).all() and (h1[..., :3] == 0).all()
+    # and the mask has an effect
+    ll0 = lgmmh(mov, fix, dim=2, bins=3, patch=4, max_iter=16,
+                measure=measure, grad=False, hess=False)
+    assert not torch.allclose(ll0, ll1)
+
+
+def test_lgmm_masked_fully_masked_patches_finite():
+    """Patches entirely outside the mask give finite results."""
+    mov, fix = make_data([16, 16])
+    mask = torch.zeros_like(fix)
+    mask[..., 4:8, 4:8] = 1
+    for kernel in ('g', 'c'):
+        ll, g, h = lgmmh(mov, fix, dim=2, bins=2, patch=3, stride=2,
+                         kernel=kernel, max_iter=8, mask=mask)
+        assert torch.isfinite(ll), kernel
+        assert torch.isfinite(g).all() and torch.isfinite(h).all(), kernel
+        assert (g[mask == 0] == 0).all() and (h[mask == 0] == 0).all()
+
+
+def test_lgmm_unmasked_path_unchanged():
+    """No mask: same code path as before (bitwise reproducible)."""
+    mov, fix = make_data([8, 8])
+    kw = dict(dim=2, bins=3, patch=4, max_iter=8)
+    a = lgmmh(mov, fix, **kw)
+    b = lgmmh(mov, fix, mask=None, **kw)
+    for x, y in zip(a, b):
+        assert torch.equal(x, y)
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize('measure', ['joint', 'mi'])
+def test_lgmm_masked_grad_hess_fd(measure):
+    """Directional FD check of the masked loss at fixed parameters."""
+    mov, fix, mask = _lgmm_masked_data()
+    _, theta = lgmmh(mov, fix, dim=2, bins=3, patch=4, max_iter=8,
+                     grad=False, hess=False, return_theta=True, mask=mask)
+    theta = {k: theta[k] for k in
+             ('xmean', 'ymean', 'xvar', 'yvar', 'corr', 'prior')}
+    kw = dict(dim=2, bins=3, patch=4, max_iter=0, measure=measure,
+              mask=mask)
+
+    def fn(m, **k):
+        return lgmmh(m, fix, theta=dict(theta), **kw, **k)
+
+    ll, g, h = fn(mov)
+    gen = torch.Generator().manual_seed(1)
+    eps = 1e-6
+    for _ in range(3):
+        v = torch.randn(mov.shape, dtype=mov.dtype, generator=gen)
+        v = v / v.norm()
+        fd = (fn(mov + eps * v, grad=False, hess=False) -
+              fn(mov - eps * v, grad=False, hess=False)) / (2 * eps)
+        an = (g * v).sum()
+        assert abs(fd / an - 1) < 1e-5, (fd.item(), an.item())
+        gp = fn(mov + eps * v, hess=False)[1]
+        gm = fn(mov - eps * v, hess=False)[1]
+        hfd = ((gp - gm) / (2 * eps) * v).sum()
+        han = (h * v * v).sum()
+        assert 0.4 < hfd / han < 2.5, (hfd.item(), han.item())
+
+
+def test_lgmm_class_passes_mask():
+    """`LGMMH` forwards `mask` (it used to drop it)."""
+    mov, fix, mask = _lgmm_masked_data()
+    loss = LGMMH(dim=2, bins=3, patch=4, max_iter=8, cache=False)
+    ll, g, h = loss.loss_grad_hess(mov, fix, mask=mask)
+    ref = lgmmh(mov, fix, dim=2, bins=3, patch=4, max_iter=8, mask=mask)
+    assert torch.equal(ll, ref[0]) and torch.equal(g, ref[1])
+    assert (g[..., :3] == 0).all()

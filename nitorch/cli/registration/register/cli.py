@@ -339,6 +339,10 @@ def build_losses(options, pyramids, device):
             loss.fix.discretize = loss.fix.discretize or 256
             # moving image: soft-quantized into (default) 16 bins
             loss.mov.discretize = loss.mov.discretize or 16
+            if isinstance(loss.fix.discretize, tuple):
+                # `-d auto[:MX]`: J chosen per level from N and K
+                loss.fix.discretize = ('auto', loss.fix.discretize[1],
+                                       loss.mov.discretize)
             loss.mov.soft = True
             loss.mov.missing = []
         loss.fix.pyramid = pyramid['fix']

@@ -146,7 +146,7 @@ usage:
     -f, --fwhm *F                   Smooth image before using it.
     -z, --pad *P                    Pad image before using it.
     -s, --rescale [[MN], MX]        Rescale image so that its MN/MX percentiles match (0, 1). [0, 95]
-    -d, --discretize [N]            Discretize the image into N [default: 256] bins. [False]
+    -d, --discretize [auto]:[N]      Discretize the image into N [default: 256] bins. [False]
     -l, --label *VAL                Specifies that the file is a label map [False]
                                     If no argument given, labels are [all but zero]
     -m, --mask FILE                 Path to a mask of voxels to *include* [all]
@@ -461,7 +461,15 @@ file.add_option('name', '--name', nargs=1,
 file.add_option('label', ('-l', '--label'), nargs='*', default=False,
                 action=cli.Actions.store_true, convert=int,
                 help='The file is a label map (and specify labels)')
-file.add_option('discretize', ('-d', '--discretize'), nargs='?', convert=int,
+def _convert_discretize(x):
+    x = str(x)
+    if x.startswith('auto'):
+        mx = x[5:] if x.startswith('auto:') else ''
+        return ('auto', int(mx) if mx else 256)
+    return int(x)
+
+
+file.add_option('discretize', ('-d', '--discretize'), nargs='?', convert=_convert_discretize,
                 action=cli.Actions.store_value(256),
                 default=0, help='Discretize the image into N discrete bins')
 file.add_option('mask', ('-m', '--mask'), nargs=1, default=None,

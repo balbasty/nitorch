@@ -2,11 +2,12 @@ __all__ = ['make_image', 'make_loss',
            'make_affine', 'make_affine_2d', 'make_affine_optim',
            'make_nonlin', 'make_nonlin_2d', 'make_nonlin_optim']
 
+import torch
 from nitorch import spatial, io
 from nitorch.core.py import make_list
 from nitorch.core import utils
 from . import losses, objects, optim as opt
-from .pairwise_preproc import soft_quantize_image, discretize_image, preproc_image
+from .pairwise_preproc import soft_quantize_image, discretize_image, preproc_image, auto_bins
 
 
 def make_image(dat, mask=None, affine=None,
@@ -27,8 +28,12 @@ def make_image(dat, mask=None, affine=None,
         Pyramid level to compute
     pyramid_method : {'gauss', 'average', 'median', 'stride'}, default='gauss'
         Method used to compute the pyramid
-    discretize : int, optional
-        Discretize the image at each level into this many bins
+    discretize : int or 'auto' or ('auto', [max_bins], [nclasses]), optional
+        Discretize the image at each level into this many bins.
+        With 'auto', the number of bins is chosen per pyramid level
+        from the number of valid voxels N at that level (see
+        `auto_bins`): J = clip(N // (5 * nclasses), 2, max_bins),
+        with default max_bins=256 and nclasses=16.
     soft : bool, default=False
         Use soft discretization instead of hard discretization
     mind : pair(float, int), optional
@@ -84,16 +89,38 @@ def make_image(dat, mask=None, affine=None,
             level.dat = level.dat.reshape([-1, *level.shape])
 
     if discretize:
+        auto = None
+        if isinstance(discretize, str) or isinstance(discretize, (list, tuple)):
+            auto = make_list(discretize)
+            if auto[0] != 'auto':
+                raise ValueError(f'Unknown discretize value: {discretize}')
+            auto = auto[1:]
+            max_bins = int(auto[0]) if len(auto) > 0 and auto[0] else 256
+            nclasses = int(auto[1]) if len(auto) > 1 and auto[1] else 16
+            auto = (max_bins, nclasses)
+
+        def nbins_at(level):
+            if auto is None:
+                return discretize
+            valid = torch.isfinite(level.dat).all(0)
+            mask = getattr(level, 'mask', None)
+            if mask is not None:
+                mask = mask > 0
+                if mask.dim() == level.dat.dim():
+                    mask = mask.all(0)
+                valid = valid & mask
+            return auto_bins(int(valid.sum()), auto[1], auto[0])
+
         if soft:
             if len(dat) > 1:
                 raise ValueError('Cannot soft-quantize a multi-channel image')
             for level in image:
                 level.preview = level.dat
-                level.dat = soft_quantize_image(level.dat, discretize)
+                level.dat = soft_quantize_image(level.dat, nbins_at(level))
         elif not is_label:
             for level in image:
                 level.preview = level.dat
-                level.dat = discretize_image(level.dat, discretize)
+                level.dat = discretize_image(level.dat, nbins_at(level))
     return image
 
 

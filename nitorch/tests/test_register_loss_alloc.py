@@ -154,10 +154,16 @@ ROBUST_REF = {
         -0.360851822820093, -0.056811604433793864, 9.5550927599893,
         3.371224024593063,
     ],
+    # Joint Tukey with K = 2 channels: the default c is now scaled to
+    # c(2) ≈ 5.835 (same breakdown as 4.685 for one channel), and κ is
+    # κ(c(2), 2) ≈ 0.786 instead of the single-channel κ(4.685) ≈ 0.758
+    # (the joint squared norm is χ²(2)), so these numbers changed. They
+    # are bitwise those of the previous robust.py (b8f04fa) with only c
+    # and κ replaced.
     'tukey-est-joint-batch': [
-        -2.7353914775724006, 0.032553518722601635, 27.284085573960557,
-        -2.7353915080536293, 0.03255348622874257, 27.284089981851977,
-        43.58774327120846,
+        -2.2127790237562026, 0.08902846561093018, 23.984696843875284,
+        -2.2127790402118785, 0.08902846110075185, 23.98469796198004,
+        33.349527171483516,
     ],
     'tukey-fixed-batch': [
         0.8772765390904091, -0.007075631266697005, 4.010889042697366,
