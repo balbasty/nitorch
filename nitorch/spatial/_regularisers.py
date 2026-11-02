@@ -21,6 +21,8 @@ All these functions accept non-stationary weight maps.
 Another set of functions generate an equivalent convolution kernel
 - regulariser_kernel / regulariser_grid_kernel
     Return a sparse convolution kernel
+- regulariser_grid_diag
+    Return the diagonal of the regulariser
 
 A set of functions return the diagonal of each regulariser (when
 though of in matrix form). They are only implemented in the "field" case.
@@ -1099,9 +1101,9 @@ def regulariser_grid(v, absolute=0, membrane=0, bending=0, lame=0,
     if bending:
         y.add_(bending_grid(v, weights=wb, **fdopt), alpha=bending)
     if lame[0]:
-        y.add_(lame_shear(v, weights=wl[0], **fdopt), alpha=lame[1])
+        y.add_(lame_shear(v, weights=wl[0], **fdopt), alpha=lame[0])
     if lame[1]:
-        y.add_(lame_div(v, weights=wl[1], **fdopt), alpha=lame[0])
+        y.add_(lame_div(v, weights=wl[1], **fdopt), alpha=lame[1])
 
     return y
 
@@ -1142,6 +1144,105 @@ def regulariser_grid_kernel(dim, absolute=0, membrane=0, bending=0, lame=0,
     kernel = sum_kernels(dim, *kernels)
     kernel *= factor
     return kernel
+
+
+def regulariser_grid_diag(dim, absolute=0, membrane=0, bending=0, lame=0,
+                          factor=1, voxel_size=1, bound='dft', weights=None,
+                          dtype=None, device=None):
+    """Diagonal of the precision matrix of a deformation grid
+    (i.e., of `regulariser_grid` in matrix form).
+
+    Parameters
+    ----------
+    dim : int
+    absolute : float, default=0
+    membrane : float, default=0
+    bending : float, default=0
+    lame : (float, float), default=0
+    factor : float, default=1
+    voxel_size : [sequence of] float, default=1
+    bound : str, default='dft'
+    weights : [dict of] (..., *spatial) tensor, optional
+        If a dict: keys must be in {'absolute', 'membrane', 'bending', 'lame'}
+        Else: the same weight map is shared across penalties.
+
+    Returns
+    -------
+    diag : (dim,) or (..., *spatial, dim) tensor
+        Exact diagonal (in the interior of the field of view).
+        Without weights, the diagonal is constant across space.
+
+    """
+    if isinstance(weights, dict):
+        wa = weights.get('absolute', None)
+        wm = weights.get('membrane', None)
+        wb = weights.get('bending', None)
+        wl = weights.get('lame', None)
+    else:
+        wa = wm = wb = wl = weights
+    wl = ensure_list(wl, 2)
+    for w in (wa, wm, wb, *wl):
+        if torch.is_tensor(w):
+            dtype = dtype or w.dtype
+            device = device or w.device
+    backend = dict(dtype=dtype or torch.get_default_dtype(), device=device)
+    wa, wm, wb, *wl = [torch.as_tensor(w, **backend) if w is not None else w
+                       for w in (wa, wm, wb, *wl)]
+
+    vx = make_vector(voxel_size, dim, **backend)
+    vx2 = vx.square()
+    ivx2 = vx2.reciprocal()
+    lame = make_vector(lame, 2).tolist()
+    opt = dict(voxel_size=vx, bound=bound, dim=dim)
+
+    def mul(w, x):
+        # (..., *spatial) weight x (dim,) vector
+        return x if w is None else w[..., None] * x
+
+    out = torch.zeros([dim], **backend)
+    if absolute:
+        out = out + absolute * mul(wa, vx2)
+    if membrane:
+        out = out + membrane * mul(membrane_diag(weights=wm, **opt), vx2)
+    if bending:
+        out = out + bending * mul(bending_diag(weights=wb, **opt), vx2)
+
+    def m1d(w):
+        # diagonal of the 1D membrane along each dimension
+        # M_j(w) = w + (w[-1] + w[+1]) / 2  along j
+        if w is None:
+            return [2] * dim
+        return [_membrane_diag1d(w, d, dim, bound) for d in range(dim)]
+
+    if lame[0]:
+        # diag of the shear: 2 * M_i(w) + sum_{j != i} (vx_i / vx_j)^2 M_j(w)
+        m = m1d(wl[0])
+        shear = [2 * m[i] + sum(m[j] * (vx2[i] * ivx2[j])
+                                for j in range(dim) if j != i)
+                 for i in range(dim)]
+        out = out + lame[0] * _stack_last(shear, **backend)
+    if lame[1]:
+        # diag of the divergence: M_i(w)
+        out = out + lame[1] * _stack_last(m1d(wl[1]), **backend)
+    return out * factor
+
+
+def _stack_last(values, **backend):
+    """Stack a list of scalars and/or tensors along a new last dimension"""
+    values = [torch.as_tensor(v, **backend) for v in values]
+    shape = torch.broadcast_shapes(*[v.shape for v in values])
+    return torch.stack([v.expand(shape) for v in values], -1)
+
+
+def _membrane_diag1d(weights, d, dim, bound='dft'):
+    """Diagonal of a weighted membrane along a single dimension
+    (with unit voxel size): `w + (w[-1] + w[+1]) / 2` along `d`"""
+    from ._finite_differences import _window1d, _lincomb
+    d = weights.dim() - dim + d
+    values = [[weights]]
+    values.extend(_window1d(weights, d, [-1, 1], bound=bound))
+    dims = [None, d, d]
+    return _lincomb(values, [1, 0.5, 0.5], dims, ref=weights)
 
 
 def regulariser(x, absolute=0, membrane=0, bending=0, factor=1,
@@ -1236,11 +1337,11 @@ def regulariser_kernel(dim, absolute=0, membrane=0, bending=0,
 
     kernels = []
     if absolute:
-        kernels.append(absolute_kernel(dim, voxel_size, **backend))
+        kernels.append(absolute_kernel(dim, voxel_size, **backend) * absolute)
     if membrane:
-        kernels.append(membrane_kernel(dim, voxel_size, **backend))
+        kernels.append(membrane_kernel(dim, voxel_size, **backend) * membrane)
     if bending:
-        kernels.append(bending_kernel(dim, voxel_size, **backend))
+        kernels.append(bending_kernel(dim, voxel_size, **backend) * bending)
     kernel = sum_kernels(dim, *kernels)
     kernel *= factor
     return kernel
@@ -1392,9 +1493,11 @@ def membrane_diag(voxel_size=1, bound='dct2', dim=None, weights=None):
     However, is a weight map is provided, the diagonal of the regulariser
     is a convolved version of the weight map. In 2D, the convolution kernel
     has a first order "diamond" shape:
-                                    b0
-                                b1  a   b1
-                                    b0
+                                    b1
+                                b0  a   b0
+                                    b1
+    with `a = alpha` and `b0 = ivx2[0] / 2`, where `ivx2 = vx.reciprocal().square()`
+    (the kernel sums to the unweighted diagonal).
 
     Parameters
     ----------
@@ -1436,10 +1539,10 @@ def membrane_diag(voxel_size=1, bound='dct2', dim=None, weights=None):
     from ._finite_differences import _window1d, _lincomb
     values = [[weights]]
     dims = [None] + [d for d in range(dim) for _ in range(2)]
-    kernel = [2 * vx.sum()]
+    kernel = [vx.sum()]
     for d in range(dim):
         values.extend(_window1d(weights, d, [-1, 1], bound=bound))
-        kernel += [vx[d], vx[d]]
+        kernel += [vx[d] / 2, vx[d] / 2]
     weights = _lincomb(values, kernel, dims, ref=weights)
 
     # send spatial dimensions to the back
@@ -1464,9 +1567,11 @@ def membrane_diag_alt(voxel_size=1, bound='dct2', dim=None, weights=None):
     However, is a weight map is provided, the diagonal of the regulariser
     is a convolved version of the weight map. In 2D, the convolution kernel
     has a first order "diamond" shape:
-                                    b0
-                                b1  a   b1
-                                    b0
+                                    b1
+                                b0  a   b0
+                                    b1
+    with `a = alpha` and `b0 = ivx2[0] / 2`, where `ivx2 = vx.reciprocal().square()`
+    (the kernel sums to the unweighted diagonal).
     Parameters
     ----------
     weights : (..., *spatial) tensor
@@ -1502,12 +1607,12 @@ def membrane_diag_alt(voxel_size=1, bound='dct2', dim=None, weights=None):
         return 2 * vx.sum()
 
     # build sparse kernel
-    kernel = [2 * vx.sum()]
+    kernel = [vx.sum()]
     center_index = [1] * dim
     indices = [list(center_index)]
     for d in range(dim):
         # cross
-        kernel += [vx[d], vx[d]]
+        kernel += [vx[d] / 2, vx[d] / 2]
         index = list(center_index)
         index[d] = 0
         indices.append(index)
@@ -1527,16 +1632,23 @@ def bending_diag(voxel_size=1, bound='dct2', dim=None, weights=None):
 
     If no weight map is provided, the diagonal of the bending regulariser
     is a scaled identity with scale `6 * alpha + 8 * beta`, where
-        - `alpha = vx.reciprocal().square().sum()`
-        - `beta = vx.combinations(r=2).prod(-1).sum()`
+        - `ivx2 = vx.reciprocal().square()`
+        - `alpha = ivx2.square().sum()`
+        - `beta = ivx2.combinations(r=2).prod(-1).sum()`
     However, is a weight map is provided, the diagonal of the regulariser
     is a convolved version of the weight map. In 2D, the convolution kernel
     has a second order "diamond" shape:
                                     c1
-                                d   b0  d
-                            c1  b1  a   b1  c1
-                                d   b0  d
-                                    c0
+                                d   b1  d
+                            c0  b0  a   b0  c0
+                                d   b1  d
+                                    c1
+    with
+        - `a  = 2.5 * alpha + 2 * beta`
+        - `b0 = 1.5 * ivx2[0]**2 + ivx2[0]*ivx2[1]`
+        - `c0 = 0.25 * ivx2[0]**2`
+        - `d  = 0.5 * ivx2[0]*ivx2[1]`
+    (the kernel sums to the unweighted diagonal).
 
     Parameters
     ----------
@@ -1572,17 +1684,17 @@ def bending_diag(voxel_size=1, bound='dct2', dim=None, weights=None):
     ivx = torch.combinations(torch.arange(dim), r=2)
 
     if weights is None:
-        return 6 * vx.sum() + 8 * cvx.sum()
+        return 6 * vx.square().sum() + 8 * cvx.sum()
 
     # build sparse kernel
-    kernel = [10 * vx.sum() + 8 * cvx.sum()]
+    kernel = [2.5 * vx.square().sum() + 2 * cvx.sum()]
     center_index = [2] * dim
     indices = [list(center_index)]
     for d in range(dim):
         # cross
         subcvx = sum(cvx1 for cvx1, ivx1 in zip(cvx, ivx) if d in ivx1)
-        w1 = 6 * vx[d].square() + 4 * subcvx
-        w2 = vx[d].square()
+        w1 = 1.5 * vx[d].square() + subcvx
+        w2 = 0.25 * vx[d].square()
         kernel += [w1, w1, w2, w2]
         index = list(center_index)
         index[d] = 1
@@ -1600,7 +1712,7 @@ def bending_diag(voxel_size=1, bound='dct2', dim=None, weights=None):
         for dd in range(d+1, dim):
             subcvx = [cvx1 for cvx1, ivx1 in zip(cvx, ivx)
                       if ivx1[0] == d and ivx1[1] == dd][0]
-            kernel += [subcvx] * 4
+            kernel += [0.5 * subcvx] * 4
             index = list(center_index)
             index[d] = 1
             index[dd] = 1
@@ -1669,7 +1781,8 @@ def membrane_diag_old(voxel_size=1, bound='dct2', dim=None, weights=None):
         return 2 * vx.sum()
 
     w = weights  # alias for readability
-    out = (2 * vx.sum()) * w
+    out = vx.sum() * w
+    vx = vx / 2  # weight of the neighbours
 
     # define out-of-bound coordinate on the left and right
     # and the eventual value transformer depending on the
