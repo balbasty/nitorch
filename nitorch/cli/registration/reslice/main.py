@@ -10,7 +10,7 @@ from nitorch.cli.cli import commands
 from nitorch.core.cli import ParseError
 from nitorch.core import utils, py
 from nitorch.core.dtypes import dtype as nitype
-from nitorch.core.linalg import logm, expm
+from nitorch.core.linalg import sqrtm
 from nitorch.core.math import logit, softmax
 from . import struct
 from .parser import parse, help
@@ -194,7 +194,7 @@ def collapse_transforms(transformations):
     for trf in transformations:
         if isinstance(trf, struct.Linear):
             if trf.square:
-                trf.affine = expm(logm(trf.affine).mul_(0.5))
+                trf.affine = sqrtm(trf.affine)
             if trf.inv:
                 trf.affine = spatial.affine_inv(trf.affine)
                 trf.inv = False

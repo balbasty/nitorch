@@ -17,6 +17,7 @@ class FileWithInfo(Structure):
 class Transform(Structure):
     file: str = None
     inv: bool = False
+    square: bool = False
 
 
 class Linear(Transform):
@@ -59,6 +60,12 @@ usage:
     -il, --linear-inverse            Inverse of a linear transform
     -id, --displacement-inverse      Inverse of a dense or ffd displacement field
     -iv, --velocity-inverse          Inverse of a diffeomorphic velocity field
+
+    It is also possible to append a '2' to specify that the affine is the
+    square of the transform to apply (i.e., its square root will be applied):
+    -l2, --linear-square            Square of a linear transform
+    -v2, --velocity-square          Square of a diffeomorphic velocity field
+    These can also be inverted: -il2, --linear-inverse-square, etc.
    
     Other tags are:
     -t,  --target            Defines the target space.
@@ -78,6 +85,12 @@ vel = ('-v', '--velocity')
 trf = [*lin, *disp, *vel]
 itrf = [t + '-inverse' if t.startswith('--') else '-i' + t[1:]
         for t in trf]
+trf2 = [t + '-square' if t.startswith('--') else t + '2'
+        for t in (*lin, *vel)]
+itrf2 = [t + '-inverse' if t.startswith('--') else '-i' + t[1:]
+         for t in trf2]
+itrf2 += [t[:-len('-square')] + '-inverse-square' for t in trf2
+          if t.startswith('--')]
 
 
 # --- TRF PARSER -------------------------------------------------------
@@ -87,18 +100,28 @@ def parse_transform(args, options):
 
     # is it an inversed transform?
     inv = False
-    if tag in itrf:
+    if tag in (*itrf, *itrf2):
         inv = True
         if tag.startswith('--'):
-            tag = tag[:-len('-inverse')]
+            tag = tag.replace('-inverse', '')
         else:
             tag = '-' + tag[2:]
+
+    # is it a squared transform?
+    square = False
+    if tag in trf2:
+        square = True
+        if tag.startswith('--'):
+            tag = tag[:-len('-square')]
+        else:
+            tag = tag[:-1]
 
     opt = (Linear if tag in lin else
            Displacement if tag in disp else
            Velocity if tag in vel else None)
     opt = opt()
     opt.inv = inv
+    opt.square = square
 
     cli.check_next_isvalue(args, tag)
     opt.file, *args = args
@@ -135,7 +158,12 @@ def parse(args):
         tag, *args = args
 
         # Parse transforms
-        if tag in (*trf, *itrf):
+        if tag in ('-d2', '-id2', '--displacement-square',
+                   '--displacement-inverse-square',
+                   '--displacement-square-inverse'):
+            raise ParseError(f'Squared displacement fields are not '
+                             f'supported ({tag})')
+        elif tag in (*trf, *itrf, *trf2, *itrf2):
             args = parse_transform([tag, *args], options)
 
         # Help -> return empty option

@@ -8,6 +8,7 @@ import math
 # Expose from private implementation
 from ._linalg_expm import expm, _expm
 from ._linalg_logm import logm
+from ._linalg_sqrtm import sqrtm
 from ._linalg_qr import eig_sym, eig_sym_
 from ._linalg_sym import *
 

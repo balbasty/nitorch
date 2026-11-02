@@ -1,6 +1,7 @@
 from nitorch import spatial, io
 from nitorch.core import utils
 from nitorch.core.dtypes import dtype as nitype
+from nitorch.core.linalg import sqrtm
 import torch
 import os
 from .parser import FileWithInfo, Linear, Velocity, Displacement
@@ -99,6 +100,8 @@ def collapse_transforms(options):
     last_trf = None
     for trf in options.transformations:
         if isinstance(trf, Linear):
+            if trf.square:
+                trf.affine = sqrtm(trf.affine)
             if trf.inv:
                 trf.affine = spatial.affine_inv(trf.affine)
                 trf.inv = False
@@ -128,9 +131,12 @@ def write_data(options):
             trf.shape = squeeze_to_nd(f.shape, 3, 1)
             trf.dat = f.fdata(**backend).reshape(trf.shape)
             trf.shape = trf.shape[:3]
+            if trf.square:
+                trf.dat.mul_(0.5)
             trf.dat = spatial.exp(trf.dat[None], displacement=True,
                                   inverse=trf.inv)[0]
             trf.inv = False
+            trf.square = False
             trf.order = 1
         elif isinstance(trf, Displacement):
             f = io.volumes.map(trf.file)
