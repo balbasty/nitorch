@@ -631,12 +631,14 @@ def make_loss(loss, slicewise=False, **kwargs):
         lossobj = losses.Cat(log=False)
     elif loss == 'dice':
         lossobj = losses.Dice(**kwargs)
-    elif loss == 'dot':
+    elif loss in ('dot', 'prod'):
         lossobj = losses.ProdLoss()
     elif loss == 'ndot':
         lossobj = losses.NormProdLoss()
-    elif loss == 'sqz':
-        kwargs['lam'] = kwargs.pop('weight', None)
+    elif loss in ('sqz', 'squeezed'):
+        weight = kwargs.pop('weight', None)
+        if weight is not None:  # None/auto: keep the loss' default (1)
+            kwargs['lam'] = weight
         lossobj = losses.SqueezedProdLoss(**kwargs)
     elif loss == 'emmi':
         lossobj = losses.EMMI(**kwargs)
