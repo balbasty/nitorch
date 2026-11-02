@@ -33,7 +33,7 @@ is equivalent to
 
 ```shell
 nitorch register --verbose 0 --cpu \
-    @loss nmi @@fix T1w.nii.gz @@mov FLAIR.nii.gz \
+    @loss nmi @@fix T1w.nii.gz -o false @@mov FLAIR.nii.gz \
         -o '{dir}/{base}.moved{ext}' -r False \
     @affine -o '{dir}/{name}.lta' \
         @@optim powell -n 50 -t 1e-05 -s wolfe \
@@ -71,12 +71,11 @@ Three kinds of files can be written:
 - **The transformation**, an affine matrix in LTA format, written to
   `{dir}/{name}.lta`: `rigid.lta` or `affine.lta`, in the directory of the
   fixed image. Use `-o` to choose another path, or `-o false` to skip it.
-- **The moved images**, `{base}.moved{ext}`, in the directory of each input.
-  With the symmetric affine, the moving image is brought halfway to the fixed
-  image, and the fixed image halfway to the moving image, by changing only
-  their orientation matrices. Both are written by default. `-x` changes the
-  path of the moved *moving* image, and `-x false` suppresses it, but the
-  moved *fixed* image is always written.
+- **The moved moving image**, `{base}.moved{ext}`, in the directory of the
+  moving image. With the symmetric affine, the moving image is brought
+  halfway to the fixed image by changing only its orientation matrix. It is
+  written by default. `-x` changes its path, and `-x false` suppresses it.
+  The fixed image is never rewritten.
 - **The resliced moving image**, `-r PATH`, which is the moving image
   resampled on the grid of the fixed image. This is the file most people want.
   It is not written unless you ask for it.
@@ -156,14 +155,14 @@ See [Hardware](../../conventions.md#hardware) for general notes on devices.
 ## Examples
 
 Rigidly align a FLAIR scan to a T1-weighted scan. This writes `rigid.lta`
-next to `T1w.nii.gz`, and the `.moved` images:
+next to `T1w.nii.gz`, and `FLAIR.moved.nii.gz` next to `FLAIR.nii.gz`:
 
 ```shell
 nitorch affreg -m FLAIR.nii.gz -f T1w.nii.gz
 ```
 
 Fit a full affine, write the FLAIR image resampled on the T1w grid, and do
-not write the moved image of the moving image:
+not write the moved FLAIR image:
 
 ```shell
 nitorch affreg -m FLAIR.nii.gz -f T1w.nii.gz -a \
