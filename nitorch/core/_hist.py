@@ -1070,7 +1070,7 @@ def _jhistc_backward2(h, x, w=None, order=0, bound='replicate',
 
 
 def _jhistc_backward_hess(g, x, w=None, order=1, bound='replicate',
-                          extrapolate=True):
+                          extrapolate=True, axes=(0, 1)):
     """Second derivative of `<g, hist(x)>` with respect to each sample.
 
     The input must already be a soft mapping to bins indices.
@@ -1083,11 +1083,14 @@ def _jhistc_backward_hess(g, x, w=None, order=1, bound='replicate',
     order : int, default=1
     bound : {'zero', 'nearest'}, default='nearest'
     extrapolate : bool, default=True
+    axes : sequence of {0, 1}, default=(0, 1)
+        Axes (sample components) whose second derivative is computed.
 
     Returns
     -------
-    hx : (b, n, 2) tensor
+    hx : (b, n, len(axes)) tensor
         `[sum_ab g[a, b] B''(u - a) B(v - b), sum_ab g[a, b] B(u - a) B''(v - b)]`
+        (the components listed in `axes`)
 
     Notes
     -----
@@ -1108,7 +1111,7 @@ def _jhistc_backward_hess(g, x, w=None, order=1, bound='replicate',
     x = x.expand([batch, *x.shape[1:]])
 
     out = []
-    for d in range(2):
+    for d in axes:
         orders = list(order)
         orders[d] = max(orders[d], 2)
         weights, _, hesss, coords, signs = nd.get_weights(
@@ -1134,6 +1137,81 @@ def _jhistc_backward_hess(g, x, w=None, order=1, bound='replicate',
         # the histogram is linear in w
         out = out * w.unsqueeze(-1)
     return out
+
+
+def _jhistc_backward_grad_hess(g, x, w=None, order=1, bound='replicate',
+                               extrapolate=True, axes=(0, 1)):
+    """First and second derivatives of `<g, hist(x)>` with respect to each
+    sample, along `axes`.
+
+    Same as `_jhistc_backward(...)[..., axes]` and
+    `_jhistc_backward_hess(..., axes=axes)`, but the spline weights and
+    the gathers from `g` are shared between the two (and between axes).
+    Requires a spline order of at least 2 along `axes`: with order 1,
+    the second derivative uses the order-2 spline (see
+    `_jhistc_backward_hess`), so the two are computed separately.
+
+    Parameters
+    ----------
+    g : (b, bins, bins) tensor
+    x : (b, n, 2) tensor
+    w : ([b], n) tensor, optional
+    order : int, default=1
+    bound : {'zero', 'nearest'}, default='nearest'
+    extrapolate : bool, default=True
+    axes : sequence of {0, 1}, default=(0, 1)
+
+    Returns
+    -------
+    gx : (b, n, len(axes)) tensor
+    hx : (b, n, len(axes)) tensor
+    """
+    axes = list(axes)
+    orders = py.make_list(order, 2)
+    orders = [inter_to_nitorch(o, 'int') for o in orders]
+    if any(orders[d] < 2 for d in axes):
+        gx = _jhistc_backward(g, x, w, order, bound, extrapolate)
+        hx = _jhistc_backward_hess(g, x, w, order, bound, extrapolate, axes)
+        return gx[..., axes], hx
+    bound = make_bound([bound_to_nitorch(bound, 'int')]*2)
+    extrapolate = 1 if extrapolate else 2
+    shape = list(g.shape[-2:])
+    batch = max(g.shape[0], x.shape[0])
+    g = g.reshape([g.shape[0], 1, -1]).expand([batch, 1, -1])
+    x = x.expand([batch, *x.shape[1:]])
+
+    weights, grads, hesss, coords, signs = nd.get_weights(
+        x.unsqueeze(1), bound, make_spline(orders), shape,
+        grad=True, hess=True)
+    gx = [0] * len(axes)
+    hx = [0] * len(axes)
+    for i in range(orders[0] + 1):
+        for j in range(orders[1] + 1):
+            idx = coords[0][i] * shape[1] + coords[1][j]
+            val = g.gather(-1, idx)
+            sign = ts_utils.make_sign([signs[0][i], signs[1][j]])
+            if sign is not None:
+                val = val * sign
+            for n, d in enumerate(axes):
+                if d == 0:
+                    gx[n] = gx[n] + val * grads[0][i] * weights[1][j]
+                    hx[n] = hx[n] + val * hesss[0][i] * weights[1][j]
+                else:
+                    gx[n] = gx[n] + val * weights[0][i] * grads[1][j]
+                    hx[n] = hx[n] + val * weights[0][i] * hesss[1][j]
+    gx = torch.stack([o.squeeze(1) for o in gx], -1)
+    hx = torch.stack([o.squeeze(1) for o in hx], -1)
+
+    mask = nd.inbounds_mask(extrapolate, x, shape)
+    if mask is not None:
+        mask = mask.squeeze(1).unsqueeze(-1)
+        gx = gx * mask
+        hx = hx * mask
+    if w is not None:
+        # the histogram is linear in w
+        gx = gx * w.unsqueeze(-1)
+        hx = hx * w.unsqueeze(-1)
+    return gx, hx
 
 
 # ======================================================================
@@ -1702,22 +1780,9 @@ class JointHistCount:
         h = h.reshape([*batch, *self.bins])
         return (h, min, max) if return_minmax else h
 
-    def backward(self, g, x, w=None, min=None, max=None):
-        """
-
-        Parameters
-        ----------
-        g : (..., *bins) tensor
-        x : (..., n, 2) tensor
-        w : (..., n) tensor, optional
-        min : (...) tensor_like, optional
-        max : (...) tensor_like, optional
-
-        Returns
-        -------
-        g : (..., n, 2) tensor
-
-        """
+    def _prepare_backward(self, g, x, w, min, max):
+        """Shared preprocessing of the backward passes: reshape, map the
+        samples to bin coordinates and apply the adjoint smoothing."""
         backend = dict(dtype=x.dtype, device=x.device)
         n = x.shape[-2]
         xbatch = x.shape[:-2]
@@ -1744,8 +1809,6 @@ class JointHistCount:
         min, max = _guard_range(min, max)
         x = x.mul_(bins / (max - min)).add_(bins / (1 - max / min)).sub_(0.5)
         scl = bins / (max - min)  # (B, 1, 2)
-        min = min.reshape([*xbatch, 2])
-        max = max.reshape([*xbatch, 2])
 
         g = g.reshape([-1, *self.bins])
 
@@ -1754,16 +1817,35 @@ class JointHistCount:
         if any(self.fwhm):
             kx, ky = self.smoothing_matrices(**backend)
             g = kx.transpose(0, 1).matmul(g).matmul(ky)
+        return g, x, w, scl, batch, n
 
-        # push data into the histogram
+    def backward(self, g, x, w=None, min=None, max=None, axes=(0, 1)):
+        """
+
+        Parameters
+        ----------
+        g : (..., *bins) tensor
+        x : (..., n, 2) tensor
+        w : (..., n) tensor, optional
+        min : (...) tensor_like, optional
+        max : (...) tensor_like, optional
+        axes : sequence of {0, 1}, default=(0, 1)
+            Components of the samples to differentiate with respect to.
+
+        Returns
+        -------
+        g : (..., n, len(axes)) tensor
+
+        """
+        axes = list(axes)
+        g, x, w, scl, batch, n = self._prepare_backward(g, x, w, min, max)
         g = _jhistc_backward(g, x, w, self.order, self.bound, self.extrapolate)
         g = g.mul_(scl)
+        if axes != [0, 1]:
+            g = g[..., axes]
+        return g.reshape([*batch, n, len(axes)])
 
-        # reshape
-        g = g.reshape([*batch, n, 2])
-        return g
-
-    def backward_hess(self, g, x, w=None, min=None, max=None):
+    def backward_hess(self, g, x, w=None, min=None, max=None, axes=(0, 1)):
         """Second derivative of `<g, hist(x)>` with respect to each sample.
 
         If `g` is the gradient of a loss with respect to the histogram,
@@ -1779,52 +1861,53 @@ class JointHistCount:
         w : (..., n) tensor, optional
         min : (...) tensor_like, optional
         max : (...) tensor_like, optional
+        axes : sequence of {0, 1}, default=(0, 1)
+            Components of the samples to differentiate with respect to
+            (each one costs as much as the other).
 
         Returns
         -------
-        h : (..., n, 2) tensor
+        h : (..., n, len(axes)) tensor
 
         """
-        backend = dict(dtype=x.dtype, device=x.device)
-        n = x.shape[-2]
-        xbatch = x.shape[:-2]
-        if w is not None:
-            _, w = torch.broadcast_tensors(x[..., 0], w)
-            batch = w.shape[:-1]
-            x = x.expand([*batch, *x.shape[-2:]])
-            w = w.reshape([-1, n])
-        else:
-            batch = xbatch
-        x = x.reshape([-1, n, 2])
-
-        if min is None:
-            min = x.min(-2, keepdim=True).values
-        else:
-            min = torch.as_tensor(min, **backend).expand([*xbatch, 2]).reshape([-1, 1, 2])
-        if max is None:
-            max = x.max(-2, keepdim=True).values
-        else:
-            max = torch.as_tensor(max, **backend).expand([*xbatch, 2]).reshape([-1, 1, 2])
-
-        x = x.clone()
-        bins = torch.as_tensor(self.bins, **backend)
-        min, max = _guard_range(min, max)
-        x = x.mul_(bins / (max - min)).add_(bins / (1 - max / min)).sub_(0.5)
-
-        g = g.reshape([-1, *self.bins])
-
-        # smooth backward (adjoint of the forward smoothing)
-        if any(self.fwhm):
-            kx, ky = self.smoothing_matrices(**backend)
-            g = kx.transpose(0, 1).matmul(g).matmul(ky)
-
+        axes = list(axes)
+        g, x, w, scl, batch, n = self._prepare_backward(g, x, w, min, max)
         h = _jhistc_backward_hess(g, x, w, self.order, self.bound,
-                                  self.extrapolate)
-        h = h.mul_((bins / (max - min)).square_())
+                                  self.extrapolate, axes)
+        h = h.mul_(scl[..., axes].square())
+        return h.reshape([*batch, n, len(axes)])
 
-        # reshape
-        h = h.reshape([*batch, n, 2])
-        return h
+    def backward_grad_hess(self, g, x, w=None, min=None, max=None,
+                           axes=(0, 1)):
+        """`backward` and `backward_hess` together.
+
+        With spline order >= 2, they share their spline weights and
+        gathers, which is cheaper than calling both.
+
+        Parameters
+        ----------
+        g : (..., *bins) tensor
+        x : (..., n, 2) tensor
+        w : (..., n) tensor, optional
+        min : (...) tensor_like, optional
+        max : (...) tensor_like, optional
+        axes : sequence of {0, 1}, default=(0, 1)
+            Components of the samples to differentiate with respect to.
+
+        Returns
+        -------
+        g : (..., n, len(axes)) tensor
+        h : (..., n, len(axes)) tensor
+
+        """
+        axes = list(axes)
+        g, x, w, scl, batch, n = self._prepare_backward(g, x, w, min, max)
+        gx, hx = _jhistc_backward_grad_hess(g, x, w, self.order, self.bound,
+                                            self.extrapolate, axes)
+        scl = scl[..., axes]
+        gx = gx.mul_(scl).reshape([*batch, n, len(axes)])
+        hx = hx.mul_(scl.square()).reshape([*batch, n, len(axes)])
+        return gx, hx
 
     def backward2(self, h, x, w=None, min=None, max=None, hx=None, hy=None):
         """Per-sample diagonal of the Gauss-Newton term `J^T M J`.
