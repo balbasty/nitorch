@@ -155,15 +155,26 @@ class PairwiseRegister:
                 self.nonlin.set_kernel()
 
         # initialize loss
-        verbose, self.verbose = self.verbose, False
-        if self.nonlin:
-            step.do_vel(self.nonlin.parameters(), grad=False, hess=False)
-            if self.affine:
-                step.do_affine(self.affine.parameters(), grad=False, hess=False)
-        else:
+        if not self.nonlin:
             self.affine.position, pos = 'm', self.affine.position
-            step.do_affine_only(self.affine.parameters(), grad=False, hess=False)
-        self.verbose = verbose
+        if any(loss.loss.get_state() is not None for loss in self.losses):
+            # Stateful losses (warm-started EM, IRLS weights...): this
+            # evaluation initialises their state before the optimiser's
+            # first evaluation, as it always did.
+            verbose, self.verbose = self.verbose, False
+            if self.nonlin:
+                step.do_vel(self.nonlin.parameters(), grad=False, hess=False)
+                if self.affine:
+                    step.do_affine(self.affine.parameters(), grad=False, hess=False)
+            else:
+                step.do_affine_only(self.affine.parameters(), grad=False, hess=False)
+            self.verbose = verbose
+        else:
+            # Every optimiser evaluates the objective at the initial
+            # parameters itself, so evaluating the data term here would be
+            # a duplicate: only initialise the penalty terms that the
+            # steps of a joint model take from each other.
+            step.init_penalties()
 
         step.framerate = self.framerate
         if self.affine and self.nonlin:
@@ -601,6 +612,18 @@ class PairwiseRegisterStep:
             self.n_iter += 1
 
         return ll
+
+    def init_penalties(self):
+        """Initialise the penalties that each step of a joint model takes
+        from the other component (`do_affine` uses the last velocity
+        penalty `llv`, `do_vel` the last affine penalty `lla`), without
+        evaluating the data term."""
+        if not (self.affine and self.nonlin):
+            return
+        vel = self.nonlin.parameters()
+        self.llv = 0.5 * vel.flatten().dot(self.nonlin.regulariser(vel).flatten())
+        if self.affine.penalty is not None:
+            self.lla = self._affine_penalty(self.affine.parameters())
 
     def do_vel(self, vel, grad=False, hess=False, in_line_search=False):
         """Forward pass for updating the nonlinear component"""

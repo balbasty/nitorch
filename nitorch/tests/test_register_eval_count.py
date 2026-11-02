@@ -3,9 +3,21 @@
 - The strong Wolfe line search stops zooming once the loss is flat to
   numerical precision (near convergence it used to spend up to 25
   gradient evaluations for gains ~1e-8).
+- `PairwiseRegister.fit` no longer evaluates the data term at the initial
+  parameters (the optimiser does it anyway), unless a loss keeps a state
+  that this evaluation initialises.
 """
 import torch
+import pytest
+from nitorch import spatial
+from nitorch.tools.registration import objects
+from nitorch.tools.registration.losses import MSE, MAD
 from nitorch.tools.registration.optim.wolfe import StrongWolfe
+from nitorch.tools.registration.pairwise_impl import (
+    PairwiseRegister, PairwiseRegisterStep)
+from nitorch.tools.registration.pairwise_makeobj import (
+    make_affine_optim, make_nonlin_optim)
+from nitorch.tools.registration.pairwise_run import build_joint_optim
 
 dt = torch.double
 
@@ -71,3 +83,91 @@ def test_wolfe_line_search_exposes_ftol():
     assert ls.ftol == 1e-3 and ls.wolfe.ftol == 1e-3
     ls.ftol = 0
     assert ls.wolfe.ftol == 0
+
+
+# ----------------------------------------------------------------------
+#                     fit(): initial evaluation
+# ----------------------------------------------------------------------
+
+def _images(shape=(10, 10, 10)):
+    g = torch.Generator().manual_seed(0)
+    x = torch.rand([1, *shape], dtype=dt, generator=g)
+    for _ in range(2):
+        for d in range(1, 4):
+            x = (x + x.roll(1, d) + x.roll(-1, d)) / 3
+    aff = spatial.affine_default(shape, 1., dtype=dt)
+    fix = objects.Image(x, affine=aff)
+    mov = objects.Image(x.roll(1, 3), affine=aff)
+    return fix, mov
+
+
+def _setup(kind, loss='mse', max_iter=3):
+    fix, mov = _images()
+    lossobj = MSE(lam=1, dim=3) if loss == 'mse' else MAD(dim=3)
+    sim = objects.Similarity(lossobj, mov, fix)
+    affine = nonlin = None
+    if kind in ('affine', 'joint'):
+        affine = objects.AffineModel('rigid', position='sym',
+                                     penalty=[1e-5] * 12)
+        affine.frozen = False
+    if kind in ('nonlin', 'joint'):
+        nonlin = objects.SVFModel(steps=4, penalty=dict(
+            absolute=1e-4, membrane=1e-3, bending=0.2, lame=(0.05, 0.2),
+            factor=1.))
+        nonlin.set_dat(fix.shape, affine=fix.affine, dtype=dt)
+        nonlin.frozen = False
+    aopt = make_affine_optim(None, 2, max_iter=max_iter) if affine else None
+    nopt = (make_nonlin_optim(None, 2, max_iter=max_iter, nonlin=nonlin)
+            if nonlin else None)
+    optim = build_joint_optim(aopt, nopt, max_iter=2, sequential=False)
+    return sim, affine, nonlin, optim
+
+
+def _record(monkeypatch):
+    calls = []
+    for name in ('do_affine_only', 'do_affine', 'do_vel'):
+        orig = getattr(PairwiseRegisterStep, name)
+
+        def wrapper(self, x, grad=False, hess=False, in_line_search=False,
+                    _orig=orig, _name=name):
+            calls.append((_name, grad, hess, in_line_search))
+            return _orig(self, x, grad=grad, hess=hess,
+                         in_line_search=in_line_search)
+        monkeypatch.setattr(PairwiseRegisterStep, name, wrapper)
+    return calls
+
+
+def _fit(kind, loss='mse', force_init=False, monkeypatch=None):
+    sim, affine, nonlin, optim = _setup(kind, loss)
+    if force_init:
+        # pretend the loss is stateful: the initial evaluation runs, as
+        # before #155
+        monkeypatch.setattr(sim.loss, 'get_state', lambda: {})
+    PairwiseRegister([sim], affine, nonlin, optim, verbose=0).fit()
+    return [m.dat.dat.clone() for m in (affine, nonlin) if m is not None]
+
+
+@pytest.mark.parametrize('kind', ['affine', 'nonlin', 'joint'])
+def test_no_duplicate_initial_evaluation(kind, monkeypatch):
+    calls = _record(monkeypatch)
+    _fit(kind)
+    # the first evaluation is the optimiser's (with derivatives), not a
+    # loss-only evaluation at the same parameters
+    assert calls[0][1], calls[:3]
+
+
+@pytest.mark.parametrize('kind', ['affine', 'nonlin', 'joint'])
+def test_initial_evaluation_kept_for_stateful_losses(kind, monkeypatch):
+    calls = _record(monkeypatch)
+    _fit(kind, loss='mad')
+    assert not calls[0][1] and not calls[0][2], calls[:3]
+
+
+@pytest.mark.parametrize('kind', ['affine', 'nonlin', 'joint'])
+def test_removing_initial_evaluation_does_not_change_result(kind, monkeypatch):
+    new = _fit(kind)
+    with monkeypatch.context() as m:
+        old = _fit(kind, force_init=True, monkeypatch=m)
+    assert max(float(x.abs().max()) for x in new) > 1e-4  # it did move
+    for x, y in zip(new, old):
+        assert torch.allclose(x, y, rtol=0, atol=1e-12), (x - y).abs().max()
