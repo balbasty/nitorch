@@ -875,7 +875,8 @@ def expanded_shape(*shapes, side='left'):
             shape1 = [*ones, *shape1]
         else:
             shape1 = [*shape1, *ones]
-        shape = [max(s0, s1) if s0 == 1 or s1 == 1 or s0 == s1
+        # (not `max(s0, s1)`, which is wrong when broadcasting 0 and 1)
+        shape = [(s1 if s0 == 1 else s0) if s0 == 1 or s1 == 1 or s0 == s1
                  else error(s0, s1) for s0, s1 in zip(shape, shape1)]
 
     return tuple(shape)
@@ -1970,7 +1971,8 @@ def quantile(input, q, dim=None, keepdim=False, bins=None, mask=None, *, out=Non
         count = valid.sum(-1, keepdim=True).to(q.dtype)  # (B, 1)
         pos = q[None, :] * (count - 1).clamp_min(0)       # (B, Q)
         lo = pos.floor().long()
-        hi = (lo + 1).minimum((count - 1).clamp_min(0).long())
+        # torch.min(a, b) == torch.minimum(a, b), which needs torch >= 1.7
+        hi = torch.min(lo + 1, (count - 1).clamp_min(0).long())
         w = pos - lo.to(pos.dtype)
         vlo = input.gather(-1, lo)
         vhi = input.gather(-1, hi)

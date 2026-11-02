@@ -41,6 +41,176 @@ else:
 
 # ======================================================================
 #
+#                   COMPATIBILITY WITH OLDER PYTORCH
+#
+# ======================================================================
+# nitorch supports torch >= 1.4. The functions below wrap torch functions
+# that were introduced later. They call the native implementation when it
+# exists and fall back to an equivalent implementation otherwise.
+# The feature flags are read at call time so that tests can exercise the
+# fallbacks by monkeypatching them.
+
+_torch_has_maximum = hasattr(torch, 'maximum')          # torch >= 1.7
+_torch_has_amax = hasattr(torch, 'amax')                # torch >= 1.7
+_torch_has_logit = hasattr(torch, 'logit')              # torch >= 1.7
+_torch_has_nan_to_num = hasattr(torch, 'nan_to_num')    # torch >= 1.8
+
+
+def maximum(input, other):
+    """Elementwise maximum of two tensors (`torch.maximum`, torch >= 1.7).
+
+    Parameters
+    ----------
+    input, other : tensor
+        Input tensors (broadcastable).
+
+    Returns
+    -------
+    output : tensor
+    """
+    if _torch_has_maximum:
+        return torch.maximum(input, other)
+    return torch.max(input, other)
+
+
+def minimum(input, other):
+    """Elementwise minimum of two tensors (`torch.minimum`, torch >= 1.7).
+
+    Parameters
+    ----------
+    input, other : tensor
+        Input tensors (broadcastable).
+
+    Returns
+    -------
+    output : tensor
+    """
+    if _torch_has_maximum:
+        return torch.minimum(input, other)
+    return torch.min(input, other)
+
+
+def _amax_dims(input, dim):
+    dim = py.make_list(dim) if dim is not None else []
+    if not dim:
+        dim = list(range(input.dim()))
+    return dim
+
+
+def amax(input, dim=(), keepdim=False):
+    """Maximum along (multiple) dimensions (`torch.amax`, torch >= 1.7).
+
+    Parameters
+    ----------
+    input : tensor
+        Input tensor.
+    dim : int or sequence[int], default=()
+        Dimensions to reduce. All dimensions if empty.
+    keepdim : bool, default=False
+        Keep reduced dimensions.
+
+    Returns
+    -------
+    output : tensor
+    """
+    if _torch_has_amax:
+        return torch.amax(input, dim, keepdim)
+    if input.dim() == 0:
+        return input.clone()
+    return max(input, _amax_dims(input, dim), keepdim=keepdim)
+
+
+def amin(input, dim=(), keepdim=False):
+    """Minimum along (multiple) dimensions (`torch.amin`, torch >= 1.7).
+
+    Parameters
+    ----------
+    input : tensor
+        Input tensor.
+    dim : int or sequence[int], default=()
+        Dimensions to reduce. All dimensions if empty.
+    keepdim : bool, default=False
+        Keep reduced dimensions.
+
+    Returns
+    -------
+    output : tensor
+    """
+    if _torch_has_amax:
+        return torch.amin(input, dim, keepdim)
+    if input.dim() == 0:
+        return input.clone()
+    return min(input, _amax_dims(input, dim), keepdim=keepdim)
+
+
+def binary_logit(input, eps=None):
+    """Binary logit `log(p / (1 - p))` (`torch.logit`, torch >= 1.7).
+
+    This is the inverse of the sigmoid. For the multiclass logit
+    (inverse of the softmax), see `logit`.
+
+    Parameters
+    ----------
+    input : tensor
+        Tensor of probabilities.
+    eps : float, optional
+        If provided, the input is clamped to `[eps, 1 - eps]`.
+
+    Returns
+    -------
+    output : tensor
+    """
+    if _torch_has_logit:
+        return torch.logit(input, eps)
+    if eps is not None:
+        input = input.clamp(eps, 1 - eps)
+    return torch.log(input / (1 - input))
+
+
+def _nan_to_num_fallback_(input, nan=0., posinf=None, neginf=None):
+    if not input.dtype.is_floating_point:
+        return input
+    info = torch.finfo(input.dtype)
+    posinf = info.max if posinf is None else posinf
+    neginf = info.min if neginf is None else neginf
+    input.masked_fill_(torch.isnan(input), nan)
+    input.masked_fill_(input == inf, posinf)
+    input.masked_fill_(input == ninf, neginf)
+    return input
+
+
+def nan_to_num(input, nan=0., posinf=None, neginf=None):
+    """Replace NaN and infinite values (`torch.nan_to_num`, torch >= 1.8).
+
+    Parameters
+    ----------
+    input : tensor
+        Input tensor.
+    nan : float, default=0
+        Value that replaces NaNs.
+    posinf : float, default=largest finite value
+        Value that replaces positive infinities.
+    neginf : float, default=lowest finite value
+        Value that replaces negative infinities.
+
+    Returns
+    -------
+    output : tensor
+    """
+    if _torch_has_nan_to_num:
+        return torch.nan_to_num(input, nan, posinf, neginf)
+    return _nan_to_num_fallback_(input.clone(), nan, posinf, neginf)
+
+
+def nan_to_num_(input, nan=0., posinf=None, neginf=None):
+    """In-place version of `nan_to_num`."""
+    if _torch_has_nan_to_num:
+        return torch.nan_to_num_(input, nan, posinf, neginf)
+    return _nan_to_num_fallback_(input, nan, posinf, neginf)
+
+
+# ======================================================================
+#
 #                             REDUCTIONS
 #
 # ======================================================================
