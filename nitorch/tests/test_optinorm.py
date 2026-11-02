@@ -95,6 +95,7 @@ def test_optimal_affine_consistent_pairs(n):
                               atol=1e-2)
 
 
+@pytest.mark.slow
 def test_optinorm_end_to_end(tmp_path):
     nib = pytest.importorskip('nibabel')
     from scipy.ndimage import gaussian_filter, map_coordinates

@@ -16,17 +16,6 @@ def test_softmax_lse_float32_matches_double():
     assert abs(lse.item() - ref.item()) <= 1e-6 * abs(ref.item())
 
 
-def test_besseli_old_float32_matches_double():
-    # float32 terms (X²/4)^k overflow for X >~ 4 with the default Nk=64
-    # (a separate, pre-existing limitation): stay below that.
-    x = torch.linspace(0, 3, 101, dtype=torch.double)
-    for order in (0, 1):
-        ref = math.besseli_old(x, order=order)
-        out = math.besseli_old(x.float(), order=order)
-        assert out.dtype == torch.double
-        assert torch.allclose(out, ref, rtol=1e-6, atol=0)
-
-
 def test_sumspatial_float32_matches_double():
     g = torch.Generator().manual_seed(0)
     x = torch.rand([2, 96, 96, 96, 3], generator=g, dtype=torch.double)

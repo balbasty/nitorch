@@ -25,7 +25,8 @@ def test_relax_slicers_partition(shape, scheme):
 @pytest.mark.parametrize('solver, optim', [
     (solve_grid, 'cg'),        # no FMG: used to fail on stop='e'
     (solve_grid, 'relax'),
-    (solve_grid_fmg, 'relax'), # bending: bandwidth 3 > shortest dim
+    pytest.param(solve_grid_fmg, 'relax',  # bending: bandwidth 3 > shortest dim
+                 marks=pytest.mark.slow),
 ])
 def test_grid_solvers_run(shape, solver, optim):
     g = torch.Generator().manual_seed(0)
@@ -76,6 +77,7 @@ def test_membrane_singleton_dim_has_no_energy_along_it():
     assert torch.allclose(y[1, 1, 0, 0], torch.as_tensor(4.).double())
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize('shape', [(32, 32, 2), (32, 32, 1)])
 def test_fmg_relax_stable_on_anisotropic_coarse_grids(shape):
     """Coarse multigrid levels of thin grids (e.g., 4x4x1 with anisotropic
@@ -347,6 +349,7 @@ def test_regulariser_kernel_matches_operator(prm):
 # ----------------------------------------------------------------------
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize('shape, weighted', [((8, 8, 8), False),
                                              ((16, 16), False),
                                              ((16, 16), True)])
@@ -371,7 +374,8 @@ def test_fmg_relax_converges(shape, weighted):
     assert err < 0.06
 
 
-@pytest.mark.parametrize('weighted', [False, True])
+@pytest.mark.parametrize('weighted', [
+    False, pytest.param(True, marks=pytest.mark.slow)])
 def test_field_fmg_relax_converges(weighted):
     """Same as above for vector fields (`bending_diag` and the weighted
     `membrane_diag` were wrong): FMG+relax was 17-30% away from the
