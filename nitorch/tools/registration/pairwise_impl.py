@@ -701,14 +701,16 @@ class PairwiseRegisterStep:
 
             if do_print:
                 has_printed = True
-                disp = linalg.matvec(aff_right.inverse()[:-1, :-1], disp)
+                if aff_right is not None:
+                    disp = linalg.matvec(aff_right.inverse()[:-1, :-1], disp)
+                else:   # disp is phi00 itself: do not scale it in place
+                    disp = disp.clone()
                 disp *= spatial.voxel_size(fixed.affine)
                 lam = None
                 if hasattr(loss.loss, 'irls'):
-                    _, _, lam = loss.loss.irls(warped, fixed.dat,
-                                               loss.loss.lam, mask,
-                                               loss.loss.joint,
-                                               warped.dim()-1)
+                    # lam estimated by the last evaluation: no IRLS loop
+                    lam = loss.loss.weighted_lam(warped, fixed.dat, mask,
+                                                 warped.dim()-1)
                     if mask is not None:
                         lam *= mask
                 if moving.previewed:
@@ -899,10 +901,9 @@ class PairwiseRegisterStep:
                 has_printed = True
                 lam = None
                 if hasattr(loss.loss, 'irls'):
-                    _, _, lam = loss.loss.irls(warped, fixed.dat,
-                                               loss.loss.lam, mask,
-                                               loss.loss.joint,
-                                               warped.dim()-1)
+                    # lam estimated by the last evaluation: no IRLS loop
+                    lam = loss.loss.weighted_lam(warped, fixed.dat, mask,
+                                                 warped.dim()-1)
                     if mask is not None:
                         lam *= mask
                 if moving.previewed:
@@ -1080,10 +1081,9 @@ class PairwiseRegisterStep:
                 has_printed = True
                 lam = None
                 if hasattr(loss.loss, 'irls'):
-                    _, _, lam = loss.loss.irls(warped, fixed.dat,
-                                               loss.loss.lam, mask,
-                                               loss.loss.joint,
-                                               warped.dim()-1)
+                    # lam estimated by the last evaluation: no IRLS loop
+                    lam = loss.loss.weighted_lam(warped, fixed.dat, mask,
+                                                 warped.dim()-1)
                     if mask is not None:
                         lam *= mask
                 if moving.previewed:
