@@ -617,8 +617,45 @@ _ORDER0_MSG = ('Gauss-Newton Hessian of a histogram with spline order 0 is '
                'everywhere). Use order >= 1.')
 
 
+def _histc_backward2_diag(h, x, k=None, bound='replicate', extrapolate=True):
+    """Exact per-sample diagonal of `J^T diag(h) J` for an order-1 histogram.
+
+    For a sample at bin coordinate u in cell [a0, a1], the derivative of
+    the (smoothed) histogram is `dp[c] = k[c, a1] - k[c, a0]`. This
+    returns `sum_c h[c] dp[c]^2`. In edge half-bins, where both corners
+    clamp to the same bin, `dp = 0` and so is the result.
+
+    Parameters
+    ----------
+    h : (b, bins) tensor
+    x : (b, n) tensor
+    k : (bins, bins) tensor, optional
+        Smoothing matrix (the histogram is `k @ hist`).
+
+    Returns
+    -------
+    out : (b, n) tensor
+    """
+    nx = h.shape[-1]
+    k = (torch.eye(nx, dtype=x.dtype, device=x.device) if k is None
+         else k.to(x))
+    b = make_bound([bound_to_nitorch(bound, 'int')])[0]
+    extrapolate = 1 if extrapolate else 2
+    batch = max(x.shape[0], h.shape[0])
+    x = x.expand([batch, *x.shape[1:]])
+    h = h.expand([batch, *h.shape[1:]])
+    k0, k1 = _corner_columns(k, b)
+    dk2 = (k1 - k0).square()                         # (nx, nx+1)
+    i = x.floor().long().clamp_(-1, nx - 1) + 1      # (b, n) in [0, nx]
+    out = h.matmul(dk2).gather(-1, i)
+    mask = ts_utils.inbounds_mask_1d(extrapolate, x, nx)
+    if mask is not None:
+        out = out * mask
+    return out
+
+
 def _histc_backward2(h, x, w=None, order=0, bound='replicate',
-                     extrapolate=True):
+                     extrapolate=True, k=None):
     """Compute (Fisher's) second derivative of the histogram.
 
     The input must already be a soft mapping to bins indices.
@@ -646,23 +683,28 @@ def _histc_backward2(h, x, w=None, order=0, bound='replicate',
 
     """
     order = inter_to_nitorch(order, 'int')
-    bound = make_bound([bound_to_nitorch(bound, 'int')])
-    extrapolate = 1 if extrapolate else 2
 
     is_diag = h.dim() == 2
 
-    args = (h.unsqueeze(1), x.unsqueeze(-1), bound, extrapolate)
     if order == 0:
         raise NotImplementedError(_ORDER0_MSG)
     if is_diag:
-        gx = iso1_grad2_diag_1d(*args)
+        # exact per-sample diagonal (smoothing and edge half-bins included)
+        gx = _histc_backward2_diag(h, x, k, bound, extrapolate)
     else:
+        bound = make_bound([bound_to_nitorch(bound, 'int')])
+        extrapolate = 1 if extrapolate else 2
+        args = (h.unsqueeze(1), x.unsqueeze(-1), bound, extrapolate)
         gx = iso1_grad2_1d(*args)
+        gx = gx.squeeze(1).squeeze(-1)
     if order != 1:
         gx = gx * _hess_order_scale(order)
-    gx = gx.squeeze(1).squeeze(-1)
     if w is not None:
-        gx *= w if is_diag else w.unsqueeze(-1)
+        if is_diag:
+            # the histogram is linear in w, so the GN term scales with w^2
+            gx = gx * w.square()
+        else:
+            gx *= w.unsqueeze(-1)
 
     return gx
 
@@ -1406,11 +1448,17 @@ def histc(x, n=64, min=None, max=None, dim=None, keepdim=False, weights=None,
 
 class HistCount:
 
-    def __init__(self, bins=64, order=1, bound='replicate', extrapolate=False):
+    def __init__(self, bins=64, order=1, bound='replicate', extrapolate=False,
+                 fwhm=0):
         self.bins = bins
         self.order = order
         self.bound = bound
         self.extrapolate = extrapolate
+        self.fwhm = fwhm
+
+    def smoothing_matrix(self, dtype=None, device=None):
+        """Dense matrix `k` of the histogram smoothing (`k @ h`)."""
+        return _smooth_matrix(self.bins, self.fwhm, self.bound, dtype, device)
 
     def forward(self, x, w=None, min=None, max=None, return_minmax=False):
         """
@@ -1455,6 +1503,8 @@ class HistCount:
 
         # push data into the histogram
         h = _histc_forward(x, self.bins, w, self.order, self.bound, self.extrapolate)
+        if self.fwhm:
+            h = smooth(h, fwhm=self.fwhm, bound=self.bound, dim=1)
 
         # reshape
         h = h.reshape([*batch, self.bins])
@@ -1501,6 +1551,10 @@ class HistCount:
         x = x.clone()
         min, max = _guard_range(min, max)
         x = x.mul_(self.bins / (max - min)).add_(self.bins / (1 - max / min)).sub_(0.5)
+
+        # smooth backward (adjoint of the forward smoothing: k.T @ g)
+        if self.fwhm:
+            g = g.matmul(self.smoothing_matrix(**backend))
 
         # push data into the histogram
         g = _histc_backward(g, x, w, self.order, self.bound, self.extrapolate)
@@ -1557,8 +1611,16 @@ class HistCount:
         min, max = _guard_range(min, max)
         x = x.mul_(self.bins / (max - min)).add_(self.bins / (1 - max / min)).sub_(0.5)
 
-        # push data into the histogram
-        h = _histc_backward2(h, x, w, self.order, self.bound, self.extrapolate)
+        k = None
+        if self.fwhm:
+            k = self.smoothing_matrix(**backend)
+            if h.dim() == 3:
+                # full histogram-space Hessian: K^T H K
+                h = torch.einsum('ca,ncd,db->nab', k, h, k)
+                k = None
+        # (diagonal case: smoothing handled exactly inside the kernel)
+        h = _histc_backward2(h, x, w, self.order, self.bound,
+                             self.extrapolate, k=k)
         h = h.mul_((self.bins / (max - min)).square_())
 
         # reshape
