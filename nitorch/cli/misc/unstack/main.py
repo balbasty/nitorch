@@ -50,15 +50,16 @@ def unstack(inp, dim=-1, output=None, transform=None):
 
     dat, aff0 = inp
     ndim = aff0.shape[-1] - 1
-    if dim > ndim:
+    dim = dim + dat.dim() if dim < 0 else dim
+    if dim >= ndim:
         # we didn't touch the spatial dimensions
-        aff = [aff0.clone() for _ in range(len(dat))]
+        aff = [aff0.clone() for _ in range(dat.shape[dim])]
     else:
         aff = []
         slicer = [slice(None) for _ in range(ndim)]
         shape = dat.shape[:ndim]
         for z in range(dat.shape[dim]):
-            slicer[dim] = slice(z,z+1)
+            slicer[dim] = slice(z, z+1)
             aff1, _ = spatial.affine_sub(aff0, shape, tuple(slicer))
             aff.append(aff1)
     dat = torch.unbind(dat, dim)

@@ -38,22 +38,15 @@ and its translation is moved forward by `(i - 1) * SIZE` voxels along the
 split axis. Chunks of a volume therefore overlay the original, and one another,
 without gaps. For a 2 mm volume whose third axis starts at `z = -30` mm, the
 second chunk of `-n 8 -d 2` starts at `z = -30 + 8 * 2 = -14` mm.
+When `DIM` is an extra (non-spatial) dimension, such as the time or echo axis
+of a 4D volume, every chunk keeps the orientation matrix of the input.
 
 `DIM` counts the dimensions of the array from 0, so `0`, `1` and `2` are the
 three spatial axes and `3` would be the first extra dimension of a 4D volume.
 A negative `DIM` counts from the end, and `-1`, the default, is the last
-dimension.
-
-!!! warning "Use non-negative dimensions, and 3D volumes, to get the right orientation"
-    The orientation matrix of each chunk is only computed correctly when `DIM`
-    is 0, 1 or 2, or when it is negative *and the volume is three-dimensional*.
-    For a 4D volume (a time series, several echoes), `-d 3` stops with an
-    error, and a negative `DIM`, including the default `-1`, splits the right
-    axis of the data but shifts the orientation matrix along the wrong spatial
-    axis: the pieces of a 4D file split with the default `-d` have a wrong
-    translation. If you need to split the extra dimension of a 4D volume, check
-    and fix the orientation matrix of the results afterwards, with
-    [`info`](info.md) and [`orient`](../spatial/orient.md).
+dimension. A negative `DIM` is converted to its positive equivalent before
+the orientation matrix is computed: for a 4D volume, `-1` is the extra
+dimension and `-2` is the third spatial axis.
 
 ### Output names
 

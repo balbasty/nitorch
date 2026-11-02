@@ -30,10 +30,11 @@ translation is moved forward by `k` voxels along the axis for the slice of index
 `k` (counting from 0), and the directions and voxel size are unchanged. For a
 2 mm volume whose last axis starts at `z = -30` mm, the 16th slice (index 15)
 has `z = -30 + 15 * 2 = 0` mm.
+When the split dimension is not a spatial axis (the extra dimension of a 4D
+volume), every piece keeps the orientation matrix of the input.
 
 `unstack` is the special case of [`chunk`](chunk.md) with `-n 1`. Both write
-the same files, except for the limitations of the dimension option explained
-below.
+the same files.
 
 ### The dimension
 
@@ -42,14 +43,6 @@ spatial axes, and `3` is the first extra dimension of a 4D volume. A negative
 value counts from the end of the array, and the default, `-1`, is the last
 dimension: the third axis of a 3D volume, or the extra dimension of a 4D
 volume.
-
-!!! warning "4D volumes get a wrong orientation matrix"
-    The default dimension is only handled correctly for 3D volumes.
-    When you unstack a 4D volume, the data of each piece is right, but the
-    orientation matrix is shifted along the third spatial axis by the index of
-    the piece, as if the third axis had been split. Check the result with
-    [`info`](info.md) before you use it, and restore the orientation matrix if
-    it matters (for example with [`orient`](../spatial/orient.md)).
 
 ### Output names
 
