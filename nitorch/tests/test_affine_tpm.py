@@ -284,15 +284,68 @@ def make_chiral_tpm(n):
     return tpm / tpm.sum(0, keepdim=True)
 
 
+def test_flexi_level():
+    # coarsest level with N ≥ c (F + J K); else the finest
+    J, K, F = 64, 3, 12                 # c (F + J K) = 8 * 204 = 1632
+    nb_vox = [8 ** 3, 16 ** 3, 32 ** 3]
+    assert at.flexi_level(nb_vox, J, K, F) == 1
+    assert at.flexi_level(nb_vox, J, K, F, samples_per_param=0) == 0
+    assert at.flexi_level(nb_vox, J, K, F, samples_per_param=2) == 0
+    assert at.flexi_level(nb_vox, J, K, F, samples_per_param=21) == 2
+    assert at.flexi_level(nb_vox, J, K, F, samples_per_param=161) == 2
+    # boundary: N = c (F + J K) qualifies
+    assert at.flexi_level([1631, 1632], J, K, F) == 1
+    assert at.flexi_level([1632, 4096], J, K, F) == 0
+    # 256 bins: 8 * (12 + 768) = 6240 voxels
+    assert at.flexi_level(nb_vox, 256, K, F) == 2
+    assert at.flexi_level(nb_vox[:2], 256, K, F) == 1      # fallback
+    # the order of the levels does not matter
+    assert at.flexi_level(nb_vox[::-1], J, K, F) == 1
+
+
+def test_flexi_compares_at_chosen_level(monkeypatch):
+    # The candidates are fitted at the level chosen by `flexi_level`;
+    # the final fit still runs on `spacing`
+    n = 32
+    tpm = make_tpm(n)
+    img = tpm[0] * 100 + tpm[1] * 50
+    affine = spatial.affine_default([n] * 3, dtype=dt)
+    shapes = []
+
+    def spy(dat, tpm, affine=None, affine_tpm=None, weights=None,
+            basis='affine', prm=None, **kwargs):
+        shapes.append(tuple(dat.shape[-3:]))
+        F = len(at.make_basis(basis, 3))
+        return torch.zeros([1], dtype=dt), torch.eye(4, dtype=dt), \
+            torch.zeros([F], dtype=dt)
+
+    monkeypatch.setattr(at, 'fit_affine_tpm', spy)
+    for bins, compared in ((64, (16,) * 3), (16, (8,) * 3)):
+        # 8 * (12 + 3 J) = 1632 voxels (64 bins), 480 (16 bins)
+        shapes.clear()
+        at.align_tpm((img, affine), (tpm, affine), spacing=(4, 2),
+                     bins=bins, flexi=True, verbose=0)
+        assert shapes[:-2] == [compared] * 49, (bins, shapes)
+        assert shapes[-2:] == [(8,) * 3, (16,) * 3], (bins, shapes)
+
+
 @pytest.mark.slow
-def test_flexi_recovers_orientation():
+@pytest.mark.parametrize('spacing,bins,compared', [
+    # 8 * (12 + 3 * 256) = 6240 > 16³: no level qualifies, the finest
+    # is used. Comparing at 2 * spacing[0] (8³) gave 16 mm.
+    ((2,), 256, (16,) * 3),
+    # 8 * (12 + 3 * 64) = 1632: spacing[0] (8³, 2.5 voxels per
+    # parameter) is too coarse and gave 16.5 mm; 16³ (20 per parameter)
+    # qualifies.
+    ((4, 2), 64, (16,) * 3),
+])
+def test_flexi_recovers_orientation(monkeypatch, spacing, bins, compared):
     # The voxel axes of the image are a permutation (with a flip) of
     # those of the TPM, but both headers are the identity: a fit that
     # trusts the header cannot recover this. The right orientation is
-    # among the flexi candidates. They used to be compared at
-    # 2 * spacing[0] (8³ voxels here), where a wrong orientation reached
-    # a larger 𝓛/N, and the final error was 16 mm. At spacing[0] (16³),
-    # the error is ~1 mm, as for a fit started at the true transform.
+    # among the flexi candidates. Once they are compared at a level with
+    # enough voxels per parameter, the error is ~1 mm, as for a fit
+    # started at the true transform.
     n = 32
     tpm = make_chiral_tpm(n)
     g = torch.Generator().manual_seed(1)
@@ -302,8 +355,17 @@ def test_flexi_recovers_orientation():
     # image voxel (i, j, k) is TPM voxel (j, i, n-1-k)
     img = img.permute(1, 0, 2).flip(2)
     affine = spatial.affine_default([n] * 3, dtype=dt)
-    aff = at.align_tpm((img, affine), (tpm, affine), spacing=2, flexi=True,
-                       verbose=0)
+    shapes = []
+    fit_affine_tpm = at.fit_affine_tpm
+
+    def spy(dat, *args, **kwargs):
+        shapes.append(tuple(dat.shape[-3:]))
+        return fit_affine_tpm(dat, *args, **kwargs)
+
+    monkeypatch.setattr(at, 'fit_affine_tpm', spy)
+    aff = at.align_tpm((img, affine), (tpm, affine), spacing=spacing,
+                       bins=bins, flexi=True, verbose=0)
+    assert shapes[0] == compared, shapes
     vox = spatial.identity_grid([n] * 3, dtype=dt)
     true = torch.stack([vox[..., 1], vox[..., 0], n - 1 - vox[..., 2]], -1)
     true = linalg.matvec(affine[:3, :3], true) + affine[:3, -1]
