@@ -69,3 +69,20 @@ def test_compose_displacement_in_mm(files):
     compose(['--linear-inverse', files['lta'], '-d', files['mm'],
              '-u', 'mm', '-t', files['img'], '-o', str(out_mm)])
     np.testing.assert_allclose(load(out_mm), load(out_vox), atol=1e-5)
+
+
+def test_compose_displacement_order_is_used(files):
+    rng = np.random.RandomState(1)
+    disp = str(files['dir'] / 'disp_rand.nii.gz')
+    nib.save(nib.Nifti1Image(rng.randn(8, 8, 8, 3).astype('float32'),
+                             AFFINE), disp)
+    # finer target grid so that the field is sampled between its nodes
+    target = str(files['dir'] / 'target.nii.gz')
+    nib.save(nib.Nifti1Image(np.zeros([12, 12, 12], dtype='float32'),
+                             np.diag([1.3, 1.9, 2.7, 1.])), target)
+    out = {}
+    for order in (1, 3):
+        out[order] = files['dir'] / f'cmp_n{order}.nii.gz'
+        compose(['-d', disp, '-n', str(order), '-t', target,
+                 '-o', str(out[order])])
+    assert not np.allclose(load(out[1]), load(out[3]), atol=1e-3)
