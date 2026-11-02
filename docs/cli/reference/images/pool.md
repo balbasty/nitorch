@@ -117,7 +117,7 @@ The other values accepted are the boundary conditions listed in
 | `min`    | The smallest value.                                           |
 | `max`    | The largest value.                                            |
 | `median` | The median.                                                   |
-| `ssq`    | The sum of the squared values.                                |
+| `rms`    | The root mean square of the values (`ssq` is a deprecated alias). |
 
 The method is not validated by the parser: an unknown name is reported as an
 error only once the computation starts.
@@ -150,7 +150,7 @@ The names below can be used with `-p`. Several names exist for most of them
 | `-w`, `--window`        | `WINDOW...`        | Window size, in voxels, per dimension. `0` pools a whole axis. [See below](#window-and-stride). | `3`                              |
 | `-s`, `--stride`        | `STRIDE...`        | Step between windows, in voxels, per dimension.                                          | same as the window               |
 | `-p`, `--padding`       | `[BOUND] PAD [BOUND] ...` | Padding added on both sides, in voxels, or `same`, each optionally followed by a boundary condition; a leading one applies to all axes. [See below](#padding). | `0`                              |
-| `-m`, `--method`        | `METHOD`           | Pooling function: `mean`, `sum`, `min`, `max`, `median` or `ssq`. [See above](#pooling-methods). | `mean`                           |
+| `-m`, `--method`        | `METHOD`           | Pooling function: `mean`, `sum`, `min`, `max`, `median` or `rms`. [See above](#pooling-methods). | `mean`                           |
 | `-d`, `--dim`, `--dimension` | `DIM`         | Number of spatial dimensions. It has to agree with the orientation matrix of the file, so leave it at `3` for ordinary volumes. `0` takes the value from the file. | `3`                              |
 | `-o`, `--output`        | `FILE...`          | Output file names or templates, one per input. A single template is reused for every input. | `{dir}{sep}{base}.pool{ext}`     |
 | `-cpu`, `--cpu`         |                    | Compute on the CPU.                                                                      | CPU                              |
