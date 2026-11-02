@@ -52,9 +52,9 @@ nitorch convert T1w.nii.gz -o '{dir}{sep}{base}.mgz'
 ```
 
 When you give an explicit `-o`, the format of the output is decided by the
-extension of the name you wrote, so `-f` is not needed to select it. This
-extension also decides whether the data type is adapted to the limited set of
-types that MGH supports (see [Data types](#data-types)).
+extension of the name you wrote, so `-f` is not needed to select it. The same
+extension decides whether the requested data type is adapted to the limited set
+that MGH supports (see [Data types](#data-types)).
 
 NIfTI and MGH are the formats that can be written. TIFF files can be read, but
 not written. Whenever the output is a `.nii`, `.nii.gz`, `.mgh` or `.mgz` file,
@@ -127,15 +127,27 @@ nitorch convert T1w.nii.gz -o T1w_scaled.nii.gz \
     -m 'affine=[[3,0,0,0],[0,3,0,0],[0,0,3,0],[0,0,0,1]]'
 ```
 
-Fields that you do not set are copied from the input. `voxel_size` rescales
-the orientation matrix of the output (the input's, or the one given with
-`affine`) so that its voxels have the requested size, e.g.
-`-m 'voxel_size=[1,1,1]'`. `tr` (or `time_step`) sets the time step of a 4D
-series, in seconds by default, or in milliseconds with an `ms` suffix
-(`tr=2500ms`); it is only stored when the output has a fourth dimension (MGH
-files always store it, in milliseconds). `slope` and `inter` set the intensity
-transform of a NIfTI file. The key and the value are split at the first `=`,
-so the value itself cannot contain one.
+Fields that you do not set are copied from the input. The ones you are most
+likely to need are:
+
+`affine`
+:   The orientation matrix, as in the example above.
+
+`voxel_size`
+:   Rescales the orientation matrix of the output (the input's, or the one
+    given with `affine`) so that the voxels have the requested size, as in
+    `-m 'voxel_size=[1,1,1]'`.
+
+`tr` (or `time_step`)
+:   The time step of a 4D series, in seconds, or in milliseconds with an `ms`
+    suffix, as in `tr=2500ms`. It is only stored when the output has a fourth
+    dimension; MGH files always store it, in milliseconds.
+
+`slope` and `inter`
+:   The intensity transform of a NIfTI file.
+
+The key and the value are split at the first `=`, so the value itself cannot
+contain one.
 
 ## Arguments
 
