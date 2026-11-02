@@ -107,17 +107,18 @@ def metadata_to_header(header, metadata, shape=None, dtype=None):
                  'It will be discarded.'.format(format_name),
                  RuntimeWarning)
 
-    if metadata.get('voxel_size', None) is not None:
-        val = metadata['voxel_size']
-        if isinstance(val, str):
-            val = ast.literal_eval(val)
-        header = set_voxel_size(header, val, shape)
-
+    # affine first, so that an explicit voxel_size rescales it
     if metadata.get('affine', None) is not None:
         val = metadata['affine']
         if isinstance(val, str):
             val = ast.literal_eval(val)
         header = set_affine(header, val, shape)
+
+    if metadata.get('voxel_size', None) is not None:
+        val = metadata['voxel_size']
+        if isinstance(val, str):
+            val = ast.literal_eval(val)
+        header = set_voxel_size(header, val, shape)
 
     if (metadata.get('slope', None) is not None or
         metadata.get('inter', None) is not None):
@@ -126,7 +127,7 @@ def metadata_to_header(header, metadata, shape=None, dtype=None):
         if isinstance(slope, str):
             slope = float(ast.literal_eval(slope))
         if isinstance(inter, str):
-            slope = float(ast.literal_eval(inter))
+            inter = float(ast.literal_eval(inter))
         if isinstance(header, (Spm99AnalyzeHeader, Nifti1Header)):
             header.set_slope_inter(slope, inter)
         else:
@@ -153,13 +154,17 @@ def metadata_to_header(header, metadata, shape=None, dtype=None):
             time_step = float(ast.literal_eval(time_step))
         unit = unit or metadata.get('te_unit', 'sec')
         if isinstance(header, (MGHHeader, Nifti1Header)):
-            if unit == 'sec':
-                time_step = time_step * 1e3  # TODO: unit for niftis?
+            if isinstance(header, MGHHeader) and unit == 'sec':
+                time_step = time_step * 1e3  # MGH stores TR in ms
             zooms = header.get_zooms()[:3]
             zooms = (*zooms, time_step)
             try:
                 # only possible if 4-th dimension is explicit
                 header.set_zooms(zooms)
+                if isinstance(header, Nifti1Header):
+                    xyz_unit, _ = header.get_xyzt_units()
+                    header.set_xyzt_units(
+                        xyz_unit, 'msec' if unit == 'ms' else 'sec')
             except HeaderDataError:
                 if isinstance(header, MGHHeader):
                     # set tr manually

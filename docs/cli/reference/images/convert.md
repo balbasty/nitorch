@@ -52,13 +52,9 @@ nitorch convert T1w.nii.gz -o '{dir}{sep}{base}.mgz'
 ```
 
 When you give an explicit `-o`, the format of the output is decided by the
-extension of the name you wrote, so `-f` is not needed to select it. There is
-one exception, which matters for the MGH format: its set of data types is
-limited (see [Data types](#data-types)), and `convert` only adapts the requested
-type to that set when the *template extension* `{ext}` is `.mgh` or `.mgz`,
-that is, when the input is an MGH file or when you used `-f`. If you write a
-new MGH file with an explicit `-o` name and a data type that MGH does not
-support, add `-f mgz` as well.
+extension of the name you wrote, so `-f` is not needed to select it. This
+extension also decides whether the data type is adapted to the limited set of
+types that MGH supports (see [Data types](#data-types)).
 
 NIfTI and MGH are the formats that can be written. TIFF files can be read, but
 not written. Whenever the output is a `.nii`, `.nii.gz`, `.mgh` or `.mgz` file,
@@ -74,7 +70,7 @@ type of the input is kept.
 
 NIfTI can store most of these types (the exact set depends on `nibabel`). MGH only supports `uint8`, `int16`,
 `int32` and `float32` (and `uint16` with recent versions of `nibabel`). When
-the template extension is `.mgh` or `.mgz`, `convert` replaces the type you
+the output file name ends in `.mgh` or `.mgz`, `convert` replaces the type you
 asked for with the first of these types that can hold all its values without
 loss: `int8` becomes `int16`, for example. A type that no MGH type can hold,
 such as `float64`, is not adapted, and the command stops with an error from
@@ -131,13 +127,15 @@ nitorch convert T1w.nii.gz -o T1w_scaled.nii.gz \
     -m 'affine=[[3,0,0,0],[0,3,0,0],[0,0,3,0],[0,0,0,1]]'
 ```
 
-Not every field can be overridden: a field that is derived from another one
-which the input also carries may be overwritten by that other one. In
-practice `affine` and `slope` work, whereas `voxel_size` (which is a
-consequence of the `affine`) and `tr` (a consequence of the time step of a 4D
-series) are restored from the input and keep their original value. To change
-the voxel size, set the `affine`. The key and the value are split at the first
-`=`, so the value itself cannot contain one.
+Fields that you do not set are copied from the input. `voxel_size` rescales
+the orientation matrix of the output (the input's, or the one given with
+`affine`) so that its voxels have the requested size, e.g.
+`-m 'voxel_size=[1,1,1]'`. `tr` (or `time_step`) sets the time step of a 4D
+series, in seconds by default, or in milliseconds with an `ms` suffix
+(`tr=2500ms`); it is only stored when the output has a fourth dimension (MGH
+files always store it, in milliseconds). `slope` and `inter` set the intensity
+transform of a NIfTI file. The key and the value are split at the first `=`,
+so the value itself cannot contain one.
 
 ## Arguments
 
@@ -151,15 +149,14 @@ the voxel size, set the `affine`. The key and the value are split at the first
 | --------------------- | ----------------- | ------------------------------------------------------------------------------------------- | ----------------------- |
 | `-dt`, `--dtype`      | `DTYPE`           | Data type of the output, such as `uint8` or `float32`. [See below](#data-types).           | that of the input       |
 | `-c`, `--casting`     | `CASTING`         | How values are converted: `unsafe`, `rescale` or `rescale_zero`. [See below](#casting).    | `unsafe`                |
-| `-m`, `--meta`        | `KEY=VAL...`      | Header fields to set in the output. [See below](#overriding-header-fields).                |                         |
+| `-m`, `--metadata`    | `KEY=VAL...`      | Header fields to set in the output. [See below](#overriding-header-fields).                |                         |
 | `-f`, `--format`      | `FORMAT`          | Output format (`nii`, `nii.gz`, `mgh`, `mgz`). Sets the `{ext}` placeholder.                | extension of the input  |
 | `-o`, `--output`      | `FILE...`         | Output name template, one per input. Placeholders: `{dir}`, `{sep}`, `{base}`, `{ext}`.     | `{dir}{sep}{base}{ext}` |
 | `-h`, `--help`        |                   | Print the built-in help and exit.                                                           |                         |
 
 If you give fewer output names than input files, the last name is reused for
 the remaining inputs, so give one name per input, or a template with
-`{base}`. The long form of `-m` is `--meta`; the built-in help calls it
-`--metadata`, which the command does not recognise.
+`{base}`. `--meta` is accepted as a synonym of `--metadata`.
 
 ## Examples
 

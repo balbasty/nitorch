@@ -21,7 +21,7 @@ usage:
     -dt, --dtype DTYPE           Output data type (default: same)
     -c, --casting CAST           Casting type (default: unsafe) 
                                     unsafe, rescale, rescale_zero
-    -m, --metadata KEY=VAL       List of (key, value) pairs.
+    -m, --meta, --metadata KEY=VAL  List of (key, value) pairs.
     -f,--format FMT              Format name (default: guessed from extension)
     -o, --output *FILES          Output filenames (default: {dir}/{base}{ext})
     
@@ -59,7 +59,7 @@ def parse(args):
             raise ParseError(f'Value {args[0]} does not seem to belong '
                              f'to a tag.')
         tag, *args = args
-        if tag in ('-m', '--meta'):
+        if tag in ('-m', '--meta', '--metadata'):
             struct.meta = {}
             while cli.next_isvalue(args):
                 val, *args = args
