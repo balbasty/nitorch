@@ -15,7 +15,8 @@ from nitorch import spatial
 from nitorch.core import utils, linalg
 import torch
 from . import optim as optm, utils as regutils
-from .objects import SVFModel, ShootModel, MeanSpace, Nonlin2dModel, SumSimilarity
+from .objects import (SVFModel, ShootModel, MeanSpace, Nonlin2dModel,
+                      SumSimilarity, AffineModel)
 
 
 # TODO:
@@ -593,6 +594,7 @@ class PairwiseRegisterStep:
         if not in_line_search:
             self.ll = ll
             self.llv = llv
+            self.lla = lla
             self.all_ll.append(ll)
             self.ll_prev = self.ll
             self.ll_max = max(self.ll_max, self.ll)
@@ -818,6 +820,10 @@ class PairwiseRegisterStep:
         Gram matrix M of `_optim_grad`: M.T (P * q) and M.T diag(P) M.
         `grad` and `hess` are updated in place. Returns the value.
         """
+        if isinstance(logaff, AffineModel.Parameters):
+            # optimisers pass the model's parameters on their first
+            # evaluation, and (model-basis) tensors afterwards
+            logaff = logaff.dat
         penalty = self.affine.penalty
         lla = logaff * penalty
         if grad is not None or hess is not None:
