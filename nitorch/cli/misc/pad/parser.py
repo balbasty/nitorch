@@ -6,6 +6,14 @@ from nitorch.core.struct import Structure
 from nitorch.core import bounds
 
 
+def _isfloat(val):
+    try:
+        float(val)
+        return True
+    except ValueError:
+        return False
+
+
 def parse_bound(val):
     """Parse a boundary condition: a bound name/alias or a constant."""
     if val.lower() == 'dct':
@@ -107,7 +115,10 @@ def parse(args):
             cli.check_next_isvalue(args, tag)
             struct.like = args.pop(0)
         elif tag in ('-b', '--bound'):
-            cli.check_next_isvalue(args, tag)
+            # Negative constants such as `-.5` or `-inf` would otherwise be
+            # mistaken for a tag by `cli.next_isvalue`.
+            if not (args and _isfloat(args[0])):
+                cli.check_next_isvalue(args, tag)
             struct.bound = parse_bound(args.pop(0))
         elif tag in ('-o', '--output'):
             struct.output = []
