@@ -63,14 +63,19 @@ def _cli(args):
             options.optimizer = 'powell'
         else:
             options.optimizer = 'gn'
-    if options.output:
-        args += ['-o', options.output]
+    if options.output is False:
+        # `-o false`: an empty path disables writing the transform
+        args += ['-o', '']
+    elif options.output is not True:
+        args += ['-o', str(options.output)]
     args += ['@@optim', options.optimizer,
-             '-n', options.max_iter,
-             '-t', options.tolerance,
-             '-s', options.search]
+             '-n', str(options.max_iter),
+             '-t', str(options.tolerance),
+             '-s', str(options.search)]
     args += ['@pyramid', '--levels']
-    for level in options.pyramid:
+    # `--no-pyramid` stores False: process a single (full resolution) level
+    levels = options.pyramid or [0]
+    for level in levels:
         if isinstance(level, range):
             args += [str(l) for l in level]
         else:
