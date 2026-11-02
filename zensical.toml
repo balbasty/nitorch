@@ -14,6 +14,12 @@ Copyright &copy; 2020&ndash;2026 The NITorch authors
 
 extra_css = ["stylesheets/extra.css"]
 
+# LaTeX support (MathJax + pymdownx.arithmatex, see markdown extensions below)
+extra_javascript = [
+  "javascripts/mathjax.js",
+  "https://unpkg.com/mathjax@3/es5/tex-mml-chtml.js",
+]
+
 nav = [
   {"Home" = [
     "index.md",
