@@ -18,8 +18,8 @@ def cli(args=None):
         _cli(args)
     except ParseError as e:
         print(help)
-        print('[ERROR]', e)
-        return
+        print(f'[ERROR] {str(e)}', file=sys.stderr)
+        return 1
 
 
 commands['optinorm'] = cli

@@ -1,3 +1,4 @@
+import sys
 import os.path as op
 
 from nitorch.cli.cli import commands
@@ -22,10 +23,11 @@ def cli(args=None):
         return
     except ParseError as e:
         print(help)
-        print('[ERROR]', e)
-        return
-    # except Exception as e:
-    #     print(f'[ERROR] {str(e)}', file=sys.stderr)
+        print(f'[ERROR] {str(e)}', file=sys.stderr)
+        return 1
+    except Exception as e:
+        print(f'[ERROR] {str(e)}', file=sys.stderr)
+        return 1
 
 
 commands['vopt'] = cli

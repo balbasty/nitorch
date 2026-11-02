@@ -42,8 +42,10 @@ def cli(args=None):
     except ParseError as e:
         print(help[1])
         print(f'[ERROR] {str(e)}', file=sys.stderr)
-    # except Exception as e:
-    #     print(f'[ERROR] {str(e)}', file=sys.stderr)
+        return 1
+    except Exception as e:
+        print(f'[ERROR] {str(e)}', file=sys.stderr)
+        return 1
 
 
 commands['register'] = cli

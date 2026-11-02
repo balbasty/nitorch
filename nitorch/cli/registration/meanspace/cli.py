@@ -8,7 +8,8 @@ from tempfile import mkdtemp
 from nitorch.cli.cli import commands
 from nitorch.core.cli import ParseError
 from nitorch import io
-from nitorch.cli.registration.reslice.main import reslice
+# raising variant: errors must propagate to this command
+from nitorch.cli.registration.reslice.main import _reslice as reslice
 from nitorch.spatial import mean_space
 from nitorch.core.py import make_list, fileparts
 from .parser import parser, help
@@ -26,10 +27,11 @@ def cli(args=None):
         _cli(args)
     except ParseError as e:
         print(help)
-        print('[ERROR]', e)
-        return
-    # except Exception as e:
-    #     print(f'[ERROR] {str(e)}', file=sys.stderr)
+        print(f'[ERROR] {str(e)}', file=sys.stderr)
+        return 1
+    except Exception as e:
+        print(f'[ERROR] {str(e)}', file=sys.stderr)
+        return 1
 
 
 commands['meanspace'] = cli
