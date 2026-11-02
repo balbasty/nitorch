@@ -5,6 +5,32 @@ from .base import HistBasedOptimizationLoss
 pyutils = py
 
 
+def _moving_derivatives(hist, g, idx, mn, mx, mask, grad, hess):
+    """Derivatives of `<g, hist(idx)>` with respect to the moving image
+    only (component 0 of the samples): the fixed image does not move, so
+    its derivatives (component 1) are not computed. The gradient and the
+    Hessian share their spline weights when both are requested.
+
+    Returns
+    -------
+    gx : (..., n) tensor or None
+    hx : (..., n) tensor or None
+    """
+    gx = hx = None
+    opt = dict(min=mn, max=mx, w=mask, axes=[0])
+    if grad and hess:
+        gx, hx = hist.backward_grad_hess(g, idx, **opt)
+    elif grad:
+        gx = hist.backward(g, idx, **opt)
+    elif hess:
+        hx = hist.backward_hess(g, idx, **opt)
+    if gx is not None:
+        gx = gx[..., 0]
+    if hx is not None:
+        hx = hx[..., 0]
+    return gx, hx
+
+
 def entropy(moving, fixed, dim=None, bins=64, order=3, fwhm=2,
             grad=True, hess=True, minmax=False, mask=None):
     """(Negative) Entropy
@@ -61,8 +87,10 @@ def entropy(moving, fixed, dim=None, bins=64, order=3, fwhm=2,
         g = pxy.log().add_(1).neg_()
         g = g.sub_((g * pxy).sum([-1, -2], keepdim=True)).div_(nrm)
 
+    gx = H = None
+    if grad or hess:
+        gx, H = _moving_derivatives(hist, g, idx, mn, mx, mask, grad, hess)
     if grad:
-        gx = hist.backward(g, idx, min=mn, max=mx, w=mask)[..., 0]
         gx = gx.reshape(shape)
         out.append(gx)
 
@@ -71,7 +99,6 @@ def entropy(moving, fixed, dim=None, bins=64, order=3, fwhm=2,
         # Gauss-Newton term is negative semi-definite: bound it by zero
         # and use the absolute value of the (voxel-diagonal) second term.
         # See `mi`.
-        H = hist.backward_hess(g, idx, min=mn, max=mx, w=mask)[..., 0]
         H = H.abs_().reshape(shape)
         out.append(H)
 
@@ -194,8 +221,10 @@ def mi(moving, fixed, dim=None, bins=64, order=3, fwhm=2, norm='studholme',
             g = pxy.log().neg_().add_(px.log()).add_(py.log()).add_(1)
         g = g.sub_((g * pxy).sum([-1, -2], keepdim=True)).div_(nrm)
 
+    gx = H = None
+    if grad or hess:
+        gx, H = _moving_derivatives(hist, g, idx, mn, mx, mask, grad, hess)
     if grad:
-        gx = hist.backward(g, idx, min=mn, max=mx, w=mask)[..., 0]
         gx = gx.reshape(shape)
         out.append(gx)
 
@@ -210,7 +239,6 @@ def mi(moving, fixed, dim=None, bins=64, order=3, fwhm=2, norm='studholme',
         # the Dinkelbach surrogate of the ratio. The second term is
         # voxel-diagonal; we use its absolute value as preconditioner
         # (Balbastre et al., MedIA 2021, eq. 24).
-        H = hist.backward_hess(g, idx, min=mn, max=mx, w=mask)[..., 0]
         H = H.abs_().reshape(shape)
         out.append(H)
 

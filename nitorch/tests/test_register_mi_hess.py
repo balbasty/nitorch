@@ -293,3 +293,21 @@ def test_jointhist_axes(order, fwhm, axes, batch):
     assert torch.allclose(g2, full_g[..., axes], rtol=1e-10, atol=1e-12)
     assert torch.allclose(h2, full_h[..., axes], rtol=1e-10, atol=1e-12)
 
+
+def test_mi_differentiates_moving_image_only(monkeypatch):
+    """`mi` only requests the moving component of the histogram's
+    derivatives (the fixed image does not move)"""
+    seen = []
+    for name in ('backward', 'backward_hess', 'backward_grad_hess'):
+        orig = getattr(JointHistCount, name)
+
+        def spy(self, *a, _orig=orig, _name=name, **k):
+            seen.append((_name, list(k.get('axes', (0, 1)))))
+            return _orig(self, *a, **k)
+        monkeypatch.setattr(JointHistCount, name, spy)
+    mov, fix = make_data([6, 6, 6])
+    mi(mov, fix, bins=BINS, order=3)                       # grad + hess
+    mi(mov, fix, bins=BINS, order=3, hess=False)           # grad only
+    mi(mov, fix, bins=BINS, order=1)                       # order 1
+    assert seen and all(axes == [0] for _, axes in seen), seen
+    assert seen[0][0] == 'backward_grad_hess'
