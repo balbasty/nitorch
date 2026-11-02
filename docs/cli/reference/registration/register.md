@@ -529,11 +529,11 @@ Options of specific solvers:
 | `mom`    | `-m`, `--momentum`     | `VAL`                | Momentum factor.                                                                                                  | `0.9`              |
 | `nes`    | `-m`, `--momentum`     | `VAL`                | Momentum factor; `0` chooses it automatically.                                                                    | `0` (auto)         |
 | `nes`    | `-r`, `--restart`      | `BOOL`               | Restart the momentum automatically when the objective increases.                                                  | `true`             |
-| `nes`    | `-o`, `--output`       | `[PATH]`             | Write the final momentum: a map for `@nonlin`, a JSON file for `@affine`. With no path, `{dir}/momentum.nii.gz` or `{dir}/affine_momentum.json`. | not written        |
+| `nes`    | `-o`, `--output`       | `[PATH` &vert; `true` &vert; `false]` | Template of the final momentum: a map for `@nonlin`, a JSON file for `@affine`. With no value, `true` or `yes`, the default path is used (`{dir}{sep}momentum.nii.gz`, or `{dir}{sep}affine_momentum.json` for `@affine`); `false` or `no` writes nothing. | not written        |
 | `ogm`    | `-m`, `--momentum`     | `VAL`                | Momentum factor; `0` chooses it automatically.                                                                    | `0` (auto)         |
 | `ogm`    | `-x`, `--relax`        | `VAL`                | Relaxation factor; `0` chooses it automatically.                                                                  | `0` (auto)         |
 | `ogm`    | `-r`, `--restart`      | `BOOL`               | Restart automatically.                                                                                            | `true`             |
-| `ogm`    | `-o`, `--output`       | `[PATH]`             | Write the final momentum, as for `nes`.                                                                            | not written        |
+| `ogm`    | `-o`, `--output`       | `[PATH` &vert; `true` &vert; `false]` | Template of the final momentum, as for `nes`.                                                      | not written        |
 | `lbfgs`  | `-h`, `--history`      | `N`                  | Number of past steps kept to approximate the Hessian.                                                              | `100`              |
 
 Gauss-Newton is the right choice in most cases. Powell's method is the
@@ -613,7 +613,7 @@ the fields `{dir}` (a directory), `{sep}` (the path separator), `{base}`
 | ----------------------------------- | ------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
 | `{dir}/{name}.lta`                  | `@affine` is used                     | The affine matrix, in RAS-to-RAS convention. For example `rigid.lta`, `affine.lta`. It maps fixed to moving world coordinates. Always the *full* transformation, whatever the position. |
 | `{dir}/{name}.nii.gz`               | `@nonlin` is used                     | The field, in voxels of its own lattice: a velocity for `svf` (`svf.nii.gz`) and `shoot`, a displacement for `smalldef`. |
-| `{dir}/{name}.json`                 | `@nonlin shoot` only                  | Regularisation parameters, needed to integrate the shooting equations (`shoot.json`).                              |
+| `{dir}/{name}.json`                 | `@nonlin shoot` only                  | Regularisation (penalty and factor) and the number of integration `steps` and `fast` flag used during registration, needed to integrate the shooting equations the same way (`shoot.json`). Read by [`reslice`](../spatial/reslice.md#velocity-fields). |
 | `{dir}/{name}_hessian.nii.gz`       | `@nonlin -h`                          | Hessian of the matching term.                                                                                      |
 | `{dir}/momentum.nii.gz`, `affine_momentum.json` | `@@optim nes`/`ogm` with `-o` | Final momentum of the optimiser.                                                                              |
 | `{dir}/{base}.moved{ext}`           | for each image, unless `-o false`     | The image carried to the registered space, with *minimal reslicing*.                                              |
