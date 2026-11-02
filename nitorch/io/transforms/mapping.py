@@ -204,3 +204,19 @@ class MappedAffine(MappedFile):
 
         """
         raise NotImplementedError
+
+    # Affine matrices are always floating point: there is no
+    # scaling/casting step, so the "f" variants are the same as the
+    # plain ones. Defining them here keeps `io.savef` (which dispatches
+    # to `savef_new`) working for every affine format.
+    def savef(self, file_like=None, **meta):
+        """Same as `save`: affines are not scaled or cast."""
+        return self.save(file_like, **meta)
+
+    @classmethod
+    def savef_new(cls, affine, file_like, like=None, **meta):
+        """Save a new affine to disk in the `cls` format.
+
+        Same as `save_new`: affines are not scaled or cast.
+        """
+        return cls.save_new(affine, file_like, like=like, **meta)
