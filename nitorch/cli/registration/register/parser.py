@@ -579,7 +579,8 @@ optim.add_suboption('nes', 'momentum', ('-m', '--momentum'), nargs=1,
 optim.add_suboption('nes', 'restart', ('-r', '--restart'), nargs=1,
                     default=True, convert=bool_or_str, help='Automatic restart')
 optim.add_suboption('nes', 'output', ('-o', '--output'), nargs='?',
-                    default='', action=cli.Actions.store_value(default_momentum),
+                    default=False, convert=path_or_bool(default_momentum),
+                    action=cli.Actions.store_value(default_momentum),
                     help='Write the final momentum (map for @nonlin, '
                          'JSON for @affine)')
 optim.add_suboption('ogm', 'momentum', ('-m', '--momentum'), nargs=1,
@@ -589,7 +590,8 @@ optim.add_suboption('ogm', 'relax', ('-x', '--relax'), nargs=1,
 optim.add_suboption('ogm', 'restart', ('-r', '--restart'), nargs=1,
                     default=True, convert=bool_or_str, help='Automatic restart')
 optim.add_suboption('ogm', 'output', ('-o', '--output'), nargs='?',
-                    default='', action=cli.Actions.store_value(default_momentum),
+                    default=False, convert=path_or_bool(default_momentum),
+                    action=cli.Actions.store_value(default_momentum),
                     help='Write the final momentum (map for @nonlin, '
                          'JSON for @affine)')
 optim.add_suboption('lbfgs', 'history', ('-h', '--history'), nargs=1,
