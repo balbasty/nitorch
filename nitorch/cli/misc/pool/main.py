@@ -20,8 +20,10 @@ def pool(inp, window=3, stride=None, padding=0, bound='dct2',
         By default, it is the same as `window`.
     padding : [sequence of] int or 'same', optional
         Padding on both sides.
-    method : {'mean', 'sum', 'min', 'max', 'median'}, default='mean'
-        Pooling function.
+    bound : [sequence of] str, default='dct2'
+        Boundary condition(s) used for padding.
+    method : {'mean', 'sum', 'min', 'max', 'median', 'ssq'}, default='mean'
+        Pooling function ('ssq' = sum of squares).
     dim : int, default=3
         Number of spatial dimensions.
     output : [sequence of] str, optional
@@ -63,6 +65,9 @@ def pool(inp, window=3, stride=None, padding=0, bound='dct2',
     batch = dat.shape[dim:]
     dat = dat.reshape([*spatial_in, -1])
     dat = utils.movedim(dat, -1, 0)
+    if isinstance(bound, (list, tuple)):
+        # one boundary condition per spatial axis (last one repeated)
+        bound = py.make_list(bound, dim)
     dat, aff = spatial.pool(
         dim, dat,
         kernel_size=window,

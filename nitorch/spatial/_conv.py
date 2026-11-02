@@ -314,7 +314,8 @@ def pool(dim, tensor, kernel_size=3, stride=None, dilation=1, padding=0,
     bound : str, default='constant'
         Boundary conditions used in the padding.
     reduction : {'mean', 'max', 'min', 'median', 'sum', 'ssq'} or callable, default='mean'
-        Function to apply to the elements in a window.
+        Function to apply to the elements in a window
+        ('ssq' = sum of squares).
     ceil : bool, default=False
         Use ceil instead of floor to compute output shape
     return_indices : bool, default=False
@@ -363,8 +364,11 @@ def pool(dim, tensor, kernel_size=3, stride=None, dilation=1, padding=0,
             or any(isinstance(p, (list, tuple)) for p in padding)):
         # torch implementation -> handles zero-padding
         # our implementation -> needs explicit padding
+        # (left, right) pairs per dimension -> side=None
+        padding = [p if isinstance(p, (list, tuple)) else (p, p)
+                   for p in padding]
         padding = _normalize_padding(padding)
-        tensor = utils.pad(tensor, padding, bound, side='both',
+        tensor = utils.pad(tensor, padding, bound,
                            value=_fill_value(reduction, tensor))
         padding = [0] * dim
 
@@ -406,7 +410,7 @@ def pool(dim, tensor, kernel_size=3, stride=None, dilation=1, padding=0,
         elif reduction == 'median':
             reduction = lambda x: math.median(x, dim=-1)
         if reduction == 'ssq':
-            reduction = lambda x: math.mean(x.square(), dim=-1).sqrt()
+            reduction = lambda x: math.sum(x.square(), dim=-1)
         elif not callable(reduction):
             raise ValueError(f'Unknown reduction {reduction}')
         pool_fn = lambda *a, **k: _pool(*a, **k, dilation=dilation, reduction=reduction)

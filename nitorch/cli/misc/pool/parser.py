@@ -19,12 +19,17 @@ class Pool(Structure):
 help = r"""[nitorch] Window-pooling of a volume
 
 usage:
-    nitorch pool *FILES [-w *WIN] [-s *STRD] [-m METHOD] [-d DIM] [-o *FILES] [-cpu|gpu]
+    nitorch pool *FILES [-w *WIN] [-s *STRD] [-p [BND] *(PAD [BND])] [-m METHOD]
+                        [-d DIM] [-o *FILES] [-cpu|gpu]
 
     -w, --window *WIN      Window size per dimension (default: 3)
     -s, --stride *STRD     Stride between output elements (default: *WIN)
     -p, --padding *PAD     Padding on both sides. Can be 'same' (default: 0)
+                           An optional boundary type (default: dct2) can be
+                           given first (applies to all axes) and/or after
+                           each size (applies to that axis).
     -m, --method METHOD    Pooling function: {'mean', 'sum', 'min', 'max', 'median', 'ssq'} (default: 'mean')
+                           ssq = sum of squares
     -d, --dimension DIM    Number of spatial dimensions (default: 3)
     -o, --output *FILES    Output filenames (default: {dir}/{base}.pool{ext})
     -cpu, -gpu             Device to use (default: cpu)
@@ -71,8 +76,9 @@ def parse(args):
         elif tag in ('-p', '--padding'):
             struct.padding = []
             struct.bound = []
-            last_size = False
+            last_size = False       # last value was a size without type
             bound_default = 'dct2'
+            has_default = False
             while cli.next_isvalue(args):
                 val, *args = args
                 try:
@@ -81,21 +87,23 @@ def parse(args):
                     val = val.lower()
                 if isinstance(val, int) or val == 'same':
                     if last_size:
+                        # previous size had no explicit type
                         struct.bound.append(bound_default)
                     last_size = True
                     struct.padding.append(val)
+                elif len(struct.padding) == 0 and not has_default:
+                    # first argument -> default padding mode
+                    bound_default = val
+                    has_default = True
+                elif not last_size:
+                    raise ParseError(
+                        'Padding type must follow padding size'
+                    )
                 else:
+                    struct.bound.append(val)
                     last_size = False
-                    if len(struct.padding) == 0:
-                        # first argument -> default padding mode
-                        bound_default = val
-                    else:
-                        struct.bound.append(val)
-                        if not last_size:
-                            raise ParseError(
-                                'Padding type must follow padding size'
-                            )
-                        last_size = False
+            if not struct.padding:
+                raise ParseError('Padding type given without padding size')
             while len(struct.bound) < len(struct.padding):
                 struct.bound.append(bound_default)
         elif tag in ('-m', '--method'):
