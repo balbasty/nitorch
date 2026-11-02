@@ -1,7 +1,7 @@
 from nitorch import spatial, io
 from nitorch.core import utils
 from nitorch.core.dtypes import dtype as nitype
-from nitorch.core.linalg import logm, expm
+from nitorch.core.linalg import sqrtm
 import torch
 import os
 from .parser import FileWithInfo, Linear, Velocity, Displacement
@@ -101,7 +101,7 @@ def collapse_transforms(options):
     for trf in options.transformations:
         if isinstance(trf, Linear):
             if trf.square:
-                trf.affine = expm(logm(trf.affine).mul_(0.5))
+                trf.affine = sqrtm(trf.affine)
             if trf.inv:
                 trf.affine = spatial.affine_inv(trf.affine)
                 trf.inv = False
