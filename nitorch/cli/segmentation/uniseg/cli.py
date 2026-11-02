@@ -1,7 +1,7 @@
 import warnings
 from nitorch.cli.cli import commands
 from nitorch.core.cli import ParseError
-from .parser import parser, help
+from .parser import parser, help, validate_options
 from nitorch.tools.uniseg import uniseg, path_spm_prior, get_data
 from nitorch import io, spatial
 from nitorch.core import utils, py, linalg
@@ -37,6 +37,7 @@ def cli_parse(args):
     if options.help:
         print(help)
         return
+    validate_options(options)
     if options.verbose > 3:
         print(options)
         print('')
@@ -112,7 +113,26 @@ def main(options):
 def get_format_dict(fname, dir0):
     dir, base, ext = py.fileparts(fname)
     dir = dir0 or dir or '.'
-    return dict(dir=dir, sep=os.sep, base=base, ext=ext)
+    return dict(dir=dir, sep=os.sep, base=base, ext=ext, c=1)
+
+
+def channel_fnames(template, inputs, dir0):
+    """One distinct filename per input channel.
+
+    The template is formatted with each input's own {dir}/{base}/{ext}
+    (and {c}, the 1-based channel index). If two channels still end up
+    with the same name (custom name without {base}/{c}, or inputs with
+    the same base name), a `.{c}` index is inserted before the extension.
+    """
+    names = [template.format(**dict(get_format_dict(ref, dir0), c=c+1))
+             for c, ref in enumerate(inputs)]
+    if len(set(names)) < len(names):
+        indexed = []
+        for c, name in enumerate(names):
+            dir, base, ext = py.fileparts(name)
+            indexed.append(os.path.join(dir, f'{base}.{c+1}{ext}'))
+        names = indexed
+    return names
 
 
 def write_outputs(z, prm, options):
@@ -153,12 +173,12 @@ def write_outputs(z, prm, options):
                 print('bias.nat     ->', fname)
             io.savef(utils.movedim(bias, 0, -1), fname, like=ref_native, dtype='float32')
         else:
-            for c, (bias1, ref1) in enumerate(zip(bias, options.input)):
-                format_dict1 = get_format_dict(ref1, options.output)
-                fname = fname.format(**format_dict1)
+            fnames = channel_fnames(fname, options.input, options.output)
+            for c, (bias1, ref1, fname1) in enumerate(
+                    zip(bias, options.input, fnames)):
                 if options.verbose > 0:
-                    print(f'bias.nat.{c+1}   ->', fname)
-                io.savef(bias1, fname, like=ref1, dtype='float32')
+                    print(f'bias.nat.{c+1}   ->', fname1)
+                io.savef(bias1, fname1, like=ref1, dtype='float32')
         del bias
 
     if (options.nobias_nat or options.all_nat) and options.bias:
@@ -170,12 +190,12 @@ def write_outputs(z, prm, options):
                 print('nobias.nat   ->', fname)
             io.savef(utils.movedim(nobias, 0, -1), fname, like=ref_native)
         else:
-            for c, (nobias1, ref1) in enumerate(zip(bias, options.input)):
-                format_dict1 = get_format_dict(ref1, options.output)
-                fname = fname.format(**format_dict1)
+            fnames = channel_fnames(fname, options.input, options.output)
+            for c, (nobias1, ref1, fname1) in enumerate(
+                    zip(nobias, options.input, fnames)):
                 if options.verbose > 0:
-                    print(f'nobias.nat.{c+1} ->', fname)
-                io.savef(nobias1, fname, like=ref1)
+                    print(f'nobias.nat.{c+1} ->', fname1)
+                io.savef(nobias1, fname1, like=ref1)
         del nobias
 
     if (options.warp_nat or options.all_nat) and options.warp:
@@ -256,12 +276,12 @@ def write_outputs(z, prm, options):
                 io.savef(utils.movedim(bias, 0, -1), fname, like=ref_native,
                          affine=mni_affine, dtype='float32')
             else:
-                for c, (bias1, ref1) in enumerate(zip(bias, options.input)):
-                    format_dict1 = get_format_dict(ref1, options.output)
-                    fname = fname.format(**format_dict1)
+                fnames = channel_fnames(fname, options.input, options.output)
+                for c, (bias1, ref1, fname1) in enumerate(
+                        zip(bias, options.input, fnames)):
                     if options.verbose > 0:
-                        print(f'bias.mni.{c+1}   ->', fname)
-                    io.savef(bias1, fname, like=ref1, affine=mni_affine,
+                        print(f'bias.mni.{c+1}   ->', fname1)
+                    io.savef(bias1, fname1, like=ref1, affine=mni_affine,
                              dtype='float32')
 
         if options.nobias_mni or options.all_mni:
@@ -275,12 +295,12 @@ def write_outputs(z, prm, options):
                 io.savef(utils.movedim(nobias, 0, -1), fname, like=ref_native,
                          affine=mni_affine)
             else:
-                for c, (nobias1, ref1) in enumerate(zip(bias, options.input)):
-                    format_dict1 = get_format_dict(ref1, options.output)
-                    fname = fname.format(**format_dict1)
+                fnames = channel_fnames(fname, options.input, options.output)
+                for c, (nobias1, ref1, fname1) in enumerate(
+                        zip(nobias, options.input, fnames)):
                     if options.verbose > 0:
-                        print(f'nobias.mni.{c+1} ->', fname)
-                    io.savef(nobias1, fname, like=ref1, affine=mni_affine)
+                        print(f'nobias.mni.{c+1} ->', fname1)
+                    io.savef(nobias1, fname1, like=ref1, affine=mni_affine)
             del nobias
 
         del bias
@@ -352,12 +372,12 @@ def write_outputs(z, prm, options):
                 io.savef(utils.movedim(bias, 0, -1), fname, like=ref_native,
                          affine=mni_affine, dtype='float32')
             else:
-                for c, (bias1, ref1) in enumerate(zip(bias, options.input)):
-                    format_dict1 = get_format_dict(ref1, options.output)
-                    fname = fname.format(**format_dict1)
+                fnames = channel_fnames(fname, options.input, options.output)
+                for c, (bias1, ref1, fname1) in enumerate(
+                        zip(bias, options.input, fnames)):
                     if options.verbose > 0:
-                        print(f'bias.wrp.{c+1}   ->', fname)
-                    io.savef(bias1, fname, like=ref1, affine=mni_affine,
+                        print(f'bias.wrp.{c+1}   ->', fname1)
+                    io.savef(bias1, fname1, like=ref1, affine=mni_affine,
                              dtype='float32')
 
         if options.nobias_wrp or options.all_wrp:
@@ -371,12 +391,12 @@ def write_outputs(z, prm, options):
                 io.savef(utils.movedim(nobias, 0, -1), fname, like=ref_native,
                          affine=mni_affine)
             else:
-                for c, (nobias1, ref1) in enumerate(zip(bias, options.input)):
-                    format_dict1 = get_format_dict(ref1, options.output)
-                    fname = fname.format(**format_dict1)
+                fnames = channel_fnames(fname, options.input, options.output)
+                for c, (nobias1, ref1, fname1) in enumerate(
+                        zip(nobias, options.input, fnames)):
                     if options.verbose > 0:
-                        print(f'nobias.wrp.{c+1} ->', fname)
-                    io.savef(nobias1, fname, like=ref1, affine=mni_affine)
+                        print(f'nobias.wrp.{c+1} ->', fname1)
+                    io.savef(nobias1, fname1, like=ref1, affine=mni_affine)
             del nobias
 
         del bias

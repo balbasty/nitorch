@@ -16,6 +16,7 @@ from nitorch.cli.segmentation.uniseg import cli as uniseg_cli
 
 SHAPE = (6, 6, 6)
 K = 3
+BIAS = 2.
 
 
 def parse(*args):
@@ -40,9 +41,13 @@ def test_align_parsing(args, expected):
     assert parse('in.nii', *args).align == expected
 
 
-def test_align_invalid():
-    with pytest.raises(ParseError):
-        parse('in.nii', '-a', 'bogus')
+@pytest.mark.parametrize('args,flag', [
+    (('-a', 'bogus'), '-a/--align'),
+    (('--mrf', 'maybe'), '--mrf'),
+])
+def test_choice_invalid(args, flag):
+    with pytest.raises(ParseError, match=flag):
+        uniseg_cli.cli_parse(['in.nii', *args])
 
 
 @pytest.mark.parametrize('args,expected', [
@@ -82,6 +87,9 @@ def setup(tmp_path, monkeypatch):
     aff = np.eye(4)
     img = np.random.rand(*SHAPE).astype('float32') + 1
     nib.save(nib.Nifti1Image(img, aff), str(tmp_path / 'in.nii'))
+    for c in (1, 2):
+        img = np.random.rand(*SHAPE).astype('float32') + c
+        nib.save(nib.Nifti1Image(img, aff), str(tmp_path / f'ch{c}.nii'))
     tpm = np.random.rand(*SHAPE, K).astype('float32')
     nib.save(nib.Nifti1Image(tpm, aff), str(tmp_path / 'tpm.nii'))
 
@@ -95,7 +103,7 @@ def setup(tmp_path, monkeypatch):
         prm = dict(
             affine=torch.eye(4),
             warp=torch.zeros(*SHAPE, 3),
-            bias=torch.ones(1, *SHAPE),
+            bias=torch.full([len(x), *SHAPE], BIAS),
             warped=torch.rand(K, *SHAPE).softmax(0),
         )
         if kwargs.get('do_affine') is False:
@@ -104,8 +112,9 @@ def setup(tmp_path, monkeypatch):
 
     monkeypatch.setattr(uniseg_cli, 'uniseg', fake_uniseg)
 
-    def run(*args):
-        argv = [str(tmp_path / 'in.nii'), '-t', str(tmp_path / 'tpm.nii'),
+    def run(*args, inputs=('in.nii',)):
+        argv = [*(str(tmp_path / i) for i in inputs),
+                '-t', str(tmp_path / 'tpm.nii'),
                 '-o', str(tmp_path / 'out'), '-v', '0', *args]
         os.makedirs(tmp_path / 'out', exist_ok=True)
         uniseg_cli.main(parser.parse(argv))
@@ -168,3 +177,31 @@ def test_no_align_mni_output(setup):
     run, _ = setup
     out = run('--no-align', '--no-prob-nat', '--no-labels-nat', '--prob-mni')
     assert out == ['in.prob.mni.nii']
+
+
+@pytest.mark.parametrize('flag', ['bias', 'nobias'])
+@pytest.mark.parametrize('space', ['nat', 'mni', 'wrp'])
+def test_multichannel(setup, tmp_path, flag, space):
+    run, _ = setup
+    out = run('--no-prob-nat', '--no-labels-nat', f'--{flag}-{space}',
+              inputs=('ch1.nii', 'ch2.nii'))
+    assert out == [f'ch1.{flag}.{space}.nii', f'ch2.{flag}.{space}.nii']
+    for c in (1, 2):
+        written = nib.load(str(tmp_path / 'out' / out[c-1])).get_fdata()
+        written = written.reshape(SHAPE)
+        if flag == 'bias':
+            expected = np.full(SHAPE, BIAS)
+        else:
+            dat = nib.load(str(tmp_path / f'ch{c}.nii')).get_fdata()
+            expected = BIAS * dat
+        np.testing.assert_allclose(written, expected, rtol=1e-3, atol=1e-3)
+
+
+def test_multichannel_custom_name(setup):
+    run, _ = setup
+    out = run('--no-prob-nat', '--no-labels-nat',
+              '--bias-nat', '{dir}{sep}mybias{ext}',
+              '--nobias-nat', '{dir}{sep}nobias_{c}{ext}',
+              inputs=('ch1.nii', 'ch2.nii'))
+    assert out == ['mybias.1.nii', 'mybias.2.nii',
+                   'nobias_1.nii', 'nobias_2.nii']

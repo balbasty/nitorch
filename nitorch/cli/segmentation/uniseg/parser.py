@@ -96,6 +96,25 @@ def convert_device(device):
     return _convert
 
 
+def validate_options(options):
+    """Check choice-valued options and raise a readable ParseError.
+
+    (Values are not validated by the parser itself: with nargs='?',
+    an invalid value would just be left unconsumed, giving an obscure
+    "Don't know what to do with ..." error.)"""
+    def _show(choices):
+        return ', '.join('no' if c is False else str(c) for c in choices)
+    for name, flags, choices in (
+            ('align', '-a/--align', aff_choices),
+            ('mrf', '--mrf', mrf_choices)):
+        value = getattr(options, name)
+        if value not in choices:
+            raise cli.ParseError(
+                f'Invalid value {value!r} for {flags}: expected one of '
+                f'{_show(choices)} (or yes).')
+    return options
+
+
 parser = cli.CommandParser('uniseg', help=help)
 # --- inputs -----------------------------------------------------------
 parser.add_positional('input', nargs='+')
@@ -163,7 +182,6 @@ parser.add_option(f'bias', '--no-bias', nargs=0,
                   action=cli.Actions.store_value(False))
 parser.add_option(f'align', ('-a', '--align'), nargs='?',
                   convert=bool_or_choice(aff_aliases),
-                  validation=cli.Validations.choice(aff_choices),
                   action=cli.Actions.store_value('always'), default='always')
 parser.add_option(f'align', '--no-align', nargs=0,
                   action=cli.Actions.store_value(False))
@@ -177,7 +195,6 @@ parser.add_option(f'mix', '--no-mix', nargs=0,
                   action=cli.Actions.store_value(False))
 parser.add_option(f'mrf', '--mrf', nargs='?',
                   convert=bool_or_choice(mrf_aliases),
-                  validation=cli.Validations.choice(mrf_choices),
                   action=cli.Actions.store_value('learn'), default='once')
 parser.add_option(f'mrf', '--no-mrf', nargs=0,
                   action=cli.Actions.store_value(False))
