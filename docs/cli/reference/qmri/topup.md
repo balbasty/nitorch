@@ -9,14 +9,14 @@ Estimates the geometric distortion caused by B0 inhomogeneity from a pair of ima
 === ":octicons-terminal-24: Synopsis"
 
     ```shell
-    nitorch topup fit POS NEG [-m MASK] [-o TEMPLATE] [-r DIR] -bw BW
+    nitorch topup fit POS NEG [-m MASK] [-o TEMPLATE] [-r DIR] [-bw BW]
                       [-l {mse,ncc,lncc,gmm,lgmm}] [-k VAL... [UNIT]] [-b BINS]
-                      [--modulation {yes,no}] [-d {yes,no}]
+                      [-j|--modulation [{yes,no}]] [-d [{yes,no}]]
                       [-p VAL... [TYPE]] [-w VOX...] [-n ITER...] [-t TOL...]
                       [--cpu | --gpu [ID]] [-v [LVL]]
 
     nitorch topup apply FIELD [-p POS...] [-n NEG...] [-o TEMPLATE] [-r DIR]
-                        -bw BW [-m {yes,no}] [-d {yes,no}]
+                        [-bw BW] [-m [{yes,no}]] [-d [{yes,no}]]
                         [--cpu | --gpu [ID]] [-v [LVL]]
     ```
 
@@ -30,20 +30,17 @@ I_+\big(\mathbf{x} + u(\mathbf{x})\,\mathbf{e}\big)\,\big(1 + \partial_e u\big)
 I_-\big(\mathbf{x} - u(\mathbf{x})\,\mathbf{e}\big)\,\big(1 - \partial_e u\big),
 $$
 
-where $\mathbf{e}$ is the unit vector along the readout direction. The Jacobian factors $1 \pm \partial_e u$ model the pile-up or stretching of the intensity caused by the displacement, and can be switched off with `--modulation no`. The field is smoothed by a penalty on its bending energy (or membrane energy). It is estimated on a pyramid of increasingly fine grids.
+where $\mathbf{e}$ is the unit vector along the readout direction. The Jacobian factors $1 \pm \partial_e u$ model the pile-up or stretching of the intensity caused by the displacement, and can be switched off with `-j no`. The field is smoothed by a penalty on its bending energy (or membrane energy). It is estimated on a pyramid of increasingly fine grids.
 
 The matching term between the two images is the main difference with FSL TOPUP. With the default `mse`, the squared difference is used, as in TOPUP, with the noise level estimated from the images; this requires images with the same contrast. The other losses allow images with *different* contrasts to be matched, which makes it possible to estimate a distortion field from the first two echoes of a bipolar multi-echo acquisition, for instance: `ncc` (global normalised cross-correlation), `lncc` (local normalised cross-correlation in patches, see `-k`), `gmm` (negative mutual information estimated with a Gaussian mixture model with `-b` classes) and `lgmm` (the same, computed locally in patches).
 
 ### The output field
 
-`topup fit` writes a single image with the shape and orientation of `POS`, whose values are the displacement $u$ along the readout direction, in voxels of the input image. With `-bw`, which gives the readout bandwidth in Hz/pixel, the displacement is multiplied by the bandwidth so that the field is a B0 field map in Hz (a displacement of $u$ voxels corresponds to a frequency offset of $u \cdot \mathrm{BW}$ Hz). With `-bw 1`, the field stays in voxels. With `-d yes`, the file contains a *velocity* field, the displacement being its exponential, which guarantees an invertible deformation. Such a file must be applied with `-d yes`.
-
-!!! warning "Always give -bw"
-    In the present implementation, the bandwidth has no working default: omitting `-bw` makes `apply` fail, and makes `fit` fail only after the estimation is complete, when it scales the field. Pass `-bw 1` to work in voxel units.
+`topup fit` writes a single image with the shape and orientation of `POS`, whose values are the displacement $u$ along the readout direction, in voxels of the input image. With `-bw`, which gives the readout bandwidth in Hz/pixel, the displacement is multiplied by the bandwidth so that the field is a B0 field map in Hz (a displacement of $u$ voxels corresponds to a frequency offset of $u \cdot \mathrm{BW}$ Hz). Without `-bw`, or with `-bw 1`, the field stays in voxels. With `-d yes`, the file contains a *velocity* field, the displacement being its exponential, which guarantees an invertible deformation. Such a file must be applied with `-d yes`.
 
 ### Applying the field
 
-`topup apply` unwarps images with such a field. Files given with `-p` have the polarity of `POS`, and are displaced by $+u$. Files given with `-n` have the polarity of `NEG` and are displaced by $-u$. The bandwidth `-bw` must be the one used when fitting, so that the field in Hz is converted back to voxels. Intensities are modulated by the Jacobian of the deformation unless you pass `--modulation no`. The images to unwarp must be 3D volumes on the same grid as the field.
+`topup apply` unwarps images with such a field. Files given with `-p` have the polarity of `POS`, and are displaced by $+u$. Files given with `-n` have the polarity of `NEG` and are displaced by $-u$. The bandwidth `-bw` must be the one used when fitting, so that the field in Hz is converted back to voxels; if it was omitted when fitting, omit it here too. Intensities are modulated by the Jacobian of the deformation, taken along the readout axis, unless you pass `-m no`. The images to unwarp must be 3D volumes on the same grid as the field.
 
 ### Readout direction
 
@@ -77,20 +74,22 @@ The field is estimated on a pyramid. The grids are defined by `-w`, the voxel si
 | `-m`, `--mask`            | `FILE`       | Mask in which the matching loss is computed. | whole image |
 | `-o`, `--output`          | `TEMPLATE`   | Output path. The template can use `{dir}`, `{sep}`, `{base}` and `{ext}` (directory, separator, base name and extension of `POS`). | `{dir}{sep}{base}_topup_b0{ext}` |
 | `-r`, `--readout`         | `DIR`        | Readout direction (for example `ap`). | voxel axis with the most voxels |
-| `-bw`, `--bandwidth`      | `BW`         | Readout bandwidth in Hz/pixel. The field is multiplied by it. Use `1` for a field in voxels. | *required* (see above) |
+| `-bw`, `--bandwidth`      | `BW`         | Readout bandwidth in Hz/pixel. The field is multiplied by it. Use `1` for a field in voxels. | `1` |
 
 ### Model
 
 | Option                    | Value                 | Description | Default |
 | ------------------------- | --------------------- | ----------- | ------- |
 | `-l`, `--loss`            | `{mse,ncc,lncc,gmm,lgmm}` | Matching loss. See [Description](#description). | `mse` |
-| `-k`, `--kernel`          | `VAL... [UNIT]`       | Patch size of the local losses (`lncc`, `lgmm`): a single value, or one per voxel axis. The unit is `%` (percentage of the image size along each axis), `mm` (along the R, A and S axes) or `vox`. Patches are at least 2 voxels wide. | `10 %` |
+| `-k`, `--kernel`          | `VAL... [UNIT]`       | Patch size of the local losses (`lncc`, `lgmm`): a single value, or one per voxel axis. The unit is `%` (percentage of the image size along each axis), `mm` (along the R, A and S axes) or `vox` (voxels of the input image, rescaled at each level of the pyramid). Patches are at least 2 voxels wide. | `10 %` |
 | `-b`, `--bins`            | `N`                   | Number of classes of the mixture for `gmm` and `lgmm`. With `1`, they reduce to `ncc` and `lncc`. | `3` |
-| `--modulation`            | `{yes,no}`            | Modulate intensities by the Jacobian of the deformation. A value is required. | `yes` |
-| `-d`, `--diffeo`          | `{yes,no}`            | Use a diffeomorphic (velocity field) model instead of a small-displacement model. A value is required. | `no` |
+| `-j`, `--modulation`      | `[{yes,no}]`          | Modulate intensities by the Jacobian of the deformation. Alone, the flag means `yes`. | `yes` |
+| `-d`, `--diffeo`          | `[{yes,no}]`          | Use a diffeomorphic (velocity field) model instead of a small-displacement model. Alone, the flag means `yes`. | `no` |
 | `-p`, `--penalty`         | `VAL... [TYPE]`       | Penalty weight, one per level, followed by the type of penalty: `bend` (bending energy) or `memb` (membrane energy). | `100 bend` |
 
-The short option `-m` means `--mask`. There is no short form for `--modulation`.
+The short option `-m` means `--mask`, and `-j` means `--modulation`.
+
+Because the value of `-j` and `-d` is optional, a flag written directly before the input files would take the first file as its value. Place such flags after the input files, or give them an explicit value.
 
 ### Optimisation
 
@@ -117,9 +116,9 @@ The short option `-m` means `--mask`. There is no short form for `--modulation`.
 | `-n`, `--neg`             | `FILE...`    | Files acquired with the negative polarity (displaced by $-u$). | none |
 | `-o`, `--output`          | `TEMPLATE`   | Output path for every file. The template uses the directory, separator, base name and extension of the file being unwarped: `{dir}`, `{sep}`, `{base}`, `{ext}`. | `{dir}{sep}{base}_topup_unwarped{ext}` |
 | `-r`, `--readout`         | `DIR`        | Readout direction. | voxel axis with the most voxels |
-| `-bw`, `--bandwidth`      | `BW`         | Readout bandwidth in Hz/pixel, as used by `topup fit`. | *required* (see above) |
-| `-m`, `--modulation`      | `{yes,no}`   | Modulate intensities by the Jacobian of the deformation. A value is required. | `yes` |
-| `-d`, `--diffeo`          | `{yes,no}`   | The field is a velocity field (it was fitted with `-d yes`). A value is required. | `no` |
+| `-bw`, `--bandwidth`      | `BW`         | Readout bandwidth in Hz/pixel, as used by `topup fit`. | `1` |
+| `-m`, `--modulation`      | `[{yes,no}]` | Modulate intensities by the Jacobian of the deformation. Alone, the flag means `yes`. | `yes` |
+| `-d`, `--diffeo`          | `[{yes,no}]` | The field is a velocity field (it was fitted with `-d yes`). Alone, the flag means `yes`. | `no` |
 | `--cpu`                   |              | Run on the CPU. | |
 | `--gpu`                   | `[ID]`       | Run on a CUDA device. | `--cpu` |
 | `-v`, `--verbose`         | `[LVL]`      | Verbosity. | `1` |
