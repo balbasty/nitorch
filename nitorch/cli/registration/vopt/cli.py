@@ -167,8 +167,12 @@ def parse(args):
             lame = [float(args.pop(0))]
             if args and args[0][:1] != '-':
                 lame.append(float(args.pop(0)))
-        else:
+        elif tag[:1] == '-':
             raise ParseError(f'Unknown tag {tag}')
+        else:
+            # positional values are ambiguous: each input needs <fix> <mov>
+            raise ParseError(f"Unexpected value '{tag}'. Input files must "
+                             f"follow -i/--input as <fix> <mov> <path>.")
 
     output = output or '{dir}{sep}{label}_optimal.nii.gz'
     bound = bound or 'dft'
