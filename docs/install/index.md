@@ -13,7 +13,7 @@ be built from source.
 ## Requirements
 
 NITorch needs Python and PyTorch. The package metadata is permissive (it
-declares Python 3.6 or later and PyTorch 1.4 or later), but only a few
+declares Python 3.6 or later and PyTorch 1.6 or later), but only a few
 combinations are actually tested. The continuous-integration tests run on Linux
 with the CPU build of PyTorch, with:
 
