@@ -11,7 +11,7 @@ class DenoiseMRI(Structure):
     max_iter: int = 10000
     tolerance: float = 1e-8
     verbose: bool = True
-    device: str = 'cuda'
+    device: str = 'cpu'
     do_write: bool = True
     dir_out: str = None
 
@@ -26,9 +26,10 @@ usage:
         -lr,  --learning_rate  Optimiser learning rate ({:})
         -n,   --max_iter N     Maximum number of fitting iterations ({:})
         -t,   --tolerance TOL  Convergence threshold (when to stop iterating) ({:})
-        -v,   --verbose        Print to terminal? ({:})
+        -v,   --verbose [0|1]  Print to terminal? (0 = quiet) ({:})
         -o,   --dir_out        Directory where to write output (default is same as input)   
-        -cpu, -gpu             Device to use (default: gpu)
+        -cpu, -gpu [N]         Device to use (default: cpu; falls back to cpu
+                               with a warning if CUDA is unavailable)
         
 examples:
     # single-channel MR image denoising
@@ -96,9 +97,14 @@ def parse(args):
             struct.dir_out, *args = args
             struct.dir_out = str(struct.dir_out)
         elif tag in ('-v', '--verbose'):
-            cli.check_next_isvalue(args, tag)
-            struct.verbose, *args = args
-            struct.verbose = bool(struct.verbose)
+            struct.verbose = True
+            if cli.next_isvalue(args):
+                val, *args = args
+                if val.lower() in ('false', 'no', 'off'):
+                    val = 0
+                elif val.lower() in ('true', 'yes', 'on'):
+                    val = 1
+                struct.verbose = bool(int(val))
         elif tag in ('-h', '--help'):
             print(help)
             return None

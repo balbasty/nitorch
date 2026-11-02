@@ -13,7 +13,7 @@ and want a denoised version of each without tuning parameters by hand.
 
     ```shell
     nitorch denoise_mri FILE... [-s SCALE] [-lr RATE] [-n ITER] [-t TOL]
-                                [-v VALUE] [-o DIR] [-cpu | -gpu [N]]
+                                [-v [0|1]] [-o DIR] [-cpu | -gpu [N]]
     ```
 
 ## Description
@@ -61,8 +61,8 @@ starting from a volume of zeros. Every ten iterations, the learning rate is
 reduced if the loss has stopped improving (`ReduceLROnPlateau`). After the first
 ten iterations, the optimisation stops once the relative gain of the loss stays
 below the tolerance for five consecutive iterations, or after the maximum
-number of iterations. With `-v`, a line with the iteration number, loss, gain
-and learning rate is printed every 25 iterations.
+number of iterations. By default, a line with the iteration number, loss, gain
+and learning rate is printed every 25 iterations; `-v 0` turns this off.
 
 ### Input requirements
 
@@ -71,26 +71,19 @@ one channel. The orientation matrix of the first file is assumed to apply to all
 
 ### Output
 
-The denoised channel $c$ (counting from 0) is written as
-`den_<name>_<c><ext>`, where `<name>` is the part of the file name of the
-**last** input file that precedes its first dot, and `<ext>` is the rest, such
-as `.nii.gz`. The header (orientation matrix and data type) is taken from the
-last input file. By default the files are written in the directory of the last
-input file; `-o` selects another directory, which is created if needed. For
+Each denoised image is written as `den_<name><ext>`, where `<name>` is the part
+of the name of its own input file that precedes its first dot, and `<ext>` is
+the rest, such as `.nii.gz`. The header (orientation matrix and data type) is
+that of the same input file. By default, the files are written in the directory
+of their input; `-o` selects another directory, which is created if needed. For
 example,
 
 ```shell
 nitorch denoise_mri T1w.nii.gz T2w.nii.gz
 ```
 
-writes `den_T2w_0.nii.gz` (the denoised T1w image) and `den_T2w_1.nii.gz` (the
-denoised T2w image). The channel index refers to the order of the arguments, and
-only the file name of the last input is used; this naming is easy to misread, so
-check which file is which.
-
-!!! warning "A GPU is assumed by default"
-    The default device is `cuda`. On a machine without a GPU, the command
-    fails unless you pass `-cpu`.
+writes `den_T1w.nii.gz` and `den_T2w.nii.gz`. With `-o`, two inputs that share
+a base name would be written to the same file.
 
 ## Arguments
 
@@ -121,9 +114,9 @@ Long option names use underscores, as in the code.
 | Option | Value | Description | Default |
 | ------ | ----- | ----------- | ------- |
 | `-o`, `--dir_out` | `DIR` | Directory in which to write the denoised images. | directory of the input |
-| `-v`, `--verbose` | `VALUE` | Print the progress every 25 iterations. The option needs a value, and any non-empty value (including `0`) switches printing on. | on |
-| `-cpu`, `--cpu` | | Run on the CPU. | |
-| `-gpu`, `--gpu` | `[N]` | Run on a GPU, optionally the one with index `N`. | yes (`cuda`) |
+| `-v`, `--verbose` | `[0\|1]` | Print the progress every 25 iterations. The value is optional; `0`, `false`, `no` or `off` disables printing. | on |
+| `-cpu`, `--cpu` | | Run on the CPU. | yes |
+| `-gpu`, `--gpu` | `[N]` | Run on a GPU, optionally the one with index `N`. If CUDA is unavailable, a warning is issued and the CPU is used. | |
 | `-h`, `--help` | | Print the built-in help and exit. | |
 
 See [Hardware](../../conventions.md#hardware) for the shared conventions.
@@ -141,19 +134,18 @@ a mixture model of the histogram, but they are built for different uses.
 | Regularisation | Given in absolute terms (`-l`), the same for any intensity scale | Computed from the foreground intensity and the number of channels; scaled by `-s` |
 | Voxel size | Ignored | Used in the gradients |
 | Solver | Reweighted least squares with conjugate gradients | Adam on the loss, with automatic differentiation |
-| Output names | Template (`-o`), `.denoised` by default | `den_` prefix, in a directory (`-o`) |
-| Default device | CPU | GPU |
+| Output names | Template (`-o`), `.denoised` by default | `den_` prefix, named after each input, in a directory (`-o`) |
+| Default device | CPU | CPU |
 
 Note that `-s` means different things: the noise standard deviation in
 `denoise`, the regularisation scaling here.
 
 ## Examples
 
-Denoise a T1-weighted image, on the CPU. This writes `den_T1w_0.nii` in the same
-directory:
+Denoise a T1-weighted image. This writes `den_T1w.nii` in the same directory:
 
 ```shell
-nitorch denoise_mri T1w.nii -cpu
+nitorch denoise_mri T1w.nii
 ```
 
 Denoise two sequences of the same subject jointly and write the results in
@@ -166,7 +158,7 @@ nitorch denoise_mri T1w.nii T2w.nii -o ./output
 Smooth more strongly:
 
 ```shell
-nitorch denoise_mri T1w.nii -s 30 -cpu
+nitorch denoise_mri T1w.nii -s 30
 ```
 
 Run on the second GPU, with a limit of 500 iterations:

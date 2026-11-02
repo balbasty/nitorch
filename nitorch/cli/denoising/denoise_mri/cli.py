@@ -2,6 +2,8 @@ from nitorch.cli.cli import commands
 from .main import denoise_mri
 from .parser import parse, help, ParseError
 import sys
+import warnings
+import torch
 
 
 def cli(args=None):
@@ -24,6 +26,14 @@ def cli(args=None):
 commands['denoise_mri'] = cli
 
 
+def setup_device(device):
+    """Return a torch device, falling back to CPU if CUDA is unavailable."""
+    if device.startswith('cuda') and not torch.cuda.is_available():
+        warnings.warn('CUDA not available. Switching to CPU.')
+        device = 'cpu'
+    return torch.device(device)
+
+
 def _cli(args):
     """Command-line interface for `denoise_mri` without exception handling"""
     args = args or sys.argv[1:]
@@ -32,6 +42,8 @@ def _cli(args):
     if not options:
         return
 
+    device = setup_device(options.device)
+
     denoise_mri(*options.files, lam_scl=options.lam_scl, lr=options.learning_rate,
                 max_iter=options.max_iter, tolerance=options.tolerance, verbose=options.verbose,
-                device=options.device, do_write=options.do_write, dir_out=options.dir_out)
+                device=device, do_write=options.do_write, dir_out=options.dir_out)

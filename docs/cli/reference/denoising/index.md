@@ -24,8 +24,8 @@ so it expects a head image; it can combine several contrasts.
 Use [`denoise`](denoise.md) when you want to choose the noise level and the
 amount of smoothing yourself, or when your images are not MR volumes. Use
 [`denoise_mri`](denoise_mri.md) when you have MR sequences and prefer
-parameters derived from the image intensities; note that it assumes a GPU unless
-you pass `-cpu`. The page of `denoise_mri` compares the two in detail.
+parameters derived from the image intensities. The page of `denoise_mri`
+compares the two in detail.
 
 ## See also
 

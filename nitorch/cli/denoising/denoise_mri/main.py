@@ -20,8 +20,9 @@ def denoise_mri(*dat_x, affine_x=None, lam_scl=opt.lam_scl, lr=opt.learning_rate
 
     using PyTorch's auto-diff.
 
-    If input is given as paths to files, outputs prefixed 'den_' is written based on options
-    'dir_out' and 'do_write'.
+    If input is given as paths to files, one output per input, named after
+    that input and prefixed 'den_', is written based on options 'dir_out'
+    and 'do_write'.
 
     Reference:
     Brudfors, Mikael, et al. "MRI super-resolution using multi-channel total variation."
@@ -43,7 +44,7 @@ def denoise_mri(*dat_x, affine_x=None, lam_scl=opt.lam_scl, lr=opt.learning_rate
         Convergence threshold (when to stop iterating)
     verbose : bool, default=True
         Print to terminal?
-    device : torch.device, default='cuda'
+    device : torch.device, default='cpu'
         Torch device
     do_write : bool, default=True
         If input is given as paths to files, output is written to disk,
@@ -60,7 +61,7 @@ def denoise_mri(*dat_x, affine_x=None, lam_scl=opt.lam_scl, lr=opt.learning_rate
     # read data from disk
     if isinstance(dat_x,(list, tuple)) and \
         sum(isinstance(dat_x[i],str) for i in range(len(dat_x))) == len(dat_x):
-        dat_x, affine_x, nii = _get_image_data(dat_x, device=device)
+        dat_x, affine_x, niis = _get_image_data(dat_x, device=device)
     else:
         do_write = False  # input is tensor, do not write to disk
     # backend
@@ -131,8 +132,8 @@ def denoise_mri(*dat_x, affine_x=None, lam_scl=opt.lam_scl, lr=opt.learning_rate
         if dir_out is not None:
             os.makedirs(dir_out, exist_ok=True)
         for i in range(dat_y_hat.shape[0]):
-            fname = file_replace(nii.fname, prefix='den_', dir=dir_out, suffix='_' + str(i))
-            savef(dat_y_hat[i, ...], fname, like=nii)
+            fname = file_replace(niis[i].fname, prefix='den_', dir=dir_out)
+            savef(dat_y_hat[i, ...], fname, like=niis[i])
 
     return dat_y_hat
 
@@ -183,13 +184,15 @@ def _get_image_data(pths, device=None, dtype=None):
         Image tensor
     affine : (4, 4) tensor
         Affine matrix (assumed the same across channels)
-    nii : nitorch.BabelArray
-        BabelArray object.
+    niis : list[nitorch.BabelArray]
+        One BabelArray object per input path.
 
     """
+    niis = []
     for i, p in enumerate(pths):
         # read nifti
         nii = map(p)
+        niis.append(nii)
         # get data
         if i == 0:
             dat = nii.fdata(dtype=dtype, device=device, rand=False)[None]
@@ -200,7 +203,7 @@ def _get_image_data(pths, device=None, dtype=None):
                 raise ValueError('All images must have same dimensions!')
             dat = torch.cat((dat, nii.fdata(dtype=dtype, device=device, rand=False)[None]), dim=0)
 
-    return dat, affine, nii
+    return dat, affine, niis
 
 
 def _loss_ssqd_jtv(dat_x, dat_y, tau, lam, vx=1, side='f', bound='dct2'):
