@@ -13,29 +13,38 @@ _torch_has_fftshift = nifft._torch_has_fftshift
 norms = ('forward', 'backward', 'ortho')
 ndims = (1, 2, 3, 4)
 
+# These tests compare nitorch's fallback implementation (built on the
+# legacy `torch.fft` / `torch.rfft` functions) against `torch.fft`, so
+# they need a torch version where both exist.
+pytestmark = pytest.mark.skipif(
+    not _torch_has_fft_module or not _torch_has_old_fft,
+    reason='requires both the legacy torch.fft function and the torch.fft module')
+
+
+def _use_old_fft(monkeypatch):
+    # force nitorch to use its fallback implementation
+    monkeypatch.setattr(nifft, '_torch_has_complex', False)
+    monkeypatch.setattr(nifft, '_torch_has_fft_module', False)
+    monkeypatch.setattr(nifft, '_torch_has_fftshift', False)
+
 
 @pytest.mark.parametrize('norm', norms)
-def test_fft(norm):
-    if not _torch_has_fft_module or not _torch_has_old_fft:
-        return True
-    
-    nifft._torch_has_complex = False
-    nifft._torch_has_fft_module = False
-    nifft._torch_has_fftshift = False
+def test_fft(norm, monkeypatch):
+    _use_old_fft(monkeypatch)
 
-    x = torch.randn([16, 32, 2], dtype=torch.doubl)
+    x = torch.randn([16, 32, 2], dtype=torch.double)
     f1 = pyfft.fft(torch.complex(x[..., 0], x[..., 1]), norm=norm)
     f2 = nifft.fft(x, norm=norm)
     f2 = torch.complex(f2[..., 0], f2[..., 1])
     assert torch.allclose(f1, f2)
 
-    x = torch.randn([16, 32, 2], dtype=torch.doubl)
+    x = torch.randn([16, 32, 2], dtype=torch.double)
     f1 = pyfft.fft(torch.complex(x[..., 0], x[..., 1]), dim=0, norm=norm)
     f2 = nifft.fft(x, dim=0, norm=norm)
     f2 = torch.complex(f2[..., 0], f2[..., 1])
     assert torch.allclose(f1, f2)
 
-    x = torch.randn([16, 32], dtype=torch.doubl)
+    x = torch.randn([16, 32], dtype=torch.double)
     f1 = pyfft.fft(x, norm=norm)
     f2 = nifft.fft(x, real=True, norm=norm)
     f2 = torch.complex(f2[..., 0], f2[..., 1])
@@ -43,27 +52,22 @@ def test_fft(norm):
 
 
 @pytest.mark.parametrize('norm', norms)
-def test_ifft(norm):
-    if not _torch_has_fft_module or not _torch_has_old_fft:
-        return True
-    
-    nifft._torch_has_complex = False
-    nifft._torch_has_fft_module = False
-    nifft._torch_has_fftshift = False
+def test_ifft(norm, monkeypatch):
+    _use_old_fft(monkeypatch)
 
-    x = torch.randn([16, 32, 2], dtype=torch.doubl)
+    x = torch.randn([16, 32, 2], dtype=torch.double)
     f1 = pyfft.ifft(torch.complex(x[..., 0], x[..., 1]), norm=norm)
     f2 = nifft.ifft(x, norm=norm)
     f2 = torch.complex(f2[..., 0], f2[..., 1])
     assert torch.allclose(f1, f2)
 
-    x = torch.randn([16, 32, 2], dtype=torch.doubl)
+    x = torch.randn([16, 32, 2], dtype=torch.double)
     f1 = pyfft.ifft(torch.complex(x[..., 0], x[..., 1]), dim=0, norm=norm)
     f2 = nifft.ifft(x, dim=0, norm=norm)
     f2 = torch.complex(f2[..., 0], f2[..., 1])
     assert torch.allclose(f1, f2)
 
-    x = torch.randn([16, 32], dtype=torch.doubl)
+    x = torch.randn([16, 32], dtype=torch.double)
     f1 = pyfft.ifft(x, norm=norm)
     f2 = nifft.ifft(x, real=True, norm=norm)
     f2 = torch.complex(f2[..., 0], f2[..., 1])
@@ -73,13 +77,8 @@ def test_ifft(norm):
 @pytest.mark.parametrize('norm', norms)
 @pytest.mark.parametrize('ndim', ndims)
 @pytest.mark.parametrize('shuffle', (True, False))
-def test_fftn(norm, ndim, shuffle):
-    if not _torch_has_fft_module or not _torch_has_old_fft:
-        return True
-    
-    nifft._torch_has_complex = False
-    nifft._torch_has_fft_module = False
-    nifft._torch_has_fftshift = False
+def test_fftn(norm, ndim, shuffle, monkeypatch):
+    _use_old_fft(monkeypatch)
 
     dims = [0, 1, -2, 3]
     if shuffle:
@@ -103,13 +102,8 @@ def test_fftn(norm, ndim, shuffle):
 @pytest.mark.parametrize('norm', norms)
 @pytest.mark.parametrize('ndim', ndims)
 @pytest.mark.parametrize('shuffle', (True, False))
-def test_ifftn(norm, ndim, shuffle):
-    if not _torch_has_fft_module or not _torch_has_old_fft:
-        return True
-    
-    nifft._torch_has_complex = False
-    nifft._torch_has_fft_module = False
-    nifft._torch_has_fftshift = False
+def test_ifftn(norm, ndim, shuffle, monkeypatch):
+    _use_old_fft(monkeypatch)
 
     dims = [0, 1, -2, 3]
     if shuffle:
