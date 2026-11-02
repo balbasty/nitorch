@@ -12,7 +12,7 @@ slices of a fixed depth.
 === ":octicons-terminal-24: Synopsis"
 
     ```shell
-    nitorch chunk FILE... [-n SIZE] [-d DIM] [-o FILE...] [--transform [FILE...]]
+    nitorch chunk FILE... [-n SIZE] [-d DIM] [-o FILE...] [-t [FILE...]]
     ```
 
 ## Description
@@ -77,11 +77,6 @@ space, and no volume geometry. The default name is `{dir}{sep}{base}_2_{i}.lta`,
 which you get by giving `--transform` without a value; if you give a name, it
 is a template that can contain `{dir}`, `{sep}`, `{base}`, `{ext}` and `{i}`.
 
-!!! note "The short option `-t` does not work"
-    The built-in help lists `-t` for `--transform`, but the command only
-    recognises the long form: `-t` stops with *Unknown tag -t*. Write
-    `--transform`.
-
 ## Arguments
 
 | Name   | Description                                          |
@@ -95,7 +90,7 @@ is a template that can contain `{dir}`, `{sep}`, `{base}`, `{ext}` and `{i}`.
 | `-n`, `--chunk`                   | `SIZE`       | Number of voxels along `DIM` in each chunk. The last one may be smaller.    | `1`                            |
 | `-d`, `--dim`, `--dimension`      | `DIM`        | Dimension to split, counting from 0. A negative value counts from the end.  | `-1` (last dimension)          |
 | `-o`, `--output`                  | `FILE...`    | Output name template, one per input. Placeholders: `{dir}`, `{sep}`, `{base}`, `{ext}`, `{i}`. | `{dir}{sep}{base}.{i}{ext}` |
-| `--transform`                     | `[FILE...]`  | Write one `.lta` file per chunk, one template per input. [See above](#transformation-files). | none; `{dir}{sep}{base}_2_{i}.lta` if given with no value |
+| `-t`, `--transform`               | `[FILE...]`  | Write one `.lta` file per chunk, one template per input. [See above](#transformation-files). | none; `{dir}{sep}{base}_2_{i}.lta` if given with no value |
 | `-h`, `--help`                    |              | Print the built-in help and exit.                                           |                                |
 
 ## Examples

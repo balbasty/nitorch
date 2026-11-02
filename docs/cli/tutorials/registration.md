@@ -272,12 +272,6 @@ nitorch reslice sub-02_T1w.nii.gz -l reg-affine/affine.lta \
     -t sub-01_T1w.nii.gz -o sub-02_T1w.in-sub-01.nii.gz
 ```
 
-!!! warning "Always give `-o` to `reslice`"
-    The default output name contains a field that is not available when volumes
-    are written, so a `reslice` command without `-o` stops with an error. Name
-    the output yourself, as above, or use a template without `{sep}`, such as
-    `{dir}/{base}.resliced{ext}`.
-
 A label map needs a different treatment, because its values are names, not
 quantities. If you interpolate labels linearly (the default), the voxels at the
 border between label 2 and label 41 get values such as 21.5, which means

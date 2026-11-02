@@ -163,7 +163,7 @@ Streamline files (`.trk`) can be given as inputs, alone or together with volumes
 | `-il`, `-id`, `-iv`, `--linear-inverse`, `--displacement-inverse`, `--velocity-inverse` | same as the tag without `i` | The inverse transformation.                             |         |
 | `-l2`, `-v2`, `--linear-square`, `--velocity-square`, and their inverses | same              | The file holds the square of the transformation. [See above](#transformation-types).                 |         |
 | `-u`, `--unit`                                         | `{vox,mm}`        | After `-d`/`-id` only: unit of the displacements.                                                    | `vox`   |
-| `-n`, `--order`                                        | `ORDER`           | After `-d`/`-id` only: order of the splines that encode the field. **Currently rejected**, see below. | `1`     |
+| `-n`, `--order`                                        | `ORDER`           | After `-d`/`-id` only: order of the splines that encode the field.                                   | `1`     |
 
 ### Output grid
 
@@ -176,7 +176,7 @@ Streamline files (`.trk`) can be given as inputs, alone or together with volumes
 
 | Option                                  | Value            | Description                                                                                                                  | Default                              |
 | --------------------------------------- | ---------------- | ---------------------------------------------------------------------------------------------------------------------------- | ------------------------------------ |
-| `-o`, `--output`                        | `FILE...`        | Output filenames, one per input. [Templates](../../conventions.md#output-filenames) with `{dir}`, `{base}` and `{ext}` (and `{sep}` for streamlines only). | `{dir}{sep}{base}.resliced{ext}` (see below) |
+| `-o`, `--output`                        | `FILE...`        | Output filenames, one per input. [Templates](../../conventions.md#output-filenames) with `{dir}`, `{sep}`, `{base}` and `{ext}`. | `{dir}{sep}{base}.resliced{ext}`             |
 | `-i`, `-inter`, `--interpolation`       | `ORDER` or `l`   | Interpolation order (integer, 1 by default), or `l` for label images. [See above](#interpolation-boundaries-and-extrapolation). | `1`                                  |
 | `-b`, `-bnd`, `--bound`                 | `BND`            | Boundary condition: `dct2`, `dct1`, `dst1`, `dst2`, `dft`, `replicate`, `zero` and aliases.                                  | `dct2`                               |
 | `-p`, `--prefilter`                     | `BOOL`           | Apply the spline pre-filter: `yes`, `no` (also `true`, `false`, `1`, `0`). The value is required.                            | `yes`                                |
@@ -200,10 +200,7 @@ Streamline files (`.trk`) can be given as inputs, alone or together with volumes
 
 These behaviours differ from what the built-in help suggests.
 
-- **Always pass `-o` for volumes.** The default name contains a `{sep}` field that is not available when volumes are written, so a command without `-o` stops with an error. Write templates without `{sep}`, for example `{dir}/{base}.resliced{ext}`; `{sep}` is only accepted for streamlines.
-- **`-n`/`--order`** after a displacement field makes the parser stop with an error about an unknown tag. The field is always interpolated linearly.
 - **`-c` accepts single indices only.** Ranges such as `0:2`, which the built-in help mentions, are rejected.
-- **`-u mm` is probably not usable.** The code that converts millimetre displacements into voxels treats the displacement array in a way that is unlikely to work: expect an error or wrong values. Use fields in voxel units, which is the default; [`compose`](compose.md) writes displacements in voxels unless told otherwise.
 - **`-k`** counts blocks over the shape of the input but places them on the output grid, so it is only reliable when the output grid has the same shape as the input.
 - **`--log` and `--logit`** are only lightly supported. With `-k`, `--log` is applied twice before the exponential. `--logit` applies its softmax along the last array axis rather than across channels. Prefer not to use them.
 - **The JSON file** of a velocity field is not used. See the warning above.
