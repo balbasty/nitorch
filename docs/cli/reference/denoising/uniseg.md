@@ -98,9 +98,9 @@ Each part of the model can be switched off.
 
 The Markov random field has several modes: `once` (default) applies it only at
 the end; `always` applies it at each iteration; `learn` applies it at each
-iteration and also estimates its weights; `no` is accepted but does not switch
-it off, use `--no-mrf` for that. A bare `--mrf` means `learn`, and `yes` is an
-alias for `learn`.
+iteration and also estimates its weights; `no` (or `false`) switches it off,
+like `--no-mrf`. A bare `--mrf` means `learn`, and `yes` is an alias for
+`learn`. Any other value is an error that lists the allowed ones.
 
 The clean-up is tuned for typical head MRI at about 1 mm resolution and may
 behave poorly on other data. It also assumes the class layout of the SPM12
@@ -111,10 +111,18 @@ switch it off with `--no-clean` when you use a different template.
 
 When there is a template, it is first aligned to the image with an affine
 transformation and then deformed by the warp, which is refined together with
-the other parameters. The affine alignment is always performed; see
-[Known issues](#known-issues). With `--flexi`, `uniseg` also tries to find
-the right orientation of the image by comparing candidate orientations during
-the alignment, which helps when the orientation matrix of the file is wrong.
+the other parameters. `-a`/`--align` controls the affine part:
+
+- `always` (default, also a bare `-a` or `yes`) re-optimises the affine
+  transformation at every iteration;
+- `once` aligns the template only at the start;
+- `no` (or `--no-align`) skips the alignment. The `mni` and `wrp` outputs then
+  use the orientation matrix of the image as it is, without affine correction.
+
+Any other value is an error that lists the allowed ones. With `--flexi`,
+`uniseg` also tries to find the right orientation of the image by comparing
+candidate orientations during the alignment, which helps when the orientation
+matrix of the file is wrong.
 
 ### Output spaces and files
 
@@ -153,6 +161,12 @@ first input if `-o` is not given), `{sep}` is the directory separator, and
 the voxel size of the `mni` and `wrp` grids from that of the template to an
 isotropic one.
 
+With several inputs, `--bias-SPACE` and `--nobias-SPACE` write one file per
+channel. Each name follows the `{base}` of its own input, and a template may
+also use `{c}`, the 1-based channel index. If names still collide (for example
+a custom name without `{base}` or `{c}`), `.{c}` is inserted before the
+extension. The `--nobias-SPACE` files hold the bias-corrected images.
+
 ## Arguments
 
 | Name | Description |
@@ -167,7 +181,7 @@ isotropic one.
 | ------ | ----- | ----------- | ------- |
 | `-t`, `--tpm` | `FILE...` | Tissue probability maps, as one 4D file or one file per class. | SPM12 TPM |
 | `--no-tpm` | | Do not use spatial priors: fit a simple Gaussian mixture. | |
-| `-m`, `--mask` | `FILE` | Mask or voxel-wise weight map. | none |
+| `-m`, `--mask` | `FILE` | Mask or voxel-wise weight map. The file name is required. | none |
 
 ### Hardware
 
@@ -199,7 +213,7 @@ See [Hardware](../../conventions.md#hardware) for the shared conventions.
 | ------ | ----- | ----------- | ------- |
 | `-k`, `--clusters` | `INT...` | Number of Gaussians per class. | `4 2 2 2 2 3` with the SPM12 TPM |
 | `-b`, `--bias` | `[BOOL]` | Estimate a bias field. `--no-bias` switches it off. | yes |
-| `-a`, `--align` | `[MODE]` | Align the template (`always`, `once` or `no`). `--no-align` switches it off. **No effect** in the current version. | |
+| `-a`, `--align` | `[MODE]` | Align the template: `always`, `once` or `no`. `--no-align` switches it off. | `always` |
 | `-w`, `--warp` | `[BOOL]` | Estimate a nonlinear warp. `--no-warp` switches it off. | yes |
 | `--mix` | `[BOOL]` | Update the mixing proportions. `--no-mix` switches it off. | yes |
 | `--mrf` | `[MODE]` | Markov random field: `learn`, `always`, `once` or `no`. `--no-mrf` switches it off. | `once` |
@@ -238,27 +252,6 @@ Larger values give stiffer or more strongly constrained estimates.
 | `-q`, `--quiet` | | Same as `-v 0`. | |
 | `-p`, `--plot` | `[LEVEL]` | Plotting: 0 none, 1 final lower bound and images, 2 live lower bound, 3 live images, 4 live images including the mixture. A bare `-p` means 1. Needs `matplotlib`. | `0` |
 | `-h`, `--help` | | Print the built-in help and exit. | |
-
-## Known issues
-
-The following behaviours of the current version differ from what the option
-names suggest.
-
-- `-a`/`--align` and `--no-align` are parsed but ignored: when a template is
-  used, the affine alignment is always performed.
-- `--all-mni` writes the priors, corrected images, bias fields and warp of the
-  `mni` space, but not its probabilities and labels: request those explicitly
-  with `--prob-mni` and `--labels-mni`.
-- The `wrp` outputs are unreliable. `--prob-wrp` and `--labels-wrp` on their
-  own write nothing, and `--prior-wrp` and `--all-wrp` stop with an error after
-  writing their first files. Prefer the `nat` and `mni` outputs.
-- `--prior-mni` takes its file name from `--prob-mni` when that option is
-  present (it would overwrite the probabilities), and `--nobias-mni` takes its
-  file name from `--bias-mni`. Do not combine these options with custom names.
-- With several input images, the per-channel files of `--bias-SPACE` are all
-  written under the name derived from the first input, each overwriting the
-  previous one, and `--nobias-SPACE` does not work. Use a single input if you
-  need these outputs.
 
 ## Examples
 
