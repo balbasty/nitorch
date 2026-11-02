@@ -72,7 +72,7 @@ Fields are written in floating point (32 bits). Matrices are written as FreeSurf
 | `-v`, `--velocity`                  | `FILE`               | Stationary velocity field, exponentiated by scaling and squaring.                                    |         |
 | `-il`, `-id`, `-iv`                 | `FILE`               | The inverse of a linear transformation, of a displacement field, of a velocity field.                |         |
 | `-u`, `--unit`                      | `{vox,mm}`           | After `-d`/`-id` only: unit of the displacements. Voxels of the field's own grid, or millimetres.                                    | `vox`   |
-| `-n`, `--order`                     | `ORDER`              | After `-d`/`-id` only: order of the splines that encode the field. **Currently rejected**, see below. | `1`     |
+| `-n`, `--order`                     | `ORDER`              | After `-d`/`-id` only: order of the splines that encode the field (`0` to `7`; `1` is linear). | `1`     |
 
 At least one transformation is required. The inverse forms also have long names: `--linear-inverse`, `--displacement-inverse` and `--velocity-inverse`.
 
@@ -85,9 +85,6 @@ At least one transformation is required. The inverse forms also have long names:
 | `-ou`, `--output-unit`  | `{vox,mm}`   | Unit of the output displacement field: voxels of the target grid (any value starting with `v`) or millimetres (any other value). Ignored for a matrix. | `vox`                                                          |
 | `-cpu`, `--cpu`         |              | Use the CPU.                                                                                            | CPU                                                            |
 | `-gpu`, `--gpu`         | `[ID]`       | Use a GPU, optionally the one with this index (see [hardware](../../conventions.md#hardware)).         | off                                                            |
-
-!!! warning "Known problem with `-n`"
-    As in `reslice`, the `-n`/`--order` flag after a displacement field is not accepted: the parser stops with an error about an unknown tag, and the field is always interpolated linearly.
 
 ## Examples
 
