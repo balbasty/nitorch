@@ -10,7 +10,7 @@ Resample one or more volumes onto a new grid, optionally through a chain of spat
 
     ```shell
     nitorch reslice FILE... [TRF...] [-t FILE] [-vx VX...] [-o FILE...]
-                    [-i ORDER] [-b BND] [-p BOOL] [-x] [-c CHANNEL...]
+                    [-i ORDER] [-b BND] [-p [BOOL]] [-x] [-c CHANNEL...]
                     [-k [SIZE...]] [-dt DTYPE] [--log] [--logit [implicit]]
                     [--clip] [--cpu | --gpu [ID]] [-q]
 
@@ -99,10 +99,7 @@ The inverse (`-id`) of a displacement field has no closed form. The field is res
 
 The file is a volume with three components in the last dimension, expressed in voxels of its own grid. It is exponentiated by scaling and squaring ([see `vexp`](vexp.md#description)) with 8 steps, to a displacement field defined on the grid of the velocity file, and then applied like a displacement field. The inverse (`-iv`) is the exponential of $-v$, which is exact up to the accuracy of scaling and squaring, unlike the inverse of a displacement field. `-v2` halves $v$ before exponentiating.
 
-A velocity file can be followed by the name of a **JSON file** with shooting parameters. The field is then taken to be an *initial velocity* and is integrated by geodesic shooting instead of by scaling and squaring. If you give no JSON file and a file with the same name as the velocity field and the extension `.json` exists and contains a `bending` entry, it is used automatically. Otherwise the field is a stationary velocity field.
-
-!!! warning "Shooting parameters are not forwarded"
-    In the current version, the JSON file is read, but its contents are not passed to the shooting routine, which runs with its default regularisation parameters. If you rely on a particular set of parameters, check the result.
+A velocity file can be followed by the name of a **JSON file** with shooting parameters. The field is then taken to be an *initial velocity* and is integrated by geodesic shooting instead of by scaling and squaring. The regularisation stored in the JSON file (`absolute`, `membrane`, `bending`, `lame` and `factor`, plus the number of `steps` and the `fast` flag when present) is passed to the shooting routine, together with the voxel size of the velocity file. If you give no JSON file and a file with the same name as the velocity field and the extension `.json` exists and contains a `bending` entry, it is used automatically. Otherwise the field is a stationary velocity field.
 
 ### The output grid
 
@@ -116,7 +113,7 @@ A velocity file can be followed by the name of a **JSON file** with shooting par
 
 `-vx` takes one voxel size in millimetres for all axes, or three values. Only three dimensions are supported for the grid.
 
-The output has as many channels as the input (a fourth dimension), or as many as selected with `-c`; every channel is resampled with the same grid.
+The output has as many channels as the input (a fourth dimension), or as many as selected with `-c`; every channel is resampled with the same grid. Channels are selected with single indices, Python-style ranges `start:stop:step`, or a mix of both (see [`-c`](#output-and-intensities)).
 
 ### Interpolation, boundaries and extrapolation
 
@@ -136,7 +133,7 @@ Three options act on the intensities before and after interpolation:
 
 - `--clip` clips the resampled values to the range of finite values of the input. It removes the overshoots of higher-order splines.
 - `--log` interpolates the logarithm of the intensities, after clamping them to a small positive floor, and exponentiates the result. It keeps strictly positive images positive.
-- `--logit` (optionally followed by `implicit`) is an experimental variant intended for probability maps. See the limitations below.
+- `--logit` (optionally followed by `implicit`) is a niche variant intended for probability maps: channels are interpolated as log-probabilities and mapped back with a softmax across channels. With `implicit`, the input is taken to omit its last class.
 
 ### Streamlines
 
@@ -179,13 +176,13 @@ Streamline files (`.trk`) can be given as inputs, alone or together with volumes
 | `-o`, `--output`                        | `FILE...`        | Output filenames, one per input. [Templates](../../conventions.md#output-filenames) with `{dir}`, `{sep}`, `{base}` and `{ext}`. | `{dir}{sep}{base}.resliced{ext}`             |
 | `-i`, `-inter`, `--interpolation`       | `ORDER` or `l`   | Interpolation order (integer, 1 by default), or `l` for label images. [See above](#interpolation-boundaries-and-extrapolation). | `1`                                  |
 | `-b`, `-bnd`, `--bound`                 | `BND`            | Boundary condition: `dct2`, `dct1`, `dst1`, `dst2`, `dft`, `replicate`, `zero` and aliases.                                  | `dct2`                               |
-| `-p`, `--prefilter`                     | `BOOL`           | Apply the spline pre-filter: `yes`, `no` (also `true`, `false`, `1`, `0`). The value is required.                            | `yes`                                |
+| `-p`, `--prefilter`                     | `[BOOL]`         | Apply the spline pre-filter: `yes`, `no` (also `true`, `false`, `1`, `0`). The value is optional: a bare `-p` means `yes`.                            | `yes`                                |
 | `-x`, `-ex`, `--extrapolate`            |                  | Fill voxels outside the field of view of the input using the boundary condition instead of zeros.                            | off                                  |
-| `-c`, `--channels`                      | `CHANNEL...`     | Indices of the channels (last dimension) to reslice, counted from 0. The output keeps only these.                           | all channels                         |
+| `-c`, `--channels`                      | `CHANNEL...`     | Channels (last dimension) to reslice, counted from 0: single indices and/or Python-style ranges `start:stop:step` (`0:2`, `:2`, `1:`, `::2`, negative bounds allowed). The output keeps only these.                           | all channels                         |
 | `-dt`, `--dtype`                        | `DTYPE`          | Data type of the output file, such as `float32`, `int16` or `uint8`.                                                         | that of the input                    |
 | `--clip`                                |                  | Clip the output to the range of the input.                                                                                    | off                                  |
 | `--log`                                 |                  | Interpolate the logarithm of the intensities.                                                                                | off                                  |
-| `--logit`                               | `[implicit]`     | Experimental interpolation in logit space, for probability maps.                                                              | off                                  |
+| `--logit`                               | `[implicit]`     | Interpolation in logit space, for probability maps (softmax across channels).                                                              | off                                  |
 | `-q`, `--quiet`                         |                  | Do not print the name of each file as it is processed.                                                                       | verbose                              |
 
 ### Performance and hardware
@@ -198,12 +195,10 @@ Streamline files (`.trk`) can be given as inputs, alone or together with volumes
 
 ### Known limitations
 
-These behaviours differ from what the built-in help suggests.
+With `-k`, the blocks are laid out over the output grid. Two caveats apply:
 
-- **`-c` accepts single indices only.** Ranges such as `0:2`, which the built-in help mentions, are rejected.
-- **`-k`** counts blocks over the shape of the input but places them on the output grid, so it is only reliable when the output grid has the same shape as the input.
-- **`--log` and `--logit`** are only lightly supported. With `-k`, `--log` is applied twice before the exponential. `--logit` applies its softmax along the last array axis rather than across channels. Prefer not to use them.
-- **The JSON file** of a velocity field is not used. See the warning above.
+- The `--clip` range and the floor used by `--log` and `--logit` are computed for each block rather than over the whole image.
+- The spline pre-filter, for orders 2 and above, runs on each block separately, so the result differs slightly from an unchunked run. With order 1 (the default) it is exact.
 
 ## Examples
 
