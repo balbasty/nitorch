@@ -166,7 +166,7 @@ class Conversions:
         """Parse a bool, that can be represented by true/false or yes/no"""
         if x.lower() in ('t', 'true', 'y', 'yes'):
             return True
-        if x.lower() in ('t', 'false', 'n', 'no'):
+        if x.lower() in ('f', 'false', 'n', 'no'):
             return False
         try:
             return bool(int(x))
