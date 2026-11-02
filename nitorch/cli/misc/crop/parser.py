@@ -30,7 +30,7 @@ usage:
     -b, --bounding-box [THRESH]  Crop at the bounding box of `input > THRESH`.
     -o, --output *FILES          Output filenames (default: {dir}/{base}.crop{ext})
     -t, --transform              Input or output transformation filename (default: none)
-                                    Input if none of s/c/l/k options are used.
+                                    Input if none of -s/-k/-b is used.
                                     Output otherwise.
     
 notes:

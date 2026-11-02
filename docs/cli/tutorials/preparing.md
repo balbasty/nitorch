@@ -295,14 +295,11 @@ rather than padded, so the output can be smaller than the size you asked for.
 Look at the `Cropping patch` line (or at `info`) if you need an exact size, and
 use `pad`, below, to grow an image.
 
-!!! warning "Stay with `-s` and `-c` for now"
-    `crop` also has options to crop at the bounding box of the non-zero part of
-    the image (`-b`), to copy the region of another file (`-k`) and to write the
-    crop as a transformation file (`-t`). In the version of NITorch this
-    tutorial was written against, these three options stop with an error, so the
-    size and centre options above are the ones to rely on. The
-    [`crop` reference](../reference/images/crop.md) says what each option is meant
-    to do.
+!!! tip "Other ways to choose the box"
+    `crop` can also cut at the bounding box of the non-zero part of the image
+    (`-b`), copy the region of another file (`-k`), and record the crop in a
+    transformation file (`-t`) that can be applied to other images later. The
+    [`crop` reference](../reference/images/crop.md) describes these options.
 
 ## Step 5: pad to add a margin
 

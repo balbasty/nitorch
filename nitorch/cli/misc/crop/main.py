@@ -63,9 +63,11 @@ def crop(inp, size=None, center=None, space='vox', like=None, bbox=False,
     transform : [sequence of] str, optional
         Input or output filename(s) of the corresponding transforms.
         Not written by default.
-        If a transform is provided and all other parameters
-        (i.e., `size` and `like`) are None, the transform is considered
-        as an input transform to apply.
+        If a transform is provided and none of `size`, `like` or `bbox`
+        is used, the transform is considered as an input transform to
+        apply (its destination space defines the crop; `center` can
+        still override its centre). Otherwise, it is an output
+        transform that records the crop.
 
     Returns
     -------
@@ -78,7 +80,6 @@ def crop(inp, size=None, center=None, space='vox', like=None, bbox=False,
     base = ''
     ext = ''
     fname = None
-    transform_in = False
     use_bbox = bool(bbox or isinstance(bbox, float))
 
     # --- Open input ---
@@ -86,7 +87,7 @@ def crop(inp, size=None, center=None, space='vox', like=None, bbox=False,
     if is_file:
         fname = inp
         f = io.volumes.map(inp)
-        inp = (f.data(numpy=True) if use_bbox else f, f.affine)
+        inp = (f, f.affine)
         if output is None:
             output = '{dir}{sep}{base}.crop{ext}'
         dir, base, ext = py.fileparts(fname)
@@ -101,6 +102,8 @@ def crop(inp, size=None, center=None, space='vox', like=None, bbox=False,
 
     has_size = torch.is_tensor(size) or bool(size)
     has_center = torch.is_tensor(center) or center == 0 or bool(center)
+    # `transform` is read only if nothing else defines the crop
+    transform_in = bool(transform) and not (has_size or like or use_bbox)
     if (has_size or bool(like)) and bool(bbox or isinstance(bbox, float)) > 1:
         raise ValueError('Can only use one of `size`, `like` and `bbox`.')
 
@@ -125,14 +128,17 @@ def crop(inp, size=None, center=None, space='vox', like=None, bbox=False,
         if not has_size:
             size = size_
             space_size = 'vox'
+            has_size = True
         if not has_center:
             center = center_
             space_center = 'vox'
+            has_center = True
 
     elif bbox or isinstance(bbox, float):
         if bbox is True:
             bbox = 0.
-        mask = torch.as_tensor(dat > bbox)
+        mask = dat if torch.is_tensor(dat) else dat.fdata()
+        mask = torch.as_tensor(mask > bbox)
         while mask.dim() > 3:
             mask = mask.any(dim=-1)
         mins = []
@@ -146,7 +152,8 @@ def crop(inp, size=None, center=None, space='vox', like=None, bbox=False,
         mins = utils.as_tensor(mins)
         maxs = utils.as_tensor(maxs)
         size_ = maxs + 1 - mins
-        center_ = (maxs + 1 + mins).float()/2
+        # voxel `k` is centred at coordinate `k`
+        center_ = (maxs + mins).float()/2
 
         if not has_size:
             size = size_
@@ -158,8 +165,7 @@ def crop(inp, size=None, center=None, space='vox', like=None, bbox=False,
             has_center = True
 
     # --- Open transformation file and compute size/center ---
-    elif transform:
-        transform_in = True
+    elif transform_in:
         t = io.transforms.map(transform)
         if not isinstance(t, io.transforms.LinearTransformArray):
             raise TypeError('Expected an LTA file')
@@ -211,8 +217,6 @@ def crop(inp, size=None, center=None, space='vox', like=None, bbox=False,
     slicer = tuple(slice(f, l) for f, l in zip(first, last))
 
     # --- do crop ---
-    if use_bbox:
-        dat = dat.numpy()
     dat = dat[slicer]
     if not torch.is_tensor(dat):
         dat = dat.data(numpy=True)
