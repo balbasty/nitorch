@@ -223,8 +223,8 @@ These options follow a file list in a `-fix` or `-mov` block.
 
 | Option | Value | Description | Default |
 | ------ | ----- | ----------- | ------- |
-| `-o`, `--output` | `[FILE...]` | Write an "updated" version of the image: same grid and data, with the transformation applied. With no value, use the default name; otherwise give one name per file. See [Outputs](#outputs). | moving: yes; fixed: no |
-| `-r`, `--resliced` | `[FILE...]` | Write a "resliced" version of the image, resampled to the grid of the other image of the pair. With no value, use the default name. | no |
+| `-o`, `--output` | `[OUT...]` | Write an "updated" version of the image: same grid and data, with the transformation applied. Each `OUT` is a switch or a path template; with several input files, give one per file. See [Outputs](#outputs). | moving: yes; fixed: no |
+| `-r`, `--resliced` | `[OUT...]` | Write a "resliced" version of the image, resampled to the grid of the other image of the pair. Values are as for `-o`. | no |
 | `-inter`, `--interpolation` | `ORDER` | Interpolation order used to resample this image. | `1` |
 | `-bnd`, `--bound` | `BOUND` | Boundary condition when resampling this image. | `dct2` |
 | `-ex`, `--extrapolate` | | Extrapolate out-of-bounds data using the boundary condition instead of filling with zeros. | off |
@@ -277,7 +277,7 @@ changes the resolution of the dense field that the nodes encode.
 | `-lr`, `--learning-rate` | `LR` | Learning rate of this transformation, relative to the learning rate of the optimiser (the two are multiplied). | `1` |
 | `-wd`, `--weight-decay` | `WD` | Weight decay of this transformation, relative to the optimiser's (the two are multiplied). | `0` |
 | `-init`, `--init` | `FILE` | Initial value, read from a file. For a linear transformation, the file holds a matrix (for example a previous `.lta`), and the estimated refinement is composed on the left of it. For `-dif`, it is a 3-channel field that keeps its own orientation and is downsampled to the coarsest `-pyr` level. For `-ffd`, the loaded field is used as is: its grid defines the grid of nodes, and `-g` is ignored. | zero (identity) |
-| `-o`, `--output` | `[FILE]` | Output file for the estimated transformation; see [Outputs](#outputs). With no value, use the default. | `{name}{ext}` |
+| `-o`, `--output` | `[OUT]` | Output of the estimated transformation: a switch or a path template; see [Outputs](#outputs). | `{name}{ext}` |
 | `-pyr`, `--pyramid` | `LEVEL...` | Resolution levels of a nonlinear field; see [Pyramids](#pyramids). Ignored for linear transformations. | `1` |
 
 The `-stop` option is also accepted in a transformation group but has no effect there.
@@ -332,10 +332,10 @@ is not what the code does. No regulariser is placed on linear transformations.
 | `-bnd`, `--bound` | `BOUND` | Images | `dct2` |
 | `-ex`, `--extrapolate` | | Images | off |
 | `-pyr`, `--pyramid` | `LEVEL...` | Images and nonlinear fields | `1` |
-| `-o`, `--output` | `FILE` | Output name of the transformations | `{name}{ext}` |
+| `-o`, `--output` | `[OUT]` | Output of the transformations: a switch or a path template | `{name}{ext}` |
 
-The built-in help also lists `-r`, `-init` and `-exc` as default options; the
-code does not accept them in an `-all` group.
+The built-in help also lists `-init` and `-exc` as default options; the code
+does not accept them in an `-all` group.
 
 ### Other options
 
@@ -409,11 +409,15 @@ default names are written in the current directory.
 | `-ffd` | `ffd.nii.gz` | The grid of nodes (the spline coefficients of the displacement field), with its own orientation matrix. It is not a dense field on the image grid. |
 | `-dif` | `diffeo.nii.gz` | The velocity field, with the orientation matrix of the mean space. |
 
-You can change the name with `-o` in the transformation group or in `-all`. The
-name is a template in which `{name}` is replaced by the name of the
-transformation (`rigid`, `affine`, `ffd`, `diffeo`, ...) and `{ext}` by its
-default extension; a directory must be part of the file name, so
-`-o results/{name}{ext}` works if `results` exists. The linear matrix, which is
+You can change this with `-o` in the transformation group or in `-all`. The
+value is either a switch or a path template. `true`, `yes`, `1`, or no value at
+all, keep the default path (`{name}{ext}`); `false`, `no` or `0` skip the
+output; anything else is the path to write to. In a template, `{name}` is
+replaced by the name of the transformation (`rigid`, `affine`, `ffd`,
+`diffeo`, ...) and `{ext}` by its default extension. A directory must be part
+of the path, so `-o results/{name}{ext}` works if `results` exists. A template
+with any other key, such as `{nmae}`, is rejected before the fit starts with an
+`Invalid path template` error. The linear matrix, which is
 left-multiplied onto the orientation matrix of the moving image to align it with the fixed
 image, can be applied to images with [`reslice`](../spatial/reslice.md); see
 that page for the options that apply linear and velocity transformations, and
@@ -426,16 +430,21 @@ their inverses.
   linear transformation is folded into the orientation matrix in the header.
   By default, the updated version of every moving image is written, to
   `{dir}/{base}.registered{ext}`. Fixed images are not written unless you give
-  `-o`. For a fixed image, the inverse transformation is applied, so that it
+  `-o`; `-o false` turns the output off for a moving image. For a fixed image, the inverse transformation is applied, so that it
   is aligned with the moving image.
 - The *resliced* image is resampled onto the grid of the other image of the
   pair: a moving image is resliced to the fixed grid and a fixed image to the
   moving grid. It is not written unless you give `-r`. Its default name is
   `{dir}/{base}.resliced{ext}`.
 
-In names, `{dir}`, `{base}` and `{ext}` are replaced by the directory, the base
-name and the extension (including `.nii.gz`) of the corresponding input file.
-When you give names explicitly, give one per file in the block.
+Both `-o` and `-r` take the same kind of value as the transformation output:
+`true`, `yes`, `1` or no value selects the default name, `false`, `no` or `0`
+skips the output, and anything else is a path template. In a template, `{dir}`,
+`{base}` and `{ext}` are replaced by the directory, the base name and the
+extension (including `.nii.gz`) of the corresponding input file; other keys are
+rejected as above. When a block has several input files, give one value per
+file, each of which is `true`, `false` or a path. For example,
+`-mov a.nii b.nii -o true false` writes the updated version of `a.nii` only.
 
 ## Examples
 

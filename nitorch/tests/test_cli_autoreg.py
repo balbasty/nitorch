@@ -250,3 +250,58 @@ def test_autoreg_ffd_grid_pyramid(images, timeout):
          '-ffd', '-g', '5', '-pyr', '1', '2', '-o', 'ffd.nii.gz')
     assert list(io.volumes.map('ffd.nii.gz').shape[:3]) == [5, 5, 5]
     assert os.path.exists('mov.registered.nii')
+
+
+# --- true/false for output options -----------------------------------
+
+def test_autoreg_transform_output_bool():
+    opt = parse(['-mse', '-fix', 'f.nii', '-mov', 'm.nii',
+                 '-rig', '-o', 'false', '-dif', '-o', 'yes'])
+    assert opt.transformations[0].output is False
+    assert opt.transformations[1].output is True
+    opt.propagate_defaults()
+    assert opt.transformations[0].output is False
+    assert opt.transformations[1].output == opt.defaults.output
+    opt = parse(['-mse', '-fix', 'f.nii', '-mov', 'm.nii',
+                 '-rig', '-o', '{name}_out{ext}'])
+    assert opt.transformations[0].output == '{name}_out{ext}'
+    # -all -o false: no transform written by default
+    opt = parse(['-all', '-o', 'no', '-mse', '-fix', 'f.nii',
+                 '-mov', 'm.nii', '-rig'])
+    opt.propagate_defaults()
+    assert opt.transformations[0].output is False
+    # -all -o true: keep the default template
+    opt = parse(['-all', '-o', 'true', '-mse', '-fix', 'f.nii',
+                 '-mov', 'm.nii', '-rig'])
+    assert opt.defaults.output == struct.Defaults.output
+
+
+def test_autoreg_image_output_bool():
+    opt = parse(['-mse', '-fix', 'f.nii', '-r', 'true',
+                 '-mov', 'm.nii', '-o', 'false', '-r', '0', '-rig'])
+    assert opt.losses[0].fixed.resliced is True
+    assert opt.losses[0].moving.updated is False
+    assert opt.losses[0].moving.resliced is False
+    opt = parse(['-mse', '-fix', 'f.nii', '-mov', 'm1.nii', 'm2.nii',
+                 '-o', 'out.nii', 'no', '-rig'])
+    assert opt.losses[0].moving.updated == ['out.nii', False]
+
+
+def test_autoreg_output_template_validated():
+    with pytest.raises(ParseError, match='[Tt]emplate'):
+        parse(['-mse', '-fix', 'f.nii', '-mov', 'm.nii',
+               '-rig', '-o', '{nmae}.lta'])
+    with pytest.raises(ParseError, match='[Tt]emplate'):
+        parse(['-mse', '-fix', 'f.nii', '-mov', 'm.nii',
+               '-o', '{bse}.nii', '-rig'])
+    with pytest.raises(ParseError, match='[Tt]emplate'):
+        parse(['-all', '-o', '{oops', '-mse', '-fix', 'f.nii',
+               '-mov', 'm.nii', '-rig'])
+
+
+def test_autoreg_output_false_writes_nothing(images, timeout):
+    before = set(os.listdir('.'))
+    _run('-mse', '-fix', 'fix.nii', '-mov', 'mov.nii', '-o', 'false',
+         '-r', 'true', '-rig', '-o', 'false')
+    new = set(os.listdir('.')) - before
+    assert new == {'mov.resliced.nii'}

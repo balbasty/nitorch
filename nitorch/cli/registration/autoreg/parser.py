@@ -1,13 +1,14 @@
 """This file parses the commandline arguments"""
 
+import string
 from . import struct
 
 help = r"""[nitorch] AUTOgrad REGistration tool
 
 usage: 
-    nitorch autoreg <*LOSS> [FACTOR] -fix *FILE [-o *FILE] [-r *FILE] [-pyr *LVL] ...
-                                     -mov *FILE [-o *FILE] [-r *FILE] [-pyr *LVL] ...
-                    <*TRF> [FACTOR] [-init PATH] [-lr LRNRATE] [-o FILE] [-pyr LVL] 
+    nitorch autoreg <*LOSS> [FACTOR] -fix *FILE [-o *OUT] [-r *OUT] [-pyr *LVL] ...
+                                     -mov *FILE [-o *OUT] [-r *OUT] [-pyr *LVL] ...
+                    <*TRF> [FACTOR] [-init PATH] [-lr LRNRATE] [-o OUT] [-pyr LVL] 
                            <*REG> [FACTOR]
                     <*OPT> [-nit MAXITER] [-lr LRNRATE] [-stop LIMIT] [-ls [MAXLS]]
                     [-all ...] [-prg] [-gpu|-cpu] [-v] [-h]
@@ -34,6 +35,12 @@ usage:
     interpolation tags (-inter, -bnd, -ext) must be placed directly after 
     their -mov tag.
     Multiple <LOSS> statements can be used, resulting in a composite loss.
+    In a -fix/-mov group, -o writes the updated image (default: -mov only)
+    and -r writes the image resliced to the other image's grid (default:
+    no). Each takes one OUT per input file, which is either true/yes/1 (or
+    no value: default name), false/no/0 (do not write), or a path. A path can
+    contain {dir}, {base} and {ext}, which are replaced by the directory, base
+    name and extension of the input file.
     Semi-supervised registration (that use both intensity images and segments)
     can be performed that way.
 
@@ -48,6 +55,10 @@ usage:
         -dif, --diffeo              Diffeomorphic field
             -sd --smalldef              Penalize the exponentiated transform (False)
     At least one transformation is required (there is no default).
+    The estimated transformation is written by default. -o takes true/yes/1
+    (or no value: default path {name}{ext}), false/no/0 (do not write), or a
+    path. A path can contain {name} and {ext}, which are replaced by the name
+    and default extension of the transformation.
     Only one of -tr, -rig, -sim, -aff can be used.
     Only one of -ffd and -diffeo can be used.
     The ffd and diffeomorphic fields always live in the (mean) space of the 
@@ -72,8 +83,7 @@ usage:
         -inter, --interpolation      Interpolation order (1)
         -bnd,   --bound              Boundary conditions (dct2)
         -ex,    --extrapolate        Extrapolate out-of-bounds data (no)
-        -o,     --output             Output file name or directory
-        -r,     --resliced           Output file name or directory
+        -o,     --output             Output transform name or template (true)
         -init,  --init               Initial transform file (identity)
         -nit,   --max-iterations     Maximum number of iterations (1000)
         -lr,    --learning-rate      Initial learning rate (0.1)
@@ -207,6 +217,54 @@ def check_next_isvalue(args, group):
                          f'but found nothing.')
 
 
+def bool_or_path(x):
+    """'true'/'yes'/'1' -> True (default path), 'false'/'no'/'0' -> False
+    (nothing written), anything else is kept as a path (template)."""
+    if x.lower() in ('true', 'yes', '1'):
+        return True
+    if x.lower() in ('false', 'no', '0'):
+        return False
+    return x
+
+
+def check_template(x, keys, tag):
+    """Check that a path template only uses known format keys."""
+    if not isinstance(x, str):
+        return x
+    try:
+        fields = [f for _, f, _, _ in string.Formatter().parse(x)
+                  if f is not None]
+    except ValueError as e:
+        raise ParseError(f'Invalid path template for {tag}: {x!r} ({e})')
+    for f in fields:
+        if f not in keys:
+            raise ParseError(f'Invalid path template for {tag}: {x!r}. '
+                             f'Unknown key {{{f}}}; valid keys are: '
+                             + ', '.join('{%s}' % k for k in keys))
+    return x
+
+
+image_keys = ('dir', 'base', 'ext')
+transform_keys = ('name', 'ext')
+
+
+def parse_image_output(args, tag):
+    """Parse the values of -o/-r in a file group.
+
+    Returns True (bare/true -> default path), False (false -> nothing
+    written) or a list with one entry per file (path template, True or
+    False)."""
+    vals = []
+    while next_isvalue(args):
+        val, *args = args
+        vals.append(check_template(bool_or_path(val), image_keys, tag))
+    if not vals:
+        return args, True
+    if len(vals) == 1 and isinstance(vals[0], bool):
+        return args, vals[0]
+    return args, vals
+
+
 def parse_pyramid(args):
     levels = []
     while next_isvalue(args):
@@ -238,21 +296,11 @@ def parse_file(args, opt):
         if tag in ('-o', '--output'):
             # Path to "updated" output file
             # (updated header + nonlin applied in original space)
-            opt.updated = True
-            while next_isvalue(args):
-                if isinstance(opt.updated, bool):
-                    opt.updated = []
-                val, *args = args
-                opt.updated.append(val)
+            args, opt.updated = parse_image_output(args, tag)
         elif tag in ('-r', '--resliced'):
             # Path to "resliced" output file
             # (lin + nonlin applied, final space = target space)
-            opt.resliced = True
-            while next_isvalue(args):
-                if isinstance(opt.resliced, bool):
-                    opt.resliced = []
-                val, *args = args
-                opt.resliced.append(val)
+            args, opt.resliced = parse_image_output(args, tag)
         elif tag in ('-inter', '--interpolation'):
             check_next_isvalue(args, tag)
             opt.interpolation, *args = args
@@ -427,6 +475,8 @@ def parse_transform(args, options):
             opt.output = True
             if next_isvalue(args):
                 opt.output, *args = args
+                opt.output = check_template(bool_or_path(opt.output),
+                                            transform_keys, tag)
         elif isinstance(opt, struct.Diffeo) and tag in ('-sd', '--smalldef'):
             opt.smalldef = True
             if next_isvalue(args):
@@ -548,8 +598,15 @@ def parse_defaults(args, options):
         elif tag in ('-ex', '--extrapolate'):
             opt.extrapolate = True
         elif tag in ('-o', '--output'):
-            check_next_isvalue(args, tag)
-            opt.output, *args = args
+            # Default transform output: bare/true -> keep the default
+            # template, false -> no transform written
+            output = True
+            if next_isvalue(args):
+                output, *args = args
+                output = check_template(bool_or_path(output),
+                                        transform_keys, tag)
+            if output is not True:
+                opt.output = output
         elif tag in ('-pyr', '--pyramid'):
             args, levels = parse_pyramid(args)
             if levels:
