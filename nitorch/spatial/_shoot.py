@@ -346,9 +346,9 @@ def shoot(
           integrated, and `grid` is its numerical inverse
           `grid_inv(igrid, method=inversion)`. 'push' (push + count +
           regularised fill) is robust to steep warps; 'newton' refines
-          it with a few safeguarded Newton steps and is the most
+          it with a few regularised Gauss-Newton steps and is the most
           inverse-consistent. Both are slower than 'default'
-          (at 64^3, push and newton take about 3x and 3.5x the time
+          (at 64^3, push and newton take about 2.5x and 8x the time
           of the default shooting with `return_inverse=True`).
 
     Returns

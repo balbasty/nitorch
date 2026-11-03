@@ -214,8 +214,8 @@ usage:
                                         Compute one side of the warp by inverting the
                                         other [default]: smalldef/svf: the inverse;
                                         shoot: the forward (from the more accurate
-                                        inverse). push: robust; newton: push + Newton
-                                        steps, most inverse-consistent, slowest.
+                                        inverse). push: robust; newton: push + Gauss-
+                                        Newton steps, most inverse-consistent, slowest.
 
 @optim options:
     NAME can take values:

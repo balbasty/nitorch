@@ -1472,8 +1472,9 @@ class NonLinModel(TransformationModel):
               shooting integrates more accurately
               (default: composition along the geodesic).
 
-            'newton' refines the push inverse with safeguarded Newton
-            steps: it is the most inverse-consistent, and the slowest.
+            'newton' refines the push inverse with regularised
+            Gauss-Newton steps: it is the most inverse-consistent, and
+            the slowest.
         **backend
         """
         super().__init__()

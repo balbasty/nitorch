@@ -3,7 +3,7 @@ import torch
 from nitorch.core import utils
 from ._grid import (grid_push, grid_pull, grid_count, grid_jacobian,
                     identity_grid)
-from ._solvers import solve_grid_fmg
+from ._solvers import solve_grid_fmg, solve_grid
 
 
 # Values of the `inversion` option of nonlinear transforms
@@ -33,8 +33,16 @@ def check_inversion(inversion):
     return inversion
 
 
-def grid_inv(grid, type='grid', bound='dft',
-             extrapolate=True, method='push', newton_iter=3, **prm):
+# Keywords of `grid_inv(**prm)` that configure the multigrid solver
+# rather than the regularisation.
+_fmg_keys = ('optim', 'nb_cycles', 'nb_iter')
+# Solvers of the Gauss-Newton steps (same names as in `denoise`)
+newton_optims = ('fmg', 'fmg+cg', 'fmg+relax', 'cg', 'relax')
+
+
+def grid_inv(grid, type='grid', bound='dft', extrapolate=True,
+             method='push', newton_iter=3, newton_factor=1.,
+             newton_optim='fmg', **prm):
     r"""Invert a dense deformation (or displacement) grid
 
     Notes
@@ -48,21 +56,6 @@ def grid_inv(grid, type='grid', bound='dft',
     operation ("push") of `f @ _` ("pull"). and `1` is an
     image of ones.
 
-    If `method='newton'`, this "push" inverse $\psi$ is then refined by
-    `newton_iter` Newton steps on $\varphi \circ \psi = id$ (with
-    $\varphi = id + u$ the transform to invert):
-    $\psi \gets \psi - \lambda (I + \nabla u \circ \psi)^{-1}
-    (\varphi \circ \psi - id)$. Each step is safeguarded voxel-wise:
-    where $\det(I + \nabla u \circ \psi) < 0.05$ (folded or nearly
-    singular Jacobian) the Newton direction is replaced by a plain
-    fixed-point step $\psi \gets id - u \circ \psi$, and a
-    backtracking line search ($\lambda = 1, 1/2, 1/4, 1/8$) keeps, in
-    each voxel, the first step that decreases the voxel's residual
-    $|\varphi \circ \psi - id|$ (voxels without such a step do not
-    move). The residual therefore never increases. Each step costs
-    one interpolation of the Jacobian and up to four of the
-    displacement (linear interpolation, same `bound`).
-
     The idea behind this is that `f.T @ _` is approximately
     the inverse transformation weighted by the determinant
     of the Jacobian of the tranformation so, in the (theoretical)
@@ -73,6 +66,26 @@ def grid_inv(grid, type='grid', bound='dft',
     least-squares scheme, where the regulariser penalizes
     the spatial gradients of the inverse field.
 
+    If `method='newton'`, this "push" inverse $\psi$ is then refined by
+    `newton_iter` regularised Gauss-Newton steps on
+    $\varphi \circ \psi = id$ (with $\varphi = id + u$ the transform to
+    invert). Each step $\psi \gets \psi + \delta$ minimises the
+    linearised residual plus a penalty on the step,
+    $\frac{1}{2}\|r + J\delta\|^2 + \frac{\lambda}{2}\delta^T L \delta$,
+    with $r = \varphi \circ \psi - id$, $J = I + \nabla u \circ \psi$,
+    $L$ the regulariser of the push step (`membrane=0.1` by default)
+    and $\lambda$ = `newton_factor`. It is one coupled solve,
+    $(J^T J + \lambda L)\,\delta = -J^T r$, with the field solver of the
+    push step (`solve_grid_fmg`, see `newton_optim`). Because the
+    penalty is on the step, not on $\psi - id$, the iteration still
+    converges to the exact inverse where $J$ is invertible. Where it is
+    singular (folds, steep compressions), $J^T J$ vanishes and the step
+    is filled in from the neighbours, as the holes of the push step
+    are. The steps are not safeguarded: the residual decreases on the
+    whole field, not necessarily in every voxel. Each step costs one
+    (linear, same `bound`) interpolation of the Jacobian and one of the
+    displacement, and one regularised solve.
+
     Parameters
     ----------
     grid : (..., *spatial, dim) tensor
@@ -80,7 +93,10 @@ def grid_inv(grid, type='grid', bound='dft',
     type : {'grid', 'disp'}, default='grid'
         Type of deformation.
     membrane : float, default=0.1
-        Regularisation
+        Regularisation. The other keywords of `solve_grid_fmg`
+        (`absolute`, `bending`, `lame`, `factor`, `voxel_size`, `optim`,
+        `nb_cycles`, `nb_iter`) are accepted too; if any keyword is
+        given, `membrane` defaults to 0.
     bound : str, default='dft'
         Boundary conditions
     extrapolate : bool, default=True
@@ -88,11 +104,22 @@ def grid_inv(grid, type='grid', bound='dft',
         it is sampled out-of-bounds.
     method : {'push', 'newton'}, default='push'
         'push': push + count + regularised fill (see Notes).
-        'newton': 'push', then `newton_iter` safeguarded Newton steps.
-        More accurate, in particular on steep warps (large rotations or
-        expansions), about 40% slower.
+        'newton': 'push', then `newton_iter` regularised Gauss-Newton
+        steps. More accurate, in particular on steep warps (large
+        rotations or expansions); each step costs about as much as
+        the push step.
     newton_iter : int, default=3
-        Number of Newton steps (if `method='newton'`).
+        Number of Gauss-Newton steps (if `method='newton'`).
+    newton_factor : float, default=1
+        Weight of the regularisation of the Gauss-Newton steps, relative
+        to that of the push step. It must be positive (the steps are
+        ill-posed without regularisation).
+    newton_optim : {'fmg', 'fmg+cg', 'fmg+relax', 'cg', 'relax'}, default='fmg'
+        Solver of the Gauss-Newton steps: full multigrid with conjugate
+        gradient ('fmg' = 'fmg+cg') or relaxation ('fmg+relax')
+        smoothing (`solve_grid_fmg`, with the `nb_cycles` and `nb_iter`
+        of the push step); or single-resolution conjugate gradient or
+        relaxation (`solve_grid`, 16 iterations).
 
     Returns
     -------
@@ -103,6 +130,9 @@ def grid_inv(grid, type='grid', bound='dft',
     if method not in ('push', 'newton'):
         raise ValueError(f"method must be 'push' or 'newton' "
                          f"but got {method!r}")
+    if newton_optim not in newton_optims:
+        raise ValueError(f"newton_optim must be one of {newton_optims} "
+                         f"but got {newton_optim!r}")
     prm = prm or dict(membrane=0.1)
 
     # get shape components
@@ -142,8 +172,10 @@ def grid_inv(grid, type='grid', bound='dft',
 
     if newton:
         del grid
-        disp = -_newton_inv(fwd, disp.neg_(), identity, newton_iter,
-                            bound=bound, extrapolate=extrapolate)
+        solve = _step_solver(prm, newton_factor, newton_optim, bound)
+        disp = _gauss_newton_inv(fwd, disp.neg_(), identity, newton_iter,
+                                 solve, bound=bound, extrapolate=extrapolate)
+        disp = disp.neg_()
         del fwd
     disp = disp.reshape([*batch, *shape, dim])
 
@@ -153,30 +185,45 @@ def grid_inv(grid, type='grid', bound='dft',
         return -disp
 
 
-def _newton_inv(disp, idisp, identity, nb_iter=3, detmin=0.05,
-                nb_halvings=3, bound='dft', extrapolate=True):
-    r"""Refine an inverse displacement with safeguarded Newton steps.
+def _step_solver(prm, factor, optim, bound):
+    """Solver `(hess, grad) -> (hess + factor * L) \\ grad` of the
+    Gauss-Newton steps, with `L` the regulariser of the push step."""
+    reg = {k: v for k, v in prm.items() if k not in _fmg_keys}
+    reg['factor'] = reg.get('factor', 1) * factor
+    if optim.startswith('fmg'):
+        fmg = {k: v for k, v in prm.items() if k in _fmg_keys}
+        fmg['optim'] = 'relax' if optim == 'fmg+relax' else 'cg'
+
+        def solve(hess, grad):
+            return solve_grid_fmg(hess, grad, bound=bound, **reg, **fmg)
+    else:
+        def solve(hess, grad):
+            return solve_grid(hess, grad, bound=bound, optim=optim, **reg)
+    return solve
+
+
+def _gauss_newton_inv(disp, idisp, identity, nb_iter, solve,
+                      bound='dft', extrapolate=True):
+    r"""Refine an inverse displacement with regularised Gauss-Newton steps.
 
     Solves $\varphi \circ \psi = id$, with $\varphi = id + u$,
     $\psi = id + w$, i.e., $r(w) = w + u \circ (id + w) = 0$, by
-    $w \gets w - \lambda (I + \nabla u \circ \psi)^{-1} r(w)$.
-    See `grid_inv` for the safeguards.
+    $w \gets w - (J^T J + L)^{-1} J^T r(w)$, with
+    $J = I + \nabla u \circ (id + w)$. See `grid_inv`.
 
     Parameters
     ----------
     disp : (batch, *spatial, dim) tensor
         Displacement `u` to invert
     idisp : (batch, *spatial, dim) tensor
-        Initial inverse displacement `w`
+        Initial inverse displacement `w` (overwritten)
     identity : (*spatial, dim) tensor
         Identity grid
     nb_iter : int
-        Number of Newton steps
-    detmin : float
-        Smallest Jacobian determinant for which the Newton direction
-        is used (else, fixed-point direction).
-    nb_halvings : int
-        Number of step halvings in the line search.
+        Number of Gauss-Newton steps
+    solve : callable(hess, grad) -> step
+        Regularised solver of `(hess + L) step = grad`, with `hess` a
+        field of symmetric matrices (D*(D+1)//2 channels).
 
     Returns
     -------
@@ -192,86 +239,35 @@ def _newton_inv(disp, idisp, identity, nb_iter=3, detmin=0.05,
         out = grid_pull(utils.movedim(field, -1, 1), identity + w, **opt)
         return utils.movedim(out, 1, -1)
 
-    def sqnorm(r):
-        return r.square().sum(-1)
-
     # Jacobian of phi (central finite differences), flattened
     jac = grid_jacobian(disp, type='disp', bound=bound)
     jac = jac.reshape([*jac.shape[:-2], dim * dim])
 
-    res = idisp + pull(disp, idisp)          # phi o psi - id
     for _ in range(nb_iter):
-        resnorm = sqnorm(res)
-
-        # Newton direction (fixed-point direction where J is unsafe)
+        res = pull(disp, idisp).add_(idisp)             # phi o psi - id
         jacw = pull(jac, idisp).reshape([*idisp.shape, dim])
-        delta = _safe_solve(jacw, res, detmin)
-        del jacw
-
-        # per-voxel backtracking line search
-        todo = torch.ones_like(resnorm, dtype=torch.bool)
-        new_idisp, new_res = idisp, res
-        lam = 1.
-        for _ in range(nb_halvings + 1):
-            cand = idisp - delta if lam == 1 else idisp - lam * delta
-            cand_res = cand + pull(disp, cand)
-            accept = todo & (sqnorm(cand_res) < resnorm)
-            new_idisp = torch.where(accept[..., None], cand, new_idisp)
-            new_res = torch.where(accept[..., None], cand_res, new_res)
-            del cand, cand_res
-            todo = todo & ~accept
-            lam /= 2
-            if not todo.any():
-                break
-        idisp, res = new_idisp, new_res
-        del delta, new_idisp, new_res, todo, accept
+        hess, grad = _gauss_newton_terms(jacw, res)
+        del jacw, res
+        idisp = idisp.sub_(solve(hess, grad))
+        del hess, grad
     return idisp
 
 
-def _safe_solve(jac, res, detmin):
-    """Solve `jac @ x = res` voxel-wise, with `x = res` where
-    `det(jac) <= detmin`. Closed form in 2D and 3D.
+def _gauss_newton_terms(jac, res):
+    """Gauss-Newton Hessian `J.T @ J` (symmetric, D*(D+1)//2 channels:
+    diagonal, then upper triangle row by row) and gradient `J.T @ r`.
 
-    jac : (..., dim, dim), res : (..., dim) -> (..., dim)
+    jac : (..., dim, dim), res : (..., dim)
+    -> hess : (..., dim*(dim+1)//2), grad : (..., dim)
     """
     dim = res.shape[-1]
-    if dim == 1:
-        det = jac[..., 0, 0]
-        ok = det > detmin
-        x = res / torch.where(ok, det, det.new_ones([]))[..., None]
-    elif dim == 2:
-        a, b = jac[..., 0, 0], jac[..., 0, 1]
-        c, d = jac[..., 1, 0], jac[..., 1, 1]
-        det = a * d - b * c
-        ok = det > detmin
-        det = torch.where(ok, det, det.new_ones([]))
-        r0, r1 = res[..., 0], res[..., 1]
-        x = torch.stack([d * r0 - b * r1, a * r1 - c * r0], -1)
-        x /= det[..., None]
-    elif dim == 3:
-        j = [[jac[..., i, k] for k in range(3)] for i in range(3)]
-        # cofactors (adjugate = transpose of the cofactor matrix)
-        c00 = j[1][1] * j[2][2] - j[1][2] * j[2][1]
-        c01 = j[1][2] * j[2][0] - j[1][0] * j[2][2]
-        c02 = j[1][0] * j[2][1] - j[1][1] * j[2][0]
-        det = j[0][0] * c00 + j[0][1] * c01 + j[0][2] * c02
-        ok = det > detmin
-        det = torch.where(ok, det, det.new_ones([]))
-        c10 = j[0][2] * j[2][1] - j[0][1] * j[2][2]
-        c11 = j[0][0] * j[2][2] - j[0][2] * j[2][0]
-        c12 = j[0][1] * j[2][0] - j[0][0] * j[2][1]
-        c20 = j[0][1] * j[1][2] - j[0][2] * j[1][1]
-        c21 = j[0][2] * j[1][0] - j[0][0] * j[1][2]
-        c22 = j[0][0] * j[1][1] - j[0][1] * j[1][0]
-        r0, r1, r2 = res[..., 0], res[..., 1], res[..., 2]
-        x = torch.stack([c00 * r0 + c10 * r1 + c20 * r2,
-                         c01 * r0 + c11 * r1 + c21 * r2,
-                         c02 * r0 + c12 * r1 + c22 * r2], -1)
-        x /= det[..., None]
-    else:
-        det = torch.linalg.det(jac)
-        ok = det > detmin
-        eye = torch.eye(dim, dtype=jac.dtype, device=jac.device)
-        jac = torch.where(ok[..., None, None], jac, eye)
-        x = torch.linalg.solve(jac, res[..., None])[..., 0]
-    return torch.where(ok[..., None], x, res)
+    grad = jac.transpose(-1, -2).matmul(res[..., None])[..., 0]
+    hess = res.new_empty([*res.shape[:-1], dim * (dim + 1) // 2])
+    for i in range(dim):
+        hess[..., i] = jac[..., :, i].square().sum(-1)
+    c = dim
+    for i in range(dim):
+        for j in range(i + 1, dim):
+            hess[..., c] = (jac[..., :, i] * jac[..., :, j]).sum(-1)
+            c += 1
+    return hess, grad
