@@ -124,7 +124,7 @@ Long option names use underscores, as in the code.
 | Option | Value | Description | Default |
 | ------ | ----- | ----------- | ------- |
 | `-o`, `--dir_out` | `DIR` | Directory in which to write the denoised images. Outputs with the same name get their input position as a suffix. | directory of the input |
-| `-v`, `--verbose` | `[0\|1]` | Print the progress every 25 iterations. The value is optional; `0`, `false`, `no` or `off` disables printing. | on |
+| `-v`, `--verbose` | `[0|1]` | Print the progress every 25 iterations. The value is optional; `0`, `false`, `no` or `off` disables printing. | on |
 | `-cpu`, `--cpu` | | Run on the CPU. | yes |
 | `-gpu`, `--gpu` | `[N]` | Run on a GPU, optionally the one with index `N`. If CUDA is unavailable, a warning is issued and the CPU is used. | |
 | `-h`, `--help` | | Print the built-in help and exit. | |

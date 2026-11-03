@@ -96,7 +96,7 @@ These options describe one contrast and apply to the `-c` they follow.
 | `-tr`, `--repetition-time`       | `TR [UNIT]`            | Repetition time, with unit `ms` or `s`. A bare number means seconds. | read from file header |
 | `-te`, `--echo-time`             | `TE... [UNIT]`         | Echo times, with unit `ms` or `s`. A bare number means seconds. | read from file headers |
 | `-es`, `--echo-spacing`          | `DELTA UNIT`           | Echo spacing. Requires `-te` and a unit. | unused |
-| `-mt`, `--mt-pulse`              | `[yes&vert;no]`        | Flags the contrast as MT-weighted. Alone, the flag means `yes`. | no MT pulse |
+| `-mt`, `--mt-pulse`              | `[yes|no]`        | Flags the contrast as MT-weighted. Alone, the flag means `yes`. | no MT pulse |
 | `-tf`, `--transmit`              | `FIELD [MAG] [UNIT]`   | B1 transmit map for this contrast. | none |
 | `-rf`, `--receive`               | `FIELD [MAG] [UNIT]`   | B1 receive map for this contrast. | none |
 | `-b0`, `--b0-field`              | `FIELD [MAG] [UNIT]`   | B0 map. Accepted but **not used**: B0 correction is not implemented. | none |
@@ -117,7 +117,7 @@ These are given before the first `-c`.
 | Option               | Value                         | Description | Default |
 | -------------------- | ----------------------------- | ----------- | ------- |
 | `--likelihood`       | `{gauss,chi}`                 | Noise model of the magnitude images: Gaussian, or non-central chi (suited to low signal-to-noise ratios; its degrees of freedom are estimated). | `gauss` |
-| `--register`         | `[yes&vert;no]`               | Rigidly align the contrasts (and the magnitude images of field maps) before fitting. Alone, the flag means `yes`. | `no` |
+| `--register`         | `[yes|no]`               | Rigidly align the contrasts (and the magnitude images of field maps) before fitting. Alone, the flag means `yes`. | `no` |
 | `--recon-space`      | `{mean,NAME,INDEX}`           | Space in which the maps are computed. `mean` is the mean space of all contrasts, with a field of view that covers all of them. Otherwise, give the name of a contrast or its zero-based index to use its orientation and shape. | `mean` |
 | `--crop-space`       | `PCT`                         | Accepted but currently has no effect. | `0` |
 | `--regularization`   | `{no,tkh,tv,jtv}`             | Penalty on the (log) maps: none, Tikhonov (membrane energy), total variation, or joint total variation. | `jtv` |
@@ -126,7 +126,7 @@ These are given before the first `-c`.
 | `--lam-t1`           | `VAL`                         | Penalty weight of R1, overriding `--lam`. | `--lam` |
 | `--lam-t2`           | `VAL`                         | Penalty weight of R2\*, overriding `--lam`. | `--lam` |
 | `--lam-mt`           | `VAL`                         | Penalty weight of MTsat, overriding `--lam`. | `--lam` |
-| `--meetup`           | `[yes&vert;no]`               | Parsed, but distortion correction is not implemented in `greeq`, so this has no effect. Use [`estatics`](estatics.md) for MEETUP. | `no` |
+| `--meetup`           | `[yes|no]`               | Parsed, but distortion correction is not implemented in `greeq`, so this has no effect. Use [`estatics`](estatics.md) for MEETUP. | `no` |
 | `--lam-meetup`       | `VAL`                         | Parsed but has no effect, for the same reason. | `1e5` |
 
 A per-map weight of `0` switches the penalty off for that map only. To switch regularisation off for all maps, use `--regularization no`.
@@ -145,7 +145,7 @@ A per-map weight of `0` switches the penalty off for that map only. To switch re
 | Option                 | Value     | Description | Default |
 | ---------------------- | --------- | ----------- | ------- |
 | `-o`, `--output-dir`   | `DIR`     | Directory in which to write the maps. | directory of the first echo of the first contrast |
-| `-u`, `--uncertainty`  | `[yes&vert;no]` | Also write the uncertainty of every map. Alone, the flag means `yes`. | `no` |
+| `-u`, `--uncertainty`  | `[yes|no]` | Also write the uncertainty of every map. Alone, the flag means `yes`. | `no` |
 | `--cpu`                |           | Run on the CPU. | |
 | `--gpu`                | `[ID]`    | Run on a CUDA device. `ID` is the device index. Falls back to the CPU when CUDA is not available. | `--cpu` |
 | `-v`, `--verbose`      | `[LVL]`   | Verbosity. Alone, the flag means `1`. Use `-v 0` for a silent run. | `1` |
