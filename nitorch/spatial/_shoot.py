@@ -11,65 +11,16 @@ _default_bending = 0.2
 _default_lame = (0.05, 0.2)
 
 
-@torch.jit.script
-def _det2(A):
-    dt = A[0, 0] * A[1, 1] - A[0, 1] * A[1, 0]
-    return dt
-
-
-@torch.jit.script
-def _det3(A):
-    dt = A[0, 0] * (A[1, 1] * A[2, 2] - A[1, 2] * A[2, 1]) + \
-         A[0, 1] * (A[1, 2] * A[2, 0] - A[1, 0] * A[2, 2]) + \
-         A[0, 2] * (A[1, 0] * A[2, 1] - A[1, 1] * A[2, 0])
-    return dt
-
-
-@torch.jit.script
-def _inv2(A):
-    F = torch.empty_like(A)
-    F[0, 0] = A[1, 1]
-    F[1, 1] = A[0, 0]
-    F[0, 1] = -A[0, 1]
-    F[1, 0] = -A[1, 0]
-    dt = _det2(A)
-    Aabs = A.reshape((-1,) + A.shape[2:]).abs()
-    rnge = Aabs.max(dim=0).values - Aabs.min(dim=0).values
-    dt += rnge * 1E-12
-    F /= dt[None, None]
-    return F
-
-
-@torch.jit.script
-def _inv3(A):
-    F = torch.empty_like(A)
-    F[0, 0] = A[1, 1] * A[2, 2] - A[1, 2] * A[2, 1]
-    F[1, 1] = A[0, 0] * A[2, 2] - A[0, 2] * A[2, 0]
-    F[2, 2] = A[0, 0] * A[1, 1] - A[0, 1] * A[1, 0]
-    F[0, 1] = A[0, 2] * A[2, 1] - A[0, 1] * A[2, 2]
-    F[0, 2] = A[0, 1] * A[1, 2] - A[0, 2] * A[1, 1]
-    F[1, 0] = A[1, 2] * A[2, 0] - A[1, 0] * A[2, 2]
-    F[1, 2] = A[1, 0] * A[0, 2] - A[1, 2] * A[0, 0]
-    F[2, 0] = A[2, 1] * A[1, 0] - A[2, 0] * A[1, 1]
-    F[2, 1] = A[2, 0] * A[0, 1] - A[2, 1] * A[0, 0]
-    dt = _det3(A)
-    Aabs = A.reshape((-1,) + A.shape[2:]).abs()
-    rnge = Aabs.max(dim=0).values - Aabs.min(dim=0).values
-    dt += rnge * 1E-12
-    F /= dt[None, None]
-    return F
-
-
 def _inv(A):
-    A = utils.movedim(A, [-2, -1], [0, 1])
-    if len(A) == 3:
-        A = _inv3(A)
-    elif len(A) == 2:
-        A = _inv2(A)
-    else:
+    """Inverse of a field of small (D <= 3) matrices, with a determinant
+    slightly regularised by the range of the matrix entries."""
+    if A.shape[-1] not in (2, 3):
         raise NotImplementedError
-    A = utils.movedim(A, [0, 1], [-2, -1])
-    return A
+    dt = linalg.small_det(A)
+    Aabs = A.reshape(A.shape[:-2] + (-1,)).abs()
+    rnge = Aabs.max(dim=-1).values - Aabs.min(dim=-1).values
+    dt += rnge * 1E-12
+    return linalg.small_adj(A).div_(dt[..., None, None])
 
 
 def greens(shape, absolute=_default_absolute, membrane=_default_membrane,
