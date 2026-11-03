@@ -498,23 +498,43 @@ weights of the `--lame` option.
 | `-i`, `--input`, `--init`   | `FILE`              | Initial field, or a scalar image whose grid defines the lattice of a zero-initialised field.                                         | zeros on the mean space |
 | `-o`, `--output`            | `[PATH` &vert; `true` &vert; `false]` | Where to write the field. `{dir}` and `{name}` are available. With no value, `true`, `yes` or `1`, the default path is used; `false`, `no` or `0` writes nothing. | `{dir}/{name}.nii.gz` |
 | `-h`, `--hessian`           | `[PATH` &vert; `true` &vert; `false]` | Where to write the Hessian of the matching term at the solution (a map of local confidence), used to weight [`vopt`](vopt.md). `{dir}` and `{name}` are available. With no value, `true`, `yes` or `1`, the default path `{dir}/{name}_hessian.nii.gz` is used; `false`, `no` or `0` writes nothing. | not written |
-| `--fixedpoint`              | `[ITER]`            | `shoot` only. Compute the forward warp as the fixed-point inverse of the inverse warp, with `ITER` iterations (10 if the flag is given without a value). `0` keeps the default composition. See [below](#a-more-accurate-forward-warp-with-fixedpoint). | `0` (off)          |
+| `--inversion`               | `{default,push,newton}` | `@nonlin`, all models. How the side of the warp that is not computed directly is obtained by inverting the other one. `default` keeps the model's usual behaviour; `push` and `newton` are more elaborate inverses. See [below](#choosing-how-the-warp-is-inverted-with-inversion). | `default`          |
 | `-2d`                       | `[AXIS]`            | Restrict the deformation to the plane normal to `AXIS`. Without a value, axis 2.                                                     | 3D                 |
 
 The default lattice has the mean voxel size of the images and covers all
 their fields of view, so a registration between a 1 mm and a 2 mm image
 produces a field at about 1.5 mm.
 
-#### A more accurate forward warp with `--fixedpoint`
+#### Choosing how the warp is inverted with `--inversion`
 
-Geodesic shooting produces two warps: the inverse warp $\varphi$ and the forward warp $\psi$. By default, $\psi$ is built by first-order composition while the equations are integrated, and it is only a rough inverse of $\varphi$: after a displacement of 10 voxels, $\psi\circ\varphi$ is still about 0.37 voxels away from the identity (about 1.45 at 20 voxels). The inverse warp $\varphi$ is much more accurate.
+A nonlinear registration returns a transformation in both directions, but only one of them is computed directly; the other is obtained by inverting it. Which side is direct depends on the model: `svf` and `smalldef` compute the forward warp and invert it, whereas `shoot` integrates the inverse warp $\varphi$ directly and derives the forward warp $\psi$ from it. The `--inversion` option, available for all three models, selects the inversion method:
 
-With `--fixedpoint`, $\psi$ is instead obtained by inverting $\varphi$ with a fixed-point iteration. The error of $\psi\circ\varphi$ falls to about 0.05 voxels at 10 voxels of displacement and 0.12 at 20, and that of $\varphi\circ\psi$ to about 0.01. $\varphi$ itself is unchanged.
+| Method    | Description |
+| --------- | ----------- |
+| `default` | The behaviour of previous versions, unchanged for every model. |
+| `push`    | A push-based inverse. The displacement is splatted onto the grid, and the holes it leaves are filled by a membrane-regularised least-squares solve. Robust, and cheap. |
+| `newton`  | `push`, followed by up to three safeguarded Newton steps that solve $\text{fwd}\circ\text{inv} = \text{id}$ at each voxel. A backtracking line search guards each step, and a fixed-point update takes over where the Jacobian is nearly singular. It is never worse than `push` on the equation it solves, but it is the slowest. |
 
-Each iteration costs one interpolation, about 4% of the shooting time, and no extra peak memory is needed. The default of 10 iterations therefore adds roughly 50% to the shooting time, which is about what it costs to return the inverse as well. Shooting is only one part of a full registration, so the overall slowdown is smaller.
+What you gain depends on the model.
+
+| Model      | Inverted side | Effect |
+| ---------- | ------------- | ------ |
+| `shoot`    | forward       | The inverse $\varphi$ is integrated directly and is the more accurate of the two, so inverting it gives a much better forward warp than the default. `newton` brings the largest gain on steep warps (on a 90° swirl, the round-trip error drops from about 2 voxels to about 0.1), and `push` lies in between. |
+| `smalldef` | inverse       | The default is already a push-based inverse, so `push` is the same as `default`. `newton` improves on it (for a 5-fold radial expansion, from 2.1 to 0.2-0.4 voxels). |
+| `svf`      | inverse       | The default, $\exp(-v)$, is already about as accurate as it gets. `push` is worse and `newton` roughly equal, so inversion brings little here. |
+
+The cost relative to `default`, for a 3D image of 64³ voxels, is:
+
+| Model      | `push`  | `newton` |
+| ---------- | ------- | -------- |
+| `shoot`    | 3 times | 3.5 times |
+| `svf`      | 5 times | 6.5 times |
+| `smalldef` | 1 time  | not measured |
+
+These figures concern the nonlinear update alone. A full registration spends most of its time elsewhere, so the overall slowdown is smaller.
 
 !!! tip "When to use it"
-    Use `--fixedpoint` when both directions of the transformation matter, for example when you will pull images back and forth with `reslice`, or when large deformations make the inverse consistency visible. If you only use one direction, or the deformations are small, the default is accurate enough.
+    Use `--inversion newton` with `shoot` when the deformations are steep and an accurate, inverse-consistent forward warp matters, for example when you will pull images back and forth with `reslice`. For small deformations, or if you only use one direction, the default is accurate enough. For `svf`, there is rarely a reason to change it. A plain fixed-point iteration was also tried, and rejected: it diverges where the local expansion exceeds 2 or the rotation exceeds 60°.
 
 ## Optimisation
 
@@ -658,7 +678,7 @@ the fields `{dir}` (a directory), `{sep}` (the path separator), `{base}`
 | ----------------------------------- | ------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
 | `{dir}/{name}.lta`                  | `@affine` is used                     | The affine matrix, in RAS-to-RAS convention. For example `rigid.lta`, `affine.lta`. It maps fixed to moving world coordinates. Always the *full* transformation, whatever the position. |
 | `{dir}/{name}.nii.gz`               | `@nonlin` is used                     | The field, in voxels of its own lattice: a velocity for `svf` (`svf.nii.gz`) and `shoot`, a displacement for `smalldef`. |
-| `{dir}/{name}.json`                 | `@nonlin shoot` only                  | Regularisation (penalty and factor) and the number of integration `steps` and `fast` flag used during registration, needed to integrate the shooting equations the same way (`shoot.json`). With `--fixedpoint`, it also records the `forward_method` (`compose` or `fixedpoint`) and, when on, `fixedpoint_iter`. Read by [`reslice`](../spatial/reslice.md#velocity-fields). |
+| `{dir}/{name}.json`                 | `@nonlin`                             | The model and the inversion method (`model` and `inversion`), for all models. For `shoot`, also the regularisation (penalty and factor) and the number of integration `steps` and `fast` flag used during registration, needed to integrate the shooting equations the same way (`shoot.json`). Read by [`reslice`](../spatial/reslice.md#velocity-fields), [`compose`](../spatial/compose.md) and [`vexp`](../spatial/vexp.md). |
 | `{dir}/{name}_hessian.nii.gz`       | `@nonlin -h`                          | Hessian of the matching term.                                                                                      |
 | `{dir}/momentum.nii.gz`, `affine_momentum.json` | `@@optim nes`/`ogm` with `-o` | Final momentum of the optimiser.                                                                              |
 | `{dir}/{base}.moved{ext}`           | for each image, unless `-o false`     | The image carried to the registered space, with *minimal reslicing*.                                              |
