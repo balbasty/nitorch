@@ -67,3 +67,17 @@ def test_identity_chunk():
     for start, stop in [(0, 60), (7, 23), (59, 60)]:
         x = regutils._identity_chunk(shape, start, stop, dtype=dt)
         assert torch.equal(x, ref[start:stop])
+
+
+def test_default_chunk(monkeypatch):
+    monkeypatch.setattr(regutils, 'AFFINE_GRID_BACKWARD_CHUNK', None)
+    cpu = torch.device('cpu')
+    monkeypatch.setattr(torch, 'get_num_threads', lambda: 1)
+    assert regutils._affine_grid_backward_chunk(cpu) == 2 ** 18
+    monkeypatch.setattr(torch, 'get_num_threads', lambda: 8)
+    assert regutils._affine_grid_backward_chunk(cpu) == 2 ** 19
+    monkeypatch.setattr(torch, 'get_num_threads', lambda: 64)
+    assert regutils._affine_grid_backward_chunk(cpu) == 2 ** 20
+    assert regutils._affine_grid_backward_chunk('cuda') == 2 ** 20
+    monkeypatch.setattr(regutils, 'AFFINE_GRID_BACKWARD_CHUNK', 1000)
+    assert regutils._affine_grid_backward_chunk(cpu) == 1000

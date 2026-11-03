@@ -282,8 +282,27 @@ def make_iteroptim_affine(optim, lr=None, ls=None, max_iter=None):
     return optim
 
 
-#: Number of voxels processed at once by `affine_grid_backward`
-AFFINE_GRID_BACKWARD_CHUNK = 2 ** 18
+#: Number of voxels processed at once by `affine_grid_backward`.
+#: None: device-dependent default (see `_affine_grid_backward_chunk`).
+AFFINE_GRID_BACKWARD_CHUNK = None
+
+
+def _affine_grid_backward_chunk(device):
+    """Default number of voxels per chunk in `affine_grid_backward`.
+
+    - CPU: 2^18 was optimal with 1 to 4 threads on a 192^3 problem (2^14
+      chunks pay the per-chunk overhead, 2^20 and more were 1.5-2x slower,
+      likely because the chunk buffers no longer fit in cache). Each chunk
+      is split across threads, so we keep ~2^16 voxels per thread, up to
+      2^20 (not measured beyond 4 threads).
+    - CUDA: 2^20 (not measured). A million voxels is enough to fill a
+      GPU and keeps the chunk buffers to ~100 MB.
+    """
+    if AFFINE_GRID_BACKWARD_CHUNK:
+        return int(AFFINE_GRID_BACKWARD_CHUNK)
+    if torch.device(device).type == 'cuda':
+        return 2 ** 20
+    return min(max(2 ** 18, 2 ** 16 * torch.get_num_threads()), 2 ** 20)
 
 
 def _identity_chunk(shape, start, stop, **backend):
@@ -324,7 +343,7 @@ def affine_grid_backward(*grad_hess, grid=None):
     With `X = [grid, 1]` (one row per voxel), the gradient is `grad^T X`
     and each block of the Hessian is `(X * hess[:, ik])^T X`, for the
     `dim*(dim+1)/2` unique components `ik` of the (symmetric) Hessian.
-    Voxels are processed by chunks of `AFFINE_GRID_BACKWARD_CHUNK`, and
+    Voxels are processed by chunks (see `_affine_grid_backward_chunk`), and
     the identity grid is built chunk by chunk, so that the extra memory
     is a few chunk-sized buffers.
     """
@@ -350,7 +369,7 @@ def affine_grid_backward(*grad_hess, grid=None):
         hblocks = grad.new_zeros([hess.shape[0], len(pairs), dim+1, dim+1])
 
     g = grad.new_zeros([grad.shape[0], dim, dim+1])
-    chunk = AFFINE_GRID_BACKWARD_CHUNK
+    chunk = _affine_grid_backward_chunk(grad.device)
     for start in range(0, nvox, chunk):
         stop = min(start + chunk, nvox)
         if grid is None:
