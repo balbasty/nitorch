@@ -74,3 +74,20 @@ def test_vopt_voxel_size_and_outputs(tmp_path, svfs, monkeypatch):
     outs = sorted(f for f in os.listdir(tmp_path) if 'optimal' in f)
     assert outs == ['a_optimal.nii.gz', 'b_optimal.nii.gz',
                     'c_optimal.nii.gz']
+
+
+def test_orient_transform_is_ras_to_ras(tmp_path, volume):
+    import torch
+    from nitorch import io
+    from nitorch.spatial import affine_rmdiv
+    orient([volume, '-l', 'LPS', '-t'])
+    f = io.transforms.map(str(tmp_path / 'img_to_LPS.lta'))
+    assert f.type() == ('ras', 'ras')
+    aff0 = io.volumes.map(volume).affine.double()
+    aff1 = io.volumes.map(str(tmp_path / 'img.LPS.nii.gz')).affine.double()
+    expected = affine_rmdiv(aff1, aff0)
+    assert not torch.allclose(expected, torch.eye(4, dtype=torch.double))
+    assert torch.allclose(f.fdata(dtype=torch.double).reshape([4, 4]),
+                          expected, atol=1e-5)
+    assert torch.allclose(f.data(dtype=torch.double).reshape([4, 4]),
+                          expected, atol=1e-5)

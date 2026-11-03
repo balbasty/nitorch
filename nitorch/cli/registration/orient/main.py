@@ -134,8 +134,9 @@ def orient(inp, affine=None, layout=None, voxel_size=None, center=None,
         transform = spatial.affine_rmdiv(affine, aff0)
         output_transform = output_transform.format(
             dir=dir or '.', base=base, sep=os.path.sep, layout=layout)
-        # raw matrix written as-is (labelled physical-to-physical)
-        io.transforms.save(transform.cpu(), output_transform, type=2)
+        # world-to-world matrix (new vox2ras @ inv(old vox2ras)),
+        # written as-is (labelled RAS-to-RAS)
+        io.transforms.save(transform.cpu(), output_transform, type='ras')
 
     if is_file:
         return output
