@@ -38,8 +38,14 @@ def parse(args):
 
     struct = Patch()
 
-    struct.file, = cli.pop_values(args, 'extract_patches', 1,
-                                  names='<file>')
+    # `--` ends option parsing: what follows is the input file
+    args, rest = cli.split_double_dash(args)
+    if rest:
+        struct.file = rest.pop(0)
+        cli.check_rest_used(rest, 'extract_patches takes a single file')
+    else:
+        struct.file, = cli.pop_values(args, 'extract_patches', 1,
+                                      names='<file>')
 
     while args:
         if cli.next_isvalue(args):

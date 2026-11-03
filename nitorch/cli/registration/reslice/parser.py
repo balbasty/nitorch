@@ -150,10 +150,12 @@ def parse(args):
     # This is the object that we will populate
     options = struct.Reslicer()
 
-    # Get input files
+    # Get input files (`--` ends option parsing: what follows are files)
+    args, files_after_dd = cli.split_double_dash(args)
     while cli.next_isvalue(args):
         val, *args = args
         options.files.append(val)
+    options.files += files_after_dd
 
     while args:
         if not cli.next_istag(args):

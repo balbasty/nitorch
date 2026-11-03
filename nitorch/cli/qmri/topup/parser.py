@@ -91,7 +91,10 @@ class CommandParser(cli.CommandParser):
     """
 
     def parse(self, args):
-        args = list(args)
+        # Arguments after `--` are positionals: keep them out of the
+        # reordering below, and put them back (after `--`) at the end.
+        args, rest = cli.split_double_dash(args)
+        rest = [cli.DOUBLE_DASH, *rest] if rest else []
         tags = list(self.options.tags)
         leading = []
         while args and args[0] in tags:
@@ -102,7 +105,7 @@ class CommandParser(cli.CommandParser):
             nb_consumed = len(args) - len(remaining)
             leading += [tag] + args[:nb_consumed]
             del args[:nb_consumed]
-        return super().parse(args + leading)
+        return super().parse(args + leading + rest)
 
 
 # Fit command

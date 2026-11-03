@@ -2,7 +2,8 @@ import sys
 import os.path as op
 
 from nitorch.cli.cli import commands
-from nitorch.core.cli import ParseError, isvalue, pop_values
+from nitorch.core.cli import (
+    ParseError, isvalue, pop_values, split_double_dash, check_rest_used)
 from nitorch import io
 from nitorch.spatial import optimal_svf, svf_labels, voxel_size as get_voxel_size
 from nitorch.core.py import fileparts
@@ -38,6 +39,7 @@ Compute optimal "template-to-subject" SVF from "subject-to-subject" pairs.
 
 usage:
     nitorch vopt --input <fix> <mov> <path> [--input ...]
+    nitorch vopt ... -i <fix> <mov> -- <path>  (<path> may start with -)
 
 note:
     In USLR and JUMP, Casamitjana et al. use a L1 objective when fitting
@@ -94,8 +96,10 @@ class AskForHelp(Exception):
 
 def parse(args):
 
-    args = list(args)
-    if not args:
+    # `--` ends option parsing: what follows completes the values of
+    # the option just before it (e.g., `-i fix mov -- -odd.nii`)
+    args, rest = split_double_dash(args)
+    if not args and not rest:
         raise ParseError('No arguments')
 
     inputs, weights = {}, {}
@@ -107,46 +111,56 @@ def parse(args):
             raise AskForHelp
         elif tag in ('-i', '--input'):
             fix, mov, path = pop_values(
-                args, '-i/--input', 3, names='<fix> <mov> <path>')
+                args, '-i/--input', 3, names='<fix> <mov> <path>',
+                rest=rest)
             inputs[(fix, mov)] = path
         elif tag in ('-w', '--weight'):
             fix, mov, path = pop_values(
-                args, '-w/--weight', 3, names='<fix> <mov> <path>')
+                args, '-w/--weight', 3, names='<fix> <mov> <path>',
+                rest=rest)
             weights[(fix, mov)] = path
         elif tag in ('-o', '--output'):
-            out, = pop_values(args, '-o/--output', 1, names='<path>')
+            out, = pop_values(args, '-o/--output', 1, names='<path>',
+                              rest=rest)
             if output is not None:
                 raise ParseError(f'Max one {tag} accepted')
             output = out
         elif tag in ('-x', '--bound'):
             if bound is not None:
                 raise ParseError(f'Max one {tag} accepted')
-            bound, = pop_values(args, '-x/--bound', 1, names='<bound>')
+            bound, = pop_values(args, '-x/--bound', 1, names='<bound>',
+                                rest=rest)
         elif tag in ('-a', '--absolute'):
             if absolute is not None:
                 raise ParseError(f'Max one {tag} accepted')
-            absolute, = pop_values(args, '-a/--absolute', 1, float, '<float>')
+            absolute, = pop_values(args, '-a/--absolute', 1, float,
+                                   '<float>', rest=rest)
         elif tag in ('-m', '--membrane'):
             if membrane is not None:
                 raise ParseError(f'Max one {tag} accepted')
-            membrane, = pop_values(args, '-m/--membrane', 1, float, '<float>')
+            membrane, = pop_values(args, '-m/--membrane', 1, float,
+                                   '<float>', rest=rest)
         elif tag in ('-b', '--bending'):
             if bending is not None:
                 raise ParseError(f'Max one {tag} accepted')
-            bending, = pop_values(args, '-b/--bending', 1, float, '<float>')
+            bending, = pop_values(args, '-b/--bending', 1, float,
+                                  '<float>', rest=rest)
         elif tag in ('-l', '--lame'):
             if lame is not None:
                 raise ParseError(f'Max one {tag} accepted')
-            lame = pop_values(args, '-l/--lame', 1, float, '<float> [<float>]')
-            if args and isvalue(args[0]):
+            lame = pop_values(args, '-l/--lame', 1, float,
+                              '<float> [<float>]', rest=rest)
+            if (args and isvalue(args[0])) or (not args and rest):
                 lame += pop_values(args, '-l/--lame', 1, float,
-                                   '<float> [<float>]')
+                                   '<float> [<float>]', rest=rest)
         elif tag[:1] == '-':
             raise ParseError(f'Unknown tag {tag}')
         else:
             # positional values are ambiguous: each input needs <fix> <mov>
             raise ParseError(f"Unexpected value '{tag}'. Input files must "
                              f"follow -i/--input as <fix> <mov> <path>.")
+    check_rest_used(rest, "use '--' just before a value of the last "
+                          "option (e.g., -i <fix> <mov> -- <path>)")
 
     output = output or '{dir}{sep}{label}_optimal.nii.gz'
     bound = bound or 'dft'
