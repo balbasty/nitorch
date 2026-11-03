@@ -204,7 +204,7 @@ before `-fix` and `-mov`. They are then the default for both image blocks.
 | `-b`, `--bins` | `BINS` | Number of bins of the joint histogram. | `32` |
 | `-f`, `--fwhm` | `WIDTH` | Full width at half maximum of the histogram bins, in bin units. | `1` |
 | `-t`, `--threshold` | `VAL` | Voxels where the fixed image is below this value are excluded. | no threshold |
-| `-n`, `--order` | `ORDER` | Order of the splines used to build the histogram. Accepts an integer or `inf`. | `3` |
+| `-n`, `--order` | `ORDER` | Order of the splines used to build the histogram. Accepts an integer, or `inf` (in any case) for a Gaussian window. | `3` |
 
 With several channels, the loss is the average of the mutual information of
 each pair of channels.
@@ -344,7 +344,7 @@ does not accept them in an `-all` group.
 | Option | Value | Description | Default |
 | ------ | ----- | ----------- | ------- |
 | `-prg`, `--progressive` | `[BOOL]` | Free the parameters progressively. A bare `-prg` means yes. See [Boolean options](#boolean-options). | yes |
-| `-pad`, `--padding` | `PAD [UNIT]` | Pad the field of view of the mean space on which the nonlinear field is defined. `UNIT` is `%` (of the field of view) or `mm`. | `0 %` |
+| `-pad`, `--padding` | `PAD [UNIT]` | Pad the field of view of the mean space on which the nonlinear field is defined. `UNIT` is `%` or `pct` (of the field of view), `vox`, `voxel` or `voxels`, or `mm`, in any case; any other unit is an error. | `0 %` |
 | `-v`, `--verbose` | `[LEVEL]` | Verbosity. A bare `-v` means 2. 0 is silent; 1 prints the losses, transformations and the loss at each iteration; 2 also prints all parsed options. | `1` |
 | `-cpu`, `--cpu` | | Run on the CPU. This is the default device. | |
 | `-gpu`, `--gpu` | `[N]` | Run on a GPU, optionally the one numbered `N`. | |
