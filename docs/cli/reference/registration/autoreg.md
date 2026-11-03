@@ -188,7 +188,7 @@ These options apply to the group as a whole. They are written after the image bl
 
 | Option | Value | Description | Default |
 | ------ | ----- | ----------- | ------- |
-| `-exc`, `--exclude` | `[BOOL]` | Exclude this pair of images from the computation of the mean space. A bare `-exc` means yes. Accepts `true`, `false`, `1`, `0` (only the first letter `t`/`f` is checked). | no |
+| `-exc`, `--exclude` | `[BOOL]` | Exclude this pair of images from the computation of the mean space. A bare `-exc` means yes. See [Boolean options](#boolean-options). | no |
 
 Options `-inter`, `-bnd`, `-ex` and `-pyr` can also be given at the group level.
 To affect both images, put them straight after the loss tag (and its factor),
@@ -223,7 +223,7 @@ These options follow a file list in a `-fix` or `-mov` block.
 
 | Option | Value | Description | Default |
 | ------ | ----- | ----------- | ------- |
-| `-o`, `--output` | `[OUT...]` | Write an "updated" version of the image: same grid and data, with the transformation applied. Each `OUT` is a switch or a path template; with several input files, give one per file. See [Outputs](#outputs). | moving: yes; fixed: no |
+| `-o`, `--output` | `[OUT...]` | Write an "updated" version of the image: same grid and data, with the transformation applied. Each `OUT` is a switch or a path template; give one value per input file, or a single value for all of them. See [Outputs](#outputs). | moving: yes; fixed: no |
 | `-r`, `--resliced` | `[OUT...]` | Write a "resliced" version of the image, resampled to the grid of the other image of the pair. Values are as for `-o`. | no |
 | `-inter`, `--interpolation` | `ORDER` | Interpolation order used to resample this image. | `1` |
 | `-bnd`, `--bound` | `BOUND` | Boundary condition when resampling this image. | `dct2` |
@@ -243,7 +243,7 @@ These options follow a file list in a `-fix` or `-mov` block.
 
 | Option | Value | Description | Default |
 | ------ | ----- | ----------- | ------- |
-| `-z`, `--zero` | `[BOOL]` | Rotate and scale about the centre of the field of view of the fixed images, rather than about the origin of world space. A bare `-z` means yes. | yes |
+| `-z`, `--zero` | `[BOOL]` | Rotate and scale about the centre of the field of view of the fixed images, rather than about the origin of world space. A bare `-z` means yes. See [Boolean options](#boolean-options). | yes |
 
 The linear transformation maps world coordinates of the moving images to world
 coordinates of the fixed images.
@@ -257,7 +257,7 @@ coordinates of the fixed images.
 
 | Option | Value | Description | Default |
 | ------ | ----- | ----------- | ------- |
-| `-sd`, `--smalldef` | `[BOOL]` | (`-dif` only) Penalise the exponentiated transformation (the displacement) instead of the velocity field. A bare `-sd` means yes. | no |
+| `-sd`, `--smalldef` | `[BOOL]` | (`-dif` only) Penalise the exponentiated transformation (the displacement) instead of the velocity field. A bare `-sd` means yes. See [Boolean options](#boolean-options). | no |
 | `-g`, `--grid` | `SIZE...` | (`-ffd` only) Number of control points (nodes) of the grid, along each dimension. A single value is used for all dimensions. | `10` |
 
 The nonlinear field lives on the mean space of all the fixed and moving images
@@ -341,12 +341,22 @@ does not accept them in an `-all` group.
 
 | Option | Value | Description | Default |
 | ------ | ----- | ----------- | ------- |
-| `-prg`, `--progressive` | `[BOOL]` | Free the parameters progressively. A bare `-prg` means yes. Accepts `yes`/`no`, `true`/`false`, `1`/`0` (first letter checked). | yes |
+| `-prg`, `--progressive` | `[BOOL]` | Free the parameters progressively. A bare `-prg` means yes. See [Boolean options](#boolean-options). | yes |
 | `-pad`, `--padding` | `PAD [UNIT]` | Pad the field of view of the mean space on which the nonlinear field is defined. `UNIT` is `%` (of the field of view) or `mm`. | `0 %` |
 | `-v`, `--verbose` | `[LEVEL]` | Verbosity. A bare `-v` means 2. 0 is silent; 1 prints the losses, transformations and the loss at each iteration; 2 also prints all parsed options. | `1` |
 | `-cpu`, `--cpu` | | Run on the CPU. This is the default device. | |
 | `-gpu`, `--gpu` | `[N]` | Run on a GPU, optionally the one numbered `N`. | |
 | `-h`, `--help` | | Print the built-in help and exit. | |
+
+### Boolean options
+
+`-exc`, `-z`, `-sd` and `-prg` take an optional boolean. A bare flag means
+true. Otherwise the value is `true`, `false`, `yes` or `no` in any case, or an
+integer, where 0 means false and any other integer means true. Any other word
+is an error, for example `-z/--zero expects <bool>, got 'maybe'`.
+
+A value that cannot be read as a number is also reported with the name of the
+option that received it, as in `-w/--weights expects <float>, got 'abc'`.
 
 ## Optimisation
 
@@ -442,9 +452,17 @@ Both `-o` and `-r` take the same kind of value as the transformation output:
 skips the output, and anything else is a path template. In a template, `{dir}`,
 `{base}` and `{ext}` are replaced by the directory, the base name and the
 extension (including `.nii.gz`) of the corresponding input file; other keys are
-rejected as above. When a block has several input files, give one value per
-file, each of which is `true`, `false` or a path. For example,
-`-mov a.nii b.nii -o true false` writes the updated version of `a.nii` only.
+rejected as above.
+
+When a block has several input files, give either one value per file or a
+single value for all of them. For example, `-mov a.nii b.nii -o true false`
+writes the updated version of `a.nii` only. A single value is repeated for
+every file only if it is `true` or `false`, or a template that contains `{base}`
+or `{dir}` and so gives each file its own name: `-o {base}.moved{ext}`. A single
+plain path is accepted only when the block has one file; with more, every file
+would be written to the same place, and `autoreg` stops with an error that
+suggests a template. Any other number of values is also an error:
+`-o expects 1 value per input file (2), or a single template; got 3`.
 
 ## Examples
 
