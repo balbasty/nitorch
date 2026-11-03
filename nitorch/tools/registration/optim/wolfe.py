@@ -493,13 +493,25 @@ class StrongWolfeLineSearch(LineSearch):
 
         step_size, loss, grad = self.wolfe.step(0, closure1d, delta,
                                                 loss=loss, grad=grad)
-        delta.mul_(step_size)
-        param.add_(delta)
+        # same operation as in `closure1d`, so that the parameters are
+        # bitwise those at which `loss` and `grad` were evaluated
+        param.add_(delta, alpha=step_size)
 
         if self.store_value:
             self.wolfe.lr = step_size
 
-        # for verbose
+        if derivatives:
+            # Only return derivatives evaluated at the new parameters: the
+            # line search did not compute the Hessian there. The next step
+            # evaluates loss, gradient and Hessian there (a normal
+            # evaluation, which also commits the side effects that the
+            # line-search trials do not keep). If there is no next step,
+            # `OptimIterator` commits them (see `commit_line_search`).
+            return (param, loss, grad)
+
+        # First order: the next step reuses `loss` and `grad`, so commit
+        # the side effects (cached transforms, loss states, printed and
+        # recorded objective) now.
         closure(param)
 
-        return (param, loss, grad, *derivatives)
+        return (param, loss, grad)
