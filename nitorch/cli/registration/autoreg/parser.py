@@ -6,9 +6,9 @@ from . import struct
 help = r"""[nitorch] AUTOgrad REGistration tool
 
 usage: 
-    nitorch autoreg <*LOSS> [FACTOR] -fix *FILE [-o *FILE] [-r *FILE] [-pyr *LVL] ...
-                                     -mov *FILE [-o *FILE] [-r *FILE] [-pyr *LVL] ...
-                    <*TRF> [FACTOR] [-init PATH] [-lr LRNRATE] [-o FILE] [-pyr LVL] 
+    nitorch autoreg <*LOSS> [FACTOR] -fix *FILE [-o *OUT] [-r *OUT] [-pyr *LVL] ...
+                                     -mov *FILE [-o *OUT] [-r *OUT] [-pyr *LVL] ...
+                    <*TRF> [FACTOR] [-init PATH] [-lr LRNRATE] [-o OUT] [-pyr LVL] 
                            <*REG> [FACTOR]
                     <*OPT> [-nit MAXITER] [-lr LRNRATE] [-stop LIMIT] [-ls [MAXLS]]
                     [-all ...] [-prg] [-gpu|-cpu] [-v] [-h]
@@ -35,6 +35,12 @@ usage:
     interpolation tags (-inter, -bnd, -ext) must be placed directly after 
     their -mov tag.
     Multiple <LOSS> statements can be used, resulting in a composite loss.
+    In a -fix/-mov group, -o writes the updated image (default: -mov only)
+    and -r writes the image resliced to the other image's grid (default:
+    no). Each takes one OUT per input file, which is either true/yes/1 (or
+    no value: default name), false/no/0 (do not write), or a path. A path can
+    contain {dir}, {base} and {ext}, which are replaced by the directory, base
+    name and extension of the input file.
     Semi-supervised registration (that use both intensity images and segments)
     can be performed that way.
 
@@ -49,6 +55,10 @@ usage:
         -dif, --diffeo              Diffeomorphic field
             -sd --smalldef              Penalize the exponentiated transform (False)
     At least one transformation is required (there is no default).
+    The estimated transformation is written by default. -o takes true/yes/1
+    (or no value: default path {name}{ext}), false/no/0 (do not write), or a
+    path. A path can contain {name} and {ext}, which are replaced by the name
+    and default extension of the transformation.
     Only one of -tr, -rig, -sim, -aff can be used.
     Only one of -ffd and -diffeo can be used.
     The ffd and diffeomorphic fields always live in the (mean) space of the 
@@ -73,8 +83,7 @@ usage:
         -inter, --interpolation      Interpolation order (1)
         -bnd,   --bound              Boundary conditions (dct2)
         -ex,    --extrapolate        Extrapolate out-of-bounds data (no)
-        -o,     --output             Output file name or directory
-        -r,     --resliced           Output file name or directory
+        -o,     --output             Output transform name or template (true)
         -init,  --init               Initial transform file (identity)
         -nit,   --max-iterations     Maximum number of iterations (1000)
         -lr,    --learning-rate      Initial learning rate (0.1)
