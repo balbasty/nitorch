@@ -619,11 +619,11 @@ def write_transforms(options):
         else:
             affine = trf
 
-    if affine:
+    if affine and affine.output:
         lin = linear_matrix(affine, affine.dat, affine.basis, affine.dim)
         io.transforms.savef(lin.cpu(), affine.output, type=2)
 
-    if nonlin:
+    if nonlin and nonlin.output:
         affine = nonlin.affine
         shape = nonlin.shape
         if isinstance(nonlin, struct.FFD):
@@ -723,6 +723,8 @@ def update(moving, fname, inv=False, lin=None, nonlin=None,
             g = None
 
     for file, ofname in zip(moving.files, fname):
+        if not ofname:
+            continue
         if verbose:
             print(f'Registered: {file.fname}\n'
                   f'         -> {ofname}')
@@ -831,6 +833,8 @@ def reslice(moving, fname, like, inv=False, lin=None, nonlin=None,
     if moving.type == 'labels':
         prm['interpolation'] = 0
     for file, ofname in zip(moving.files, fname):
+        if not ofname:
+            continue
         if verbose:
             print(f'Resliced:   {file.fname}\n'
                   f'         -> {ofname}')
