@@ -17,7 +17,7 @@ Resample one or more volumes onto a new grid, optionally through a chain of spat
     TRF is any of:
         {-l|-il|-l2|-il2} FILE
         {-d|-id} FILE [-u {vox,mm}]
-        {-v|-iv|-v2|-iv2} FILE [JSON]
+        {-v|-iv|-v2|-iv2} FILE [JSON] [T0 T1]
     ```
 
 ## Description
@@ -71,7 +71,7 @@ nitorch reslice fix.nii.gz -iv velocity.nii.gz -l affine.lta -t mov.nii.gz -o fi
 | --------------- | --------------------------- | -------------- | ------------------------------------------------------------------------------------------------------------ |
 | Linear          | `-l`, `--linear`            | `FILE`         | An affine matrix mapping world coordinates (mm) of the output space to world coordinates of the input space.   |
 | Displacement    | `-d`, `--displacement`      | `FILE`         | A dense field of displacements: the point $p$ is sent to $p + u(p)$.                                          |
-| Velocity        | `-v`, `--velocity`          | `FILE [JSON]`  | A stationary velocity field $v$; the transformation used is its exponential, $\exp(v)$.                       |
+| Velocity        | `-v`, `--velocity`          | `FILE [JSON] [T0 T1]` | A velocity field $v$; the transformation used is the part of its path between times `T0` and `T1` (by default 0 and 1), which is $\exp(v)$ for a stationary field. |
 
 Every type has an **inverse** form and, for linear and velocity types, a **square** form:
 
@@ -81,7 +81,7 @@ Every type has an **inverse** form and, for linear and velocity types, a **squar
 | Square    | `-l2`, `-v2`                 | `--linear-square`, `--velocity-square`         | The file holds the *square* of the transformation to apply: its square root is applied.       |
 | Both      | `-il2`, `-iv2`               | `--linear-inverse-square`, `--linear-square-inverse` (and the same for `--velocity`) | The inverse of the square root.                            |
 
-The square forms let you apply half of a known transformation, for instance to move two images half-way towards each other. They have no effect on displacement fields: `-d2` and `-id2` are accepted but behave like `-d` and `-id`. The tags are matched exactly, so `-il` (inverse linear) is not confused with `-i` (interpolation), nor `-v` (velocity) with `-vx` (voxel size).
+The square forms let you apply half of a known transformation, for instance to move two images half-way towards each other. They do not exist for displacement fields: `-d2` and `-id2` (and their long forms) are rejected with an error. The tags are matched exactly, so `-il` (inverse linear) is not confused with `-i` (interpolation), nor `-v` (velocity) with `-vx` (voxel size).
 
 #### Linear transformations
 
@@ -100,6 +100,29 @@ The inverse (`-id`) of a displacement field has no closed form. The field is res
 The file is a volume with three components in the last dimension, expressed in voxels of its own grid. It is exponentiated by scaling and squaring ([see `vexp`](vexp.md#description)) with 8 steps, to a displacement field defined on the grid of the velocity file, and then applied like a displacement field. The inverse (`-iv`) is the exponential of $-v$, which is exact up to the accuracy of scaling and squaring, unlike the inverse of a displacement field. `-v2` halves $v$ before exponentiating.
 
 A velocity file can be followed by the name of a **JSON file** with shooting parameters. The field is then taken to be an *initial velocity* and is integrated by geodesic shooting instead of by scaling and squaring. The regularisation stored in the JSON file (`absolute`, `membrane`, `bending`, `lame` and `factor`, plus the number of `steps` and the `fast` flag when present) is passed to the shooting routine, together with the voxel size of the velocity file. If you give no JSON file and a file with the same name as the velocity field and the extension `.json` exists and contains a `bending` entry, it is used automatically. Otherwise the field is a stationary velocity field.
+
+**Time bounds.** A velocity field describes a path of transformations indexed by time. By convention, the moving image sits at time 0 and the fixed image at time 1. The tag `-v FILE T0 T1` applies the part of that path that goes from time `T0` to time `T1`: it turns an image at time `T0` into the image at time `T1`. The bounds default to 0 and 1, so `-v FILE 0 1` is the same as `-v FILE`. For a stationary velocity field, the transformation is exactly $\exp\big((T_1 - T_0)\,v\big)$. For a shooting velocity (one with a JSON file), the field is integrated by geodesic shooting over the interval from `T0` to `T1`. Bounds outside $[0, 1]$ are allowed and extrapolate the path, with the same loss of accuracy as for larger velocities.
+
+The bounds follow the velocity file, and the JSON file if there is one, which must come first. After the velocity file, a number is read as a time bound and anything else as the JSON file. Give either no bounds or exactly two. The `.json` file next to the velocity field is still found automatically when you give bounds without a JSON file.
+
+The other velocity tags are shorthands for particular bounds, and they combine with explicit ones:
+
+| Tag             | Same as          |
+| --------------- | ---------------- |
+| `-v2`           | `-v FILE 0 0.5`  |
+| `-iv`           | `-v FILE 1 0`    |
+| `-iv2`          | `-v FILE 0.5 0`  |
+
+Tags that invert or halve the transformation act on the bounds you give: `-v2 FILE 0 0.4` halves them, and `-iv FILE 0 0.4` swaps them, which is `-v FILE 0.4 0`. For a shooting velocity, `-v FILE 0 -1` is not the same as `-iv`: a geodesic run backwards is not the inverse of the forward map.
+
+**Moving both images to the midpoint.** To bring the moving and the fixed image half-way towards each other along the path, take the moving image from time 0 to time 0.5 and the fixed image from time 1 to time 0.5, both on the grid of the fixed image:
+
+```shell
+nitorch reslice mov.nii.gz -il affine.lta -v velocity.nii.gz 0 0.5 -t fix.nii.gz -o mov_mid.nii.gz
+nitorch reslice fix.nii.gz -v velocity.nii.gz 1 0.5 -t fix.nii.gz -o fix_mid.nii.gz
+```
+
+For a shooting velocity, the two images agree at the midpoint up to the accuracy of the shooting inverse. Use `-v FILE 1 0.5` for the fixed image rather than `-iv2`: with shooting, `-iv2` is only approximately the second half of the path, whereas for stationary fields the two are identical.
 
 ### The output grid
 
@@ -146,7 +169,7 @@ Streamline files (`.trk`) can be given as inputs, alone or together with volumes
 | `FILE` | One or more volumes or streamline files, listed before any tag. Any format NITorch reads (see [file formats](../../conventions.md#file-formats)). |
 
 !!! warning "Put all the input files first"
-    Once the first tag has been read, a stray argument that does not belong to a tag stops the parsing of the command line, and everything after it is silently ignored. A value that follows a velocity field is read as the JSON file of that field.
+    Once the first tag has been read, a stray argument that does not belong to a tag is an error. Values that follow a velocity field are read as part of that tag: numbers are its two time bounds, and anything else is its JSON file.
 
 ## Options
 
@@ -156,9 +179,9 @@ Streamline files (`.trk`) can be given as inputs, alone or together with volumes
 | ------------------------------------------------------ | ----------------- | --------------------------------------------------------------------------------------------------- | ------- |
 | `-l`, `--linear`                                       | `FILE`            | Linear transformation. [See above](#linear-transformations).                                         |         |
 | `-d`, `--displacement`                                 | `FILE`            | Displacement field. [See above](#displacement-fields).                                               |         |
-| `-v`, `--velocity`                                     | `FILE [JSON]`     | Velocity field, with an optional JSON file of shooting parameters. [See above](#velocity-fields).    |         |
+| `-v`, `--velocity`                                     | `FILE [JSON] [T0 T1]` | Velocity field, with an optional JSON file of shooting parameters and optional time bounds. [See above](#velocity-fields).    |         |
 | `-il`, `-id`, `-iv`, `--linear-inverse`, `--displacement-inverse`, `--velocity-inverse` | same as the tag without `i` | The inverse transformation.                             |         |
-| `-l2`, `-v2`, `--linear-square`, `--velocity-square`, and their inverses | same              | The file holds the square of the transformation. [See above](#transformation-types).                 |         |
+| `-l2`, `-v2`, `--linear-square`, `--velocity-square`, and their inverses | same              | The file holds the square of the transformation (for velocities, a shorthand for time bounds). [See above](#transformation-types).                 |         |
 | `-u`, `--unit`                                         | `{vox,mm}`        | After `-d`/`-id` only: unit of the displacements.                                                    | `vox`   |
 | `-n`, `--order`                                        | `ORDER`           | After `-d`/`-id` only: order of the splines that encode the field.                                   | `1`     |
 
