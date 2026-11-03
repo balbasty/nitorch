@@ -42,7 +42,7 @@ is equivalent to
 
 ```shell
 nitorch register --verbose 0 --cpu \
-    @loss nmi @@fix T1w.nii.gz @@mov FLAIR.nii.gz \
+    @loss nmi @@fix T1w.nii.gz -o false @@mov FLAIR.nii.gz \
         -o '{dir}/{base}.moved{ext}' -r False \
     @affine rigid -o '{dir}/{name}.lta' \
         @@optim powell -n 50 -t 1e-05 -s wolfe \
@@ -91,11 +91,11 @@ be combined.
   It is a velocity field for `svf` and `shoot` (with a `shoot.json` file
   next to it), a displacement field for `smalldef`. Use `-w`
   (`--output-warp`) to choose another path. Not written with `--nonlin none`.
-- **The moved images**, `{base}.moved{ext}`, in the directory of each input:
-  each image carried halfway to the other one (*minimal reslicing*; see
-  [Outputs of `register`](register.md#outputs)). `-x` changes the path of the
-  moved *moving* image, and `-x false` suppresses it; the moved *fixed*
-  image is always written.
+- **The moved moving image**, `{base}.moved{ext}`, in the directory of the
+  moving image: the image carried halfway to the fixed one (*minimal
+  reslicing*; see [Outputs of `register`](register.md#outputs)). It is
+  written by default. `-x` changes its path, and `-x false` suppresses it.
+  The fixed image is never rewritten.
 - **The resliced moving image**, `-r PATH`: the moving image resampled on
   the grid of the fixed image through the full (affine + nonlinear)
   transformation. It is not written unless you ask for it.
@@ -127,7 +127,7 @@ Applied to both images. When omitted, the default of `register` is used.
 | ----------------- | -------------- | --------------------------------------------------------------------------------------------------------- | -------------- |
 | `--fwhm`          | `VAL [UNIT]`   | Smooth the images (FWHM), in `vox` or `mm`.                                                               | `0` (none)     |
 | `--pad`           | `VAL [UNIT]`   | Pad the images, in `vox` or `mm`.                                                                         | `0` (none)     |
-| `--bound`         | `BND`          | Boundary condition: `dct2`, `dct1`, `dst2`, `dst1`, `dft`, `zero` or `nearest`.                           | `dct2`         |
+| `--bound`         | `BND`          | Boundary condition: `dct2`, `dct1`, `dst2`, `dst1`, `dft`, `zero`, `replicate` or `nearest` (also `border`), the last two being the same condition. | `dct2`         |
 | `--order`         | `N`            | Interpolation order (0 to 7).                                                                             | `1`            |
 | `--rescale`       | `[MN] MX`      | Rescale the images so that their `MN`/`MX` percentiles map to (0, 1). `--rescale 0` disables rescaling.   | `0 95`         |
 | `--discretize`    | `[N]`          | Discretize the images into `N` bins (`256` if no value).                                                  | not discretized |
@@ -136,8 +136,8 @@ Applied to both images. When omitted, the default of `register` is used.
 
 | Option                | Value                 | Description                                                                                  | Default                    |
 | --------------------- | --------------------- | -------------------------------------------------------------------------------------------- | -------------------------- |
-| `-a`, `--output-affine` | `PATH`              | Where to write the affine. `{dir}` is the directory of the fixed image, `{name}` the model. | `{dir}/{name}.lta`         |
-| `-w`, `--output-warp` | `PATH`                | Where to write the nonlinear field.                                                          | `{dir}/{name}.nii.gz`      |
+| `-a`, `--output-affine` | `PATH` &vert; `false` | Where to write the affine. `{dir}` is the directory of the fixed image, `{name}` the model. `false` disables it. | `{dir}/{name}.lta`         |
+| `-w`, `--output-warp` | `PATH` &vert; `false` | Where to write the nonlinear field. `false` disables it.                                                       | `{dir}/{name}.nii.gz`      |
 | `-x`, `--moved`       | `PATH` &vert; `false` | Where to write the moved moving image (minimal reslicing). `false` disables it.              | `{dir}/{base}.moved{ext}`  |
 | `-r`, `--resliced`    | `PATH`                | Where to write the moving image resliced on the fixed image grid.                            | not written                |
 
@@ -200,7 +200,8 @@ FLAIR resliced on the T1w grid:
 nitorch simplereg -m FLAIR.nii.gz -f T1w.nii.gz -r FLAIR_in_T1w.nii.gz -v
 ```
 
-This writes `rigid.lta` and `svf.nii.gz` next to `T1w.nii.gz`.
+This writes `rigid.lta` and `svf.nii.gz` next to `T1w.nii.gz`, and
+`FLAIR.moved.nii.gz` next to `FLAIR.nii.gz`.
 
 Full affine, a smoother deformation, and local correlation:
 

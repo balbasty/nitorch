@@ -20,7 +20,7 @@ def cli(args=None):
     try:
         cli_parse(args)
     except ParseError as e:
-        print(help[1])
+        print(help)
         print(f'[ERROR] {str(e)}', file=sys.stderr)
         return 1
     except Exception as e:

@@ -590,10 +590,15 @@ class AutoReg(Base):
                 setattr(s, key, getattr(ref, key))
 
         def set_fname(s, key, ref=self.defaults):
-            if getattr(s, key) is False:
+            val = getattr(s, key)
+            if val is False:
                 setattr(s, key, [])
-            elif getattr(s, key) is True:
+            elif val is True:
                 setattr(s, key, getattr(ref, key))
+            elif isinstance(val, (list, tuple)):
+                # per-file: True -> default template, False -> skipped
+                setattr(s, key, [getattr(ref, key) if v is True else
+                                 None if v is False else v for v in val])
 
         for loss in self.losses:
             set_default(loss, 'interpolation')
@@ -721,7 +726,8 @@ class AutoReg(Base):
             pattern = getattr(image, key)
             if pattern:
                 new = [out.format(dir=inp.dir, base=inp.base, ext=inp.ext)
-                                  for out, inp in zip(pattern, image.files)]
+                       if out else None
+                       for out, inp in zip(pattern, image.files)]
                 setattr(image, key, new)
             return image
 

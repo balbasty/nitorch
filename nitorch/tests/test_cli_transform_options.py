@@ -86,3 +86,35 @@ def test_compose_displacement_order_is_used(files):
         compose(['-d', disp, '-n', str(order), '-t', target,
                  '-o', str(out[order])])
     assert not np.allclose(load(out[1]), load(out[3]), atol=1e-3)
+
+
+@pytest.mark.parametrize('stray', ['extra.nii', 'x1.nii', 'b'])
+@pytest.mark.parametrize('trf', [['-l', 'aff.lta'],
+                                 ['-d', 'disp.nii', '-u', 'mm'],
+                                 ['-v', 'vel.nii', 'vel.json']])
+def test_reslice_stray_value_after_transform_is_an_error(trf, stray):
+    # Regression: `next_istag` used to treat any file name as a tag, so the
+    # reslice main loop's "stop at the first value" check only fired for
+    # values like 'x1.nii' or 'b', which were then silently dropped.
+    from nitorch.core.cli import ParseError
+    with pytest.raises(ParseError, match=stray):
+        parse_reslice(['in.nii', *trf, stray])
+
+
+@pytest.mark.parametrize('trf', [['-l', 'aff.lta'],
+                                 ['-d', 'disp.nii', '-n', '3'],
+                                 ['-v', 'vel.nii', 'vel.json']])
+def test_reslice_transform_followed_by_tags(trf):
+    options = parse_reslice(['in.nii', *trf, '-o', 'out.nii', '-t', 'fix.nii'])
+    trf_opt, = options.transformations
+    assert trf_opt.file == trf[1]
+    assert options.files == ['in.nii']
+    assert options.output == ['out.nii']
+    assert options.target == 'fix.nii'
+
+
+@pytest.mark.parametrize('stray', ['extra.nii', 'x1.nii', 'b'])
+def test_compose_stray_value_after_transform_is_an_error(stray):
+    from nitorch.core.cli import ParseError
+    with pytest.raises(ParseError, match=stray):
+        parse_compose(['-d', 'disp.nii', '-u', 'mm', stray])

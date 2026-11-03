@@ -52,7 +52,9 @@ def _cli(args):
         args += ['-p'] + [str(p) for p in options.kernel]
     if options.symmetric:
         args += ['--symmetric']
-    args += ['@@fix', options.fixed]
+    # affreg only exposes the moving image's outputs (-x/-r): disable the
+    # fixed image's `.moved` output, which `register` writes by default
+    args += ['@@fix', options.fixed, '-o', 'false']
     args += ['@@mov', options.moving]
     if options.init:
         args += ['-a', options.init]
@@ -67,8 +69,8 @@ def _cli(args):
         else:
             options.optimizer = 'gn'
     if options.output is False:
-        # `-o false`: an empty path disables writing the transform
-        args += ['-o', '']
+        # `-o false`: register does not write the transform
+        args += ['-o', 'false']
     elif options.output is not True:
         args += ['-o', str(options.output)]
     args += ['@@optim', options.optimizer,
