@@ -82,8 +82,18 @@ example,
 nitorch denoise_mri T1w.nii.gz T2w.nii.gz
 ```
 
-writes `den_T1w.nii.gz` and `den_T2w.nii.gz`. With `-o`, two inputs that share
-a base name would be written to the same file.
+writes `den_T1w.nii.gz` and `den_T2w.nii.gz`.
+
+When two or more outputs would end up at the same path, which happens when
+inputs from different directories share a name and are written to a common
+`-o` directory, each of them gets its 1-based position among the inputs before
+the extension. Outputs that do not collide keep their plain name. For example,
+
+```shell
+nitorch denoise_mri a/t1.nii.gz b/t1.nii.gz -o out
+```
+
+writes `out/den_t1.1.nii.gz` and `out/den_t1.2.nii.gz`.
 
 ## Arguments
 
@@ -113,7 +123,7 @@ Long option names use underscores, as in the code.
 
 | Option | Value | Description | Default |
 | ------ | ----- | ----------- | ------- |
-| `-o`, `--dir_out` | `DIR` | Directory in which to write the denoised images. | directory of the input |
+| `-o`, `--dir_out` | `DIR` | Directory in which to write the denoised images. Outputs with the same name get their input position as a suffix. | directory of the input |
 | `-v`, `--verbose` | `[0\|1]` | Print the progress every 25 iterations. The value is optional; `0`, `false`, `no` or `off` disables printing. | on |
 | `-cpu`, `--cpu` | | Run on the CPU. | yes |
 | `-gpu`, `--gpu` | `[N]` | Run on a GPU, optionally the one with index `N`. If CUDA is unavailable, a warning is issued and the CPU is used. | |

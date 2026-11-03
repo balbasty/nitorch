@@ -27,7 +27,9 @@ usage:
         -n,   --max_iter N     Maximum number of fitting iterations ({:})
         -t,   --tolerance TOL  Convergence threshold (when to stop iterating) ({:})
         -v,   --verbose [0|1]  Print to terminal? (0 = quiet) ({:})
-        -o,   --dir_out        Directory where to write output (default is same as input)   
+        -o,   --dir_out        Directory where to write output (default is same as input).
+                               Outputs that would share a path get their input
+                               position before the extension (den_t1.1.nii, den_t1.2.nii)
         -cpu, -gpu [N]         Device to use (default: cpu; falls back to cpu
                                with a warning if CUDA is unavailable)
         

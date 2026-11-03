@@ -51,6 +51,8 @@ def denoise_mri(*dat_x, affine_x=None, lam_scl=opt.lam_scl, lr=opt.learning_rate
         prefixed 'den_' to 'dir_out'
     dir_out : str, optional
         Directory where to write output, default is same as input.
+        Outputs that would share a path get their 1-based input position
+        before the extension (e.g., 'den_t1.1.nii', 'den_t1.2.nii').
 
     Returns
     ----------
@@ -131,11 +133,28 @@ def denoise_mri(*dat_x, affine_x=None, lam_scl=opt.lam_scl, lr=opt.learning_rate
         # write output to disk
         if dir_out is not None:
             os.makedirs(dir_out, exist_ok=True)
-        for i in range(dat_y_hat.shape[0]):
-            fname = file_replace(niis[i].fname, prefix='den_', dir=dir_out)
+        fnames = _output_fnames([nii.fname for nii in niis], dir_out)
+        for i, fname in enumerate(fnames):
             savef(dat_y_hat[i, ...], fname, like=niis[i])
 
     return dat_y_hat
+
+
+def _output_fnames(fnames, dir_out=None):
+    """Output file names: one per input, prefixed 'den_'.
+
+    Inputs whose outputs would land on the same path (e.g., `a/t1.nii`
+    and `b/t1.nii` with a common `dir_out`) get a 1-based input index
+    appended before the extension (`den_t1.1.nii`, `den_t1.2.nii`).
+    Non-colliding outputs keep their plain name.
+    """
+    outs = [file_replace(f, prefix='den_', dir=dir_out) for f in fnames]
+    counts = {}
+    for o in outs:
+        counts[o] = counts.get(o, 0) + 1
+    return [file_replace(f, prefix='den_', dir=dir_out, suffix=f'.{i+1}')
+            if counts[o] > 1 else o
+            for i, (f, o) in enumerate(zip(fnames, outs))]
 
 
 def _add_rician_noise(dat, noise_prct=0.1):
