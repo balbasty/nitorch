@@ -91,3 +91,24 @@ def test_orient_transform_is_ras_to_ras(tmp_path, volume):
                           expected, atol=1e-5)
     assert torch.allclose(f.data(dtype=torch.double).reshape([4, 4]),
                           expected, atol=1e-5)
+
+
+def test_orient_like_without_value():
+    from nitorch.cli.registration.orient.parser import parse
+    from nitorch.core.cli import ParseError
+    with pytest.raises(ParseError, match='-k'):
+        parse(['a.nii', '-k'])
+
+
+def test_orient_like_followed_by_option():
+    from nitorch.cli.registration.orient.parser import parse
+    from nitorch.core.cli import ParseError
+    with pytest.raises(ParseError, match='-k'):
+        parse(['a.nii', '-k', '-l', 'RAS'])
+
+
+def test_orient_like_with_value():
+    from nitorch.cli.registration.orient.parser import parse
+    opt = parse(['a.nii', '-k', 'ref.nii', '-l', 'RAS'])
+    assert opt.like == 'ref.nii'
+    assert opt.layout == 'RAS'

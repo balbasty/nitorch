@@ -112,6 +112,7 @@ def parse(args):
                     break
                 struct.center.append(float(val))
         elif tag in ('-k', '--like'):
+            cli.check_next_isvalue(args, tag)
             struct.like, *args = args
         elif tag in ('-o', '--output'):
             struct.output = []
