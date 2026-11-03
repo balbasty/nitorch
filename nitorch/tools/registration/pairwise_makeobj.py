@@ -562,7 +562,6 @@ def make_loss(loss, slicewise=False, **kwargs):
         - mi:            Mutual Information
         - nmi:           Normalized Mutual Information
         - emmi:          Mutual Information by Expectation-Maximization
-        - ent[ropy]:     Joint entropy
         - mse or l2:     Mean Squared Error
         - mad or l1:     Median Absolute Deviation
         - tuk[ey]:       Tukey's biweight
@@ -580,10 +579,10 @@ def make_loss(loss, slicewise=False, **kwargs):
 
     Keyword Parameters
     ------------------
-    bins, if 'mi' or 'ent' : int
+    bins, if 'mi' : int
     norm, if 'nmi': {'studholme', 'arithmetic', 'geometric'}
-    fwhm, if 'mi', 'ent' or 'emmi' : float
-    spline (or order), if 'mi' or 'ent' : {0..7}
+    fwhm, if 'mi' or 'emmi' : float
+    spline (or order), if 'mi' : {0..7}
     weight, if 'mse', 'mad' or 'tuk' : float or None
     joint, if 'mad' or 'tuk' : bool
     patch, if 'lcc' or 'lgmmi' : [list of] float
@@ -600,7 +599,7 @@ def make_loss(loss, slicewise=False, **kwargs):
 
     """
     loss = loss.lower()
-    if loss in ('mi', 'nmi', 'ent') and 'order' in kwargs:
+    if loss in ('mi', 'nmi') and 'order' in kwargs:
         # the command line calls the histogram spline order `order`
         kwargs['spline'] = kwargs.pop('order')
     mi_keys = ('dim', 'bins', 'spline', 'fwhm', 'norm')
@@ -612,8 +611,6 @@ def make_loss(loss, slicewise=False, **kwargs):
         kwargs.setdefault('norm', 'studholme')
         mi_kwargs = {k: v for k, v in kwargs.items() if k in mi_keys}
         lossobj = losses.MI(**mi_kwargs)
-    elif loss == 'ent':
-        lossobj = losses.Entropy(**kwargs)
     elif loss in ('mse', 'l2'):
         kwargs['lam'] = kwargs.pop('weight', None)
         lossobj = losses.MSE(**kwargs)
