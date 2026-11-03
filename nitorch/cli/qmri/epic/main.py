@@ -1,6 +1,6 @@
 from nitorch.cli.cli import commands
 from .parser import parser, help, ParseError
-from nitorch.tools.denoising.epic import epic
+from nitorch.tools.denoising.epic import epic, map_files
 from nitorch import io, spatial
 from nitorch.core import py, utils
 import torch
@@ -66,7 +66,34 @@ def get_device(device):
     return device
 
 
+def check_outputs(input, output):
+    """Validate the number of output files before doing any heavy work.
+
+    Accepted cases:
+    - 1 output (a single 4D file, one file per echo if it contains `{n}`,
+      or one file per input if it contains `{base}`);
+    - one output per input;
+    - one output per echo.
+
+    Returns the output list (expanded to one per input if needed) and
+    the number of echoes in each input.
+    """
+    nechoes = [map_files(inp).shape[0] for inp in input]
+    ninp, ne, nout = len(input), sum(nechoes), len(output)
+    if nout == 1:
+        if '{base}' in output[0] and ninp > 1:
+            output = [output[0]] * ninp
+    elif nout not in (ninp, ne):
+        raise ParseError(
+            f'Expected 1 output, or one per input ({ninp}), or one per '
+            f'echo ({ne}); got {nout}.')
+    return output, nechoes
+
+
 def main(options):
+
+    input, output = options.echoes, options.output
+    output, nechoes = check_outputs(input, output)
 
     # find readout direction
     f = io.map(options.echoes[0])
@@ -94,17 +121,6 @@ def main(options):
                device=get_device(options.gpu))
 
     # save volumes
-    input, output = options.echoes, options.output
-    if len(output) != len(input):
-        if len(output) == 1:
-            if '{base}' in output[0]:
-                output = [output[0]] * len(input)
-        elif len(output) != len(fit):
-            raise ValueError(f'There should be either one output file, '
-                             f'or as many output files as input files, '
-                             f'or as many output files as echoes. Got '
-                             f'{len(output)} output files, {len(input)} '
-                             f'input files, and {len(fit)} echoes.')
     if len(output) == 1:
         dir, base, ext = _fileparts(input[0])
         output = output[0]
@@ -116,14 +132,12 @@ def main(options):
             output = output.format(dir=dir, sep=os.sep, base=base, ext=ext)
             io.savef(utils.movedim(fit, 0, -1), output, like=input[0])
     elif len(output) == len(input):
-        for i, (inp, out) in enumerate(zip(input, output)):
+        for i, (inp, out, ne) in enumerate(zip(input, output, nechoes)):
             dir, base, ext = _fileparts(inp)
             out = out.format(dir=dir, sep=os.sep, base=base, ext=ext, n=i)
-            ne = [*io.map(inp).shape, 1][3]
             io.savef(utils.movedim(fit[:ne], 0, -1), out, like=inp)
             fit = fit[ne:]
-    else:
-        assert len(output) == len(fit)
+    else:  # one output per echo (checked by `check_outputs`)
         dir, base, ext = _fileparts(input[0])
         for n, (echo, out) in enumerate(zip(fit, output)):
             out = out.format(dir=dir, sep=os.sep, base=base, ext=ext, n=n)
