@@ -291,8 +291,10 @@ def relax_slicers(shape, scheme='checkerboard'):
                 # bandwidth, so the first quadrant is empty)
                 continue
             slicers.append(slicer)
-    # add vector dimension
-    slicers = [(*slicer, slice(None)) for slicer in slicers]
+    # add batch (leading) and vector (trailing) dimensions
+    # (the checkerboard parity below is computed over `slicer[1:-1]`,
+    #  i.e., over all spatial dimensions)
+    slicers = [(Ellipsis, *slicer, slice(None)) for slicer in slicers]
     if checkerboard:
         # gather odd/even slicers
         slicers = [[slicer for slicer in slicers
@@ -342,6 +344,10 @@ def relax(A, b, precond, x=None, scheme='checkerboard', max_iter=None,
            the same block.
     max_iter : int, default=len(b)*10
         Maximum number of iteration.
+    dim : int, default=b.dim()-1
+        Number of spatial dimensions (the `dim` dimensions before the
+        last one are coloured). Should always be provided when `b` has
+        leading batch dimensions.
     tolerance : float, default=1e-5
         Tolerance for early-stopping.
     verbose : bool, default = False

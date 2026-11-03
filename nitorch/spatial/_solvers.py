@@ -568,6 +568,7 @@ class _FieldFMG(_FMG):
                        inplace=True)
             if self.optim == 'relax':
                 prm['scheme'] = (3 if bending else 'checkerboard')
+                prm['dim'] = self.dim
             def solve(b, x0=None, it=None):
                 pprm = prm
                 if it is not None:
@@ -657,7 +658,7 @@ class _FieldFMG(_FMG):
                        tolerance=self.tolerance, stop=self.stop,
                        scheme=(3 if self.bending else
                                'checkerboard'),
-                       inplace=True)
+                       inplace=True, dim=self.dim)
 
             def solve(b, x0=None, it=None):
                 pprm = prm
@@ -869,6 +870,7 @@ class _GridFMG(_FMG):
                        tolerance=self.tolerance, stop=self.stop, inplace=True)
             if self.optim == 'relax':
                 prm['scheme'] = (3 if self.bending else 'checkerboard')
+                prm['dim'] = self.dim
 
             def solve(b, x0=None):
                 return optim(forward, b, x=x0, precond=precond, **prm)
@@ -940,7 +942,7 @@ class _GridFMG(_FMG):
                        scheme=(3 if self.bending else
                                2 if any(self.lame) else
                                'checkerboard'),
-                       inplace=True)
+                       inplace=True, dim=self.dim)
 
             def solve(b, x0=None):
                 return optim(forward, b, x=x0, precond=precond, **prm)
@@ -1293,7 +1295,38 @@ def solve_field(hessian, gradient, weights=None, dim=None,
         prm = dict(max_iter=max_iter, verbose=verbose, stop=stop,
                    tolerance=tolerance)
         if optim == 'relax':
+            # `optimizers.relax` expects a channel-last layout
+            # (..., *spatial, K) and colours the `dim` dimensions
+            # before the last one. Our tensors are channel-first
+            # (..., K, *spatial), so we move the channel dimension to
+            # the end and wrap the operators accordingly. Without this,
+            # the red-black checkerboard would be defined over
+            # (..., K, *spatial[:-1]) instead of the spatial dimensions.
             prm['scheme'] = (3 if bending else 'checkerboard')
+            prm['dim'] = dim
+            forward_cf, precond_cf = forward, precond
+
+            def to_last(x):
+                return utils.fast_movedim(x, -dim-1, -1)
+
+            def to_first(x):
+                return utils.fast_movedim(x, -1, -dim-1)
+
+            def forward(x):
+                return to_last(forward_cf(to_first(x)))
+
+            def precond(x, s=Ellipsis):
+                if s is not Ellipsis:
+                    s = tuple(s)
+                    if s and s[0] is Ellipsis:
+                        s = s[1:]
+                    # channel-last slicer (*spatial, K) -> channel-first
+                    s = (Ellipsis, s[-1], *s[-dim-1:-1])
+                return to_last(precond_cf(to_first(x), s))
+
+            result = optimizers.relax(forward, to_last(gradient),
+                                      precond=precond, **prm)
+            return to_first(result)
         optim = getattr(optimizers, optim)
         result = optim(forward, gradient, precond=precond, **prm)
     return result
@@ -1425,6 +1458,7 @@ def solve_grid(hessian, gradient, absolute=0, membrane=0, bending=0,
             prm['scheme'] = (3 if bending else
                              2 if any(lame) else
                              'checkerboard')
+            prm['dim'] = dim
         optim = getattr(optimizers, optim)
         result = optim(forward, gradient, precond=precond, **prm)
     return result
@@ -1537,6 +1571,7 @@ def solve_grid_kernel(hessian, gradient, absolute=0, membrane=0, bending=0,
             prm['scheme'] = (3 if bending else
                              2 if any(lame) else
                              'checkerboard')
+            prm['dim'] = dim
             prm['mode'] = 2
         optim = getattr(optimizers, optim)
         prm['verbose'] = False
@@ -1669,6 +1704,7 @@ def solve_field_kernel(hessian, gradient, dim=None,
             prm['scheme'] = (3 if bending else
                              'checkerboard')
             prm['mode'] = 2
+            prm['dim'] = dim
         optim = getattr(optimizers, optim)
         prm['verbose'] = False
         result = optim(forward, gradient, precond=precond, **prm)
