@@ -300,6 +300,7 @@ def _main(options):
         tolerance=options.optim.tolerance,
         verbose=options.verbose,
         framerate=options.framerate,
+        hessian=bool(options.nonlin and options.nonlin.hessian),
     )
 
     # ------------------------------------------------------------------

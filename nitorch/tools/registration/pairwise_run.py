@@ -26,7 +26,8 @@ def run(
     tolerance=None,
     verbose=True,
     framerate=1,
-    figure=None
+    figure=None,
+    hessian=False,
 ):
     """Run pairwise registration
 
@@ -71,6 +72,10 @@ def run(
         Verbosity level
     framerate : float
         Framerate for live plotting
+    hessian : bool, default=False
+        Evaluate the Hessian of the objective with respect to the
+        nonlinear parameters at the solution (finest level), and store it
+        in `nonlin.hess`.
 
     Returns
     -------
@@ -136,7 +141,8 @@ def run(
         affine_optim, nonlin_optim,
         sequential=not interleaved, max_iter=max_iter, tolerance=tolerance)
 
-    affine, nonlin, _ = runner(losses, affine, nonlin, optim, **plotopt)
+    affine, nonlin, _ = runner(losses, affine, nonlin, optim, **plotopt,
+                               hessian=hessian)
 
     return affine, nonlin
 
@@ -229,7 +235,8 @@ def run_single(
     optim,
     verbose=True,
     framerate=1,
-    figure=None
+    figure=None,
+    hessian=False,
 ):
     """Run pairwise registration at a single level"""
 
@@ -243,7 +250,7 @@ def run_single(
         _sync_nonlin_optim(nonlin_optim, nonlin)
     register = PairwiseRegister(losses, affine, nonlin, optim,
                                 verbose=verbose, framerate=framerate,
-                                figure=figure)
+                                figure=figure, hessian=hessian)
     torch.cuda.empty_cache()
     register.fit()
     return affine, nonlin, figure
@@ -258,6 +265,7 @@ def run_pyramid(
     framerate=1,
     figure=None,
     reg_modulation=1,
+    hessian=False,
 ):
     """Run sequential pyramid registration
 
@@ -327,7 +335,8 @@ def run_pyramid(
         optim.reset_state()
         register = PairwiseRegister(loss_level, affine, nonlin, optim,
                                     verbose=verbose, framerate=framerate,
-                                    figure=figure)
+                                    figure=figure,
+                                    hessian=hessian and not losses)
         torch.cuda.empty_cache()
         register.fit()
         figure = register.figure
