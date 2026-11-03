@@ -171,3 +171,88 @@ def test_removing_initial_evaluation_does_not_change_result(kind, monkeypatch):
     assert max(float(x.abs().max()) for x in new) > 1e-4  # it did move
     for x, y in zip(new, old):
         assert torch.allclose(x, y, rtol=0, atol=1e-12), (x - y).abs().max()
+
+
+# ----------------------------------------------------------------------
+#       reuse of the accepted line-search trial (no re-evaluation)
+# ----------------------------------------------------------------------
+
+def _fit_full(kind, loss='mse', commit=True, monkeypatch=None, symmetric=False):
+    """Fit, and return everything a normal evaluation leaves behind"""
+    sim, affine, nonlin, optim = _setup(kind, loss)
+    sims = [sim]
+    if symmetric:
+        bwd = objects.Similarity(MSE(lam=1, dim=3), sim.fixed, sim.moving,
+                                 backward=True)
+        sims = [sim, bwd]
+    if not commit:
+        monkeypatch.setattr(PairwiseRegisterStep, '_commit_trial',
+                            lambda self, *a: setattr(self, '_trial', None))
+    loss_only = []
+    for s in sims:
+        orig = s.loss.loss
+        s.loss.loss = (lambda *a, _o=orig, **k:
+                       loss_only.append(1) or _o(*a, **k))
+    reg = PairwiseRegister(sims, affine, nonlin, optim, verbose=0)
+    reg.fit()
+    out = dict(
+        params=[m.dat.dat.clone() for m in (affine, nonlin) if m is not None],
+        caches=[getattr(o, k) for o in (nonlin, getattr(affine, 'dat', None))
+                if o is not None for k in ('_cache', '_icache')],
+        states=[s.loss.get_state() for s in sims],
+        nb_loss_only=len(loss_only))
+    return out
+
+
+def _same(a, b):
+    if torch.is_tensor(a) or torch.is_tensor(b):
+        return (torch.is_tensor(a) and torch.is_tensor(b)
+                and torch.equal(a, b))
+    if isinstance(a, dict):
+        return a.keys() == b.keys() and all(_same(a[k], b[k]) for k in a)
+    if isinstance(a, (list, tuple)):
+        return len(a) == len(b) and all(_same(x, y) for x, y in zip(a, b))
+    return a == b
+
+
+@pytest.mark.parametrize('kind,loss,symmetric', [
+    ('affine', 'mse', False), ('nonlin', 'mse', False),
+    ('joint', 'mse', False), ('joint', 'mse', True),
+    ('nonlin', 'mad', False),
+])
+def test_accepted_trial_is_committed(kind, loss, symmetric, monkeypatch):
+    """Committing the accepted trial instead of evaluating it again gives
+    exactly the same fit: parameters, caches left on the models (which
+    the outputs are written from) and loss states; and the loss-only
+    re-evaluations are gone."""
+    new = _fit_full(kind, loss, symmetric=symmetric)
+    with monkeypatch.context() as m:
+        old = _fit_full(kind, loss, commit=False, monkeypatch=m,
+                        symmetric=symmetric)
+    assert max(float(x.abs().max()) for x in new['params']) > 1e-5
+    assert _same(new['params'], old['params'])
+    assert _same(new['caches'], old['caches'])
+    assert _same(new['states'], old['states'])
+    assert new['nb_loss_only'] < old['nb_loss_only'], \
+        (new['nb_loss_only'], old['nb_loss_only'])
+
+
+def test_commit_requires_exact_parameters():
+    sim, affine, nonlin, _ = _setup('nonlin')
+    step = PairwiseRegisterStep([sim], None, nonlin, verbose=0)
+    v = torch.zeros_like(nonlin.dat.dat)
+    v[..., 0] = 1e-3
+    step.do_vel(v, grad=True, in_line_search=True)
+    assert step._trial is not None
+    # different parameters: normal evaluation (and the stash is dropped)
+    calls = []
+    orig = sim.loss.loss
+    sim.loss.loss = lambda *a, **k: calls.append(1) or orig(*a, **k)
+    step.do_vel(v * 2)
+    assert calls and step._trial is None
+    # same parameters: committed, no evaluation
+    step.do_vel(v, grad=True, in_line_search=True)
+    calls.clear()
+    ll = step.do_vel(v.clone())
+    assert not calls and step._trial is None
+    assert torch.allclose(ll, step.ll)

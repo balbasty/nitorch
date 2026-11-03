@@ -493,13 +493,18 @@ class StrongWolfeLineSearch(LineSearch):
 
         step_size, loss, grad = self.wolfe.step(0, closure1d, delta,
                                                 loss=loss, grad=grad)
-        delta.mul_(step_size)
-        param.add_(delta)
+        # Same operation as the trials (`param.add(delta, alpha=a)`), so
+        # that the accepted parameters are bitwise those of the accepted
+        # trial: the closure can then commit that trial instead of
+        # recomputing it (see `PairwiseRegisterStep._commit_trial`).
+        param.add_(delta, alpha=step_size)
 
         if self.store_value:
             self.wolfe.lr = step_size
 
-        # for verbose
+        # normal (not line-search) evaluation at the accepted point: it
+        # records the objective and keeps the side effects of the step
+        # (caches, loss states); closures that support it reuse the trial
         closure(param)
 
         return (param, loss, grad, *derivatives)
