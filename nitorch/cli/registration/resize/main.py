@@ -158,6 +158,7 @@ def write_data(files, options):
         opt = dict(
             anchor=options.anchor,
             bound=options.bound,
+            extrapolate=True,  # use `bound` for out-of-FOV samples
             interpolation=options.interpolation,
             prefilter=options.prefilter,
         )

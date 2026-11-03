@@ -17,17 +17,18 @@ usage:
         -mi,  --mutual-info         Normalized Mutual Information
                                     (for images with different contrasts)
             -p, --patch *SIZE           Patch size for local MI (0 = global mi)
-            -b, --bin BINS              Number of bins in the histogram (32)
+            -b, --bins BINS             Number of bins in the histogram (32)
             -f, --fwhm WIDTH            Full-width half-max of the bins (1)
             -t, --threshold VAL     Values under this threshold (in fixed) are excluded.
-            -n, --order ORDER       Histogram spline order (3)
+            -n, --order ORDER       Histogram spline order (3), or inf
+                                    for a Gaussian window
         -mse, --mean-squared-error  Mean Squared Error
                                     (for images with the same contrast)
         -jtv,  --total-variation    Normalized Joint Total Variation 
                                     (edge-based, for strong intensity non-uniformity)
         -dice, --dice               Dice coefficients (for soft/hard segments)
             -l, --labels *LABELS        Labels to use (default: all except 0)
-            -w, ---weights *WEIGHTS     Label-wise weights (default: False)
+            -w, --weights *WEIGHTS      Label-wise weights (default: False)
         -cat,  --categorical        Categorical cross-entropy (for soft segments)
         -oth, --other               Not a loss -> other images to warp at the end.
     Note that the -fix and -mov tags must be placed directly after their 
@@ -103,6 +104,7 @@ usage:
         -cpu, -gpu                   Device to use (cpu)
         -prg, --progressive          Progressively increase degrees of freedom (true)
         -pad, --padding PAD [UNIT]   Padding of mean (nonlin) space (0 %)
+                                     UNIT: % (pct), vox (voxel[s]) or mm
         -v, --verbose [LVL]          Level of verbosity (1)
 
 examples:
@@ -231,6 +233,31 @@ def pop_factor(args, opt):
     if next_isvalue(args):
         return convert_value(args.pop(0), opt, float, '<factor: float>')
     return None
+
+
+def _spline_order(x):
+    """<int> or inf (any spelling `float` accepts: inf, Inf, infinity...)
+    -> int or 'inf' (the value nn.MutualInfoLoss expects)"""
+    try:
+        return int(x)
+    except ValueError:
+        if float(x) == float('inf'):
+            return 'inf'
+        raise
+
+
+# Padding units understood by spatial.compute_fov (case-insensitive),
+# mapped to the canonical spelling it expects
+_pad_units = {'%': '%', 'pct': '%',
+              'vox': 'vox', 'voxel': 'vox', 'voxels': 'vox',
+              'mm': 'mm'}
+
+
+def _pad_unit(x):
+    try:
+        return _pad_units[x.lower()]
+    except KeyError:
+        raise ValueError(x)
 
 
 def bool_or_path(x):
@@ -425,8 +452,7 @@ def parse_moving_and_target(args, opt, group, rest=None):
         elif isinstance(opt, struct.MILoss) and tag in ('-n', '--order'):
             opt.order, = pop_values(
                 args, '-n/--order', 1, istag=istag,
-                convert=lambda x: x if x == 'inf' else int(x),
-                names="<int> or 'inf'")
+                convert=_spline_order, names="<int> or 'inf'")
         elif isinstance(opt, struct.DiceLoss) and tag in ('-w', '--weights'):
             opt.weights = pop_all(args, '-w/--weights') or True
         elif isinstance(opt, struct.DiceLoss) and tag in ('-l', '--labels'):
@@ -663,7 +689,9 @@ def parse(args):
             options.pad, = pop_values(
                 args, '-pad/--padding', 1, float, istag=istag)
             if next_isvalue(args):
-                options.pad_unit, *args,  = args
+                options.pad_unit = convert_value(
+                    args.pop(0), '-pad/--padding', _pad_unit,
+                    '<unit: ' + '|'.join(_pad_units) + '>')
         elif tag in ('-v', '--verbose'):
             options.verbose = 2
             if next_isvalue(args):

@@ -32,7 +32,10 @@ def test_resize_grid_disp(tmp_path, disp, anchor):
     out = str(tmp_path / 'out.nii.gz')
     resize([disp, '-g', 'd', '-f', '2', '-a', anchor, '-o', out, '--cpu'])
     img = nib.load(out)
-    dat = np.asarray(img.dataobj).reshape([12, 12, 12, 3])
+    # 'centers' keeps floor(N*f) = 12; 'first' gives floor((N-1)*f)+1 = 11
+    # so that the last output voxel stays inside the input FOV
+    n = 12 if anchor == 'centers' else 11
+    dat = np.asarray(img.dataobj).reshape([n, n, n, 3])
     # voxel size is (about) halved
     vx = np.sqrt((img.affine[:3, :3] ** 2).sum(0))
     expected_vx = 10. / 11. if anchor == 'centers' else 1.
@@ -40,10 +43,7 @@ def test_resize_grid_disp(tmp_path, disp, anchor):
     # first voxel centre is preserved with both anchors
     assert np.allclose(img.affine[:3, 3], 0.)
     # displacements (in voxels) are expressed in the new voxel units,
-    # i.e. multiplied by input_vx / output_vx.
-    # (with 'first', the last output voxel falls outside the input FOV
-    #  and is set to zero)
-    dat = dat[:11, :11, :11]
+    # i.e. multiplied by input_vx / output_vx (no zeroed border).
     scl = 2. / expected_vx
     assert np.allclose(dat[..., 0], 1. * scl)
     assert np.allclose(dat[..., 1], -2. * scl)
@@ -58,10 +58,10 @@ def test_resize_grid_trf(tmp_path, tmp_path_factory):
     out = str(tmp_path / 'out.nii.gz')
     resize([fname, '-g', 't', '-f', '2', '-a', 'first', '-i', '1',
             '-b', 'replicate', '-o', out, '--cpu'])
-    res = np.asarray(nib.load(out).dataobj).reshape([12, 12, 12, 3])
-    ident = np.stack(np.meshgrid(*[np.arange(12.)] * 3, indexing='ij'), -1)
-    # last voxels extrapolate beyond the input; check interior
-    assert np.allclose(res[:11, :11, :11], ident[:11, :11, :11], atol=1e-4)
+    # 'first': floor((6-1)*2)+1 = 11 voxels, all inside the input FOV
+    res = np.asarray(nib.load(out).dataobj).reshape([11, 11, 11, 3])
+    ident = np.stack(np.meshgrid(*[np.arange(11.)] * 3, indexing='ij'), -1)
+    assert np.allclose(res, ident, atol=1e-4)
 
 
 def test_resize_factor_and_voxel_size(tmp_path, volume, capsys):
@@ -93,3 +93,26 @@ def test_resize_failure_returns_nonzero_status(tmp_path, capsys):
     assert resize([str(tmp_path / 'missing.nii'), '-f', '2']) == 1
     err = capsys.readouterr().err
     assert '[ERROR]' in err
+
+
+def test_resize_grid_disp_edges_no_zero_border(tmp_path, disp):
+    # 'edges' samples up to half a voxel outside the FOV when upsampling:
+    # resize_grid extrapolates with dct2 instead of zeroing them.
+    out = str(tmp_path / 'out.nii.gz')
+    resize([disp, '-g', 'd', '-f', '2', '-a', 'edges', '-o', out, '--cpu'])
+    dat = np.asarray(nib.load(out).dataobj).reshape([12, 12, 12, 3])
+    assert np.allclose(dat[..., 0], 2.)
+    assert np.allclose(dat[..., 1], -4.)
+    assert np.allclose(dat[..., 2], 1.)
+
+
+def test_resize_image_edges_no_zero_border(tmp_path):
+    # images: -b (default dct2) is used for out-of-FOV samples
+    fname = str(tmp_path / 'ones.nii.gz')
+    nib.save(nib.Nifti1Image(np.ones([6, 6, 6], dtype='float32'),
+                             np.eye(4)), fname)
+    out = str(tmp_path / 'out.nii.gz')
+    resize([fname, '-f', '2', '-a', 'edges', '-o', out, '--cpu'])
+    dat = np.asarray(nib.load(out).dataobj).squeeze()
+    assert dat.shape == (12, 12, 12)
+    assert np.allclose(dat, 1., atol=1e-4)

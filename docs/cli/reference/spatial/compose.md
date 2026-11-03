@@ -14,7 +14,7 @@ Combine a chain of spatial transformations (affine matrices, displacement fields
     TRF is any of:
         {-l|-il} FILE
         {-d|-id} FILE [-u {vox,mm}]
-        {-v|-iv|-v2|-iv2} FILE [JSON]
+        {-v|-iv|-v2|-iv2} FILE [JSON] [T0 T1]
     ```
 
 ## Description
@@ -36,7 +36,7 @@ $$
 
 so that the **last** transformation on the command line is applied **first** to a point, and the first one last. List the transformations in order from the "input" side towards the "output" side, exactly as you would for `reslice`. [The detailed rules, the transformation types and the direction conventions are explained in `reslice`](reslice.md#how-transformations-are-chained); they apply here without change.
 
-Velocity fields are handled as in [`reslice`](reslice.md#velocity-fields). A velocity file can be followed by a **JSON file** of shooting parameters. If there is one, or if a file with the same name as the velocity field and the extension `.json` exists and contains a `bending` entry (as written by `register`), the field is an *initial velocity* and is integrated by geodesic shooting. Otherwise it is a stationary velocity field, exponentiated by scaling and squaring with 8 steps. The square forms `-v2` and `-iv2` halve the velocity first, which gives the geodesic midpoint when shooting.
+Velocity fields are handled as in [`reslice`](reslice.md#velocity-fields). A velocity file can be followed by a **JSON file** of shooting parameters. If there is one, or if a file with the same name as the velocity field and the extension `.json` exists and contains a `bending` entry (as written by `register`), the field is an *initial velocity* and is integrated by geodesic shooting. Otherwise it is a stationary velocity field, exponentiated by scaling and squaring with 8 steps. Two optional numbers after the file (and after the JSON file, if any) are time bounds: `-v FILE T0 T1` is the part of the path of the velocity from time `T0` to time `T1`, with 0 and 1 by default. The square forms `-v2` and `-iv2` are shorthands for bounds of 0 to 0.5 and 0.5 to 0, and `-iv` swaps the bounds. [The details are explained in `reslice`](reslice.md#velocity-fields).
 
 Consecutive linear transformations are multiplied together first, in the order you wrote them.
 
@@ -70,9 +70,9 @@ A bare `--` completes the option just before it, so that the last value can star
 | ----------------------------------- | -------------------- | --------------------------------------------------------------------------------------------------- | ------- |
 | `-l`, `--linear`                    | `FILE`               | Linear transformation (an `.lta` or `.dat` matrix file).                                             |         |
 | `-d`, `--displacement`              | `FILE`               | Dense displacement field.                                                                            |         |
-| `-v`, `--velocity`                  | `FILE [JSON]`        | Velocity field. With a JSON file of shooting parameters (given, or found next to the field), it is integrated by geodesic shooting; otherwise it is exponentiated by scaling and squaring. |         |
-| `-il`, `-id`, `-iv`                 | `FILE`               | The inverse of a linear transformation, of a displacement field, of a velocity field (`-iv` also takes an optional `JSON`). |         |
-| `-l2`, `-v2`                        | `FILE`               | The file holds the square of the transformation: its square root is used. `-v2` also takes an optional `JSON`. |         |
+| `-v`, `--velocity`                  | `FILE [JSON] [T0 T1]` | Velocity field. With a JSON file of shooting parameters (given, or found next to the field), it is integrated by geodesic shooting; otherwise it is exponentiated by scaling and squaring. `T0 T1` are optional time bounds (default 0 and 1): the transformation is the part of the path from `T0` to `T1`. |         |
+| `-il`, `-id`, `-iv`                 | `FILE`               | The inverse of a linear transformation, of a displacement field, of a velocity field (`-iv` also takes an optional `JSON` and time bounds). |         |
+| `-l2`, `-v2`                        | `FILE`               | The file holds the square of the transformation: its square root is used. `-v2` also takes an optional `JSON` and time bounds. |         |
 | `-il2`, `-iv2`                      | `FILE`               | The inverse of the square root.                                                                      |         |
 | `-u`, `--unit`                      | `{vox,mm}`           | After `-d`/`-id` only: unit of the displacements. Voxels of the field's own grid, or millimetres.                                    | `vox`   |
 | `-n`, `--order`                     | `ORDER`              | After `-d`/`-id` only: order of the splines that encode the field (`0` to `7`; `1` is linear). | `1`     |
@@ -109,10 +109,11 @@ Compute the inverse of a diffeomorphism from its velocity field. The field is de
 nitorch compose -iv velocity.nii.gz -o inverse_disp.nii.gz
 ```
 
-If `velocity.nii.gz` was written by `register` with its `velocity.json` next to it, the commands above integrate the velocity by geodesic shooting. To use other shooting parameters, give a JSON file right after the velocity file. To compute the displacement to the midpoint of the geodesic instead of the full transformation, use `-v2`:
+If `velocity.nii.gz` was written by `register` with its `velocity.json` next to it, the commands above integrate the velocity by geodesic shooting. To use other shooting parameters, give a JSON file right after the velocity file. To compute the displacement to the midpoint of the geodesic instead of the full transformation, use `-v2`, or equivalently the time bounds 0 and 0.5:
 
 ```shell
 nitorch compose -v2 velocity.nii.gz params.json -o half_disp.nii.gz
+nitorch compose -v velocity.nii.gz params.json 0 0.5 -o half_disp.nii.gz
 ```
 
 Merge an affine and a non-linear registration into a single displacement field on the fixed grid, expressed in millimetres. The velocity field is applied to points of the grid first, then the inverse affine:

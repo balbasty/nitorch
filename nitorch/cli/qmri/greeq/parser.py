@@ -20,7 +20,6 @@ Acquisition options:
     -e,  --echo *FILES                  Path to individual echoes
     -tf, --transmit FIELD [MAG] [UNIT]  Transmit fieldmap (unit: {[%], pct, p.u., a.u.})
     -rf, --receive FIELD [MAG] [UNIT]   Receive fieldmap (unit: {[%], pct, p.u., a.u.})
-   [-b0, --b0-field FIELD [MAG] [UNIT]  B0 fieldmap] NOT IMPLEMENTED YET
 
 Reconstruction options:
     --likelihood {[gauss],chi}          Noise model
@@ -32,8 +31,6 @@ Reconstruction options:
     --lam-t1 VAL                        T1-specific regularization
     --lam-t2 VAL                        T2*-specific regularization
     --lam-mt VAL                        MTsat-specific regularization
-   [--meetup {yes,[no]}                 MEETUP distortion correction] NOT IMPLEMENTED YET
-   [--lam-meetup [1e5]]                 Regularization of the distortion field)] NOT IMPLEMENTED YET
 
 Optimization options
     --nb-levels [1]                     Number of resolutions
@@ -56,9 +53,6 @@ References:
         "Model-based multi-parameter mapping"
         Balbastre et al., Med Image Anal (2021)
         https://arxiv.org/abs/2102.01604
-    If you use the --meetup option, please cite:
-        "Distortion correction in multi-echo MRI without field mapping or reverse encoding"
-        Balbastre et al., Proc. ISMRM (2022)
 """
 
 
@@ -104,13 +98,11 @@ contrast.add_option('mt', ('-mt', '--mt-pulse'), nargs='?', default=None,
 contrast.add_option('echoes', ('-e', '--echo'), nargs='+', help='Echoes')
 contrast.add_option('transmit', ('-tf', '--transmit'), nargs='+3', help='Transmit field', default=[])
 contrast.add_option('receive', ('-rf', '--receive'), nargs='+3', help='Receive field', default=[])
-contrast.add_option('b0', ('-b0', '--b0-field'), nargs='+3', help='B0 field', default=[])
 parser.add_group(contrast)
 
 # shared fieldmaps
 parser.add_option('transmit', ('-tf', '--transmit'), nargs='+3', help='Transmit field')
 parser.add_option('receive', ('-rf', '--receive'), nargs='+3', help='Receive field')
-parser.add_option('b0', ('-b0', '--b0-field'), nargs='+3', help='B0 field')
 
 # recon options
 parser.add_option('likelihood', '--likelihood', nargs=1, default='gauss',
@@ -124,14 +116,11 @@ parser.add_option('space', '--recon-space', nargs=1, default='mean',
 parser.add_option('crop', '--crop-space', nargs=1, default=0, convert=float)
 parser.add_option('regularization', '--regularization', nargs=1, default='jtv',
                   validation=cli.Validations.choice(['no', 'tkh', 'tv', 'jtv']))
-parser.add_option('meetup', '--meetup', nargs='?', default=False,
-                  convert=bool_or_str, action=cli.Actions.store_true)
 parser.add_option('lam', '--lam', nargs=1, default=10., convert=float)
 parser.add_option('lam_pd', '--lam-pd', nargs=1, default=None, convert=float)
 parser.add_option('lam_t1', '--lam-t1', nargs=1, default=None, convert=float)
 parser.add_option('lam_t2', '--lam-t2', nargs=1, default=None, convert=float)
 parser.add_option('lam_mt', '--lam-mt', nargs=1, default=None, convert=float)
-parser.add_option('lam_meetup', '--lam-meetup', nargs=1, default=1e5, convert=float)
 
 # optim options
 parser.add_option('levels', '--nb-levels', nargs=1, default=1, convert=int)

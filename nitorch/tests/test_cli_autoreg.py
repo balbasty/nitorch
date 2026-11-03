@@ -464,3 +464,92 @@ def test_autoreg_lta_is_ras_to_ras(images, timeout, monkeypatch):
                           lin, atol=1e-5)
     assert torch.allclose(f.data(dtype=torch.double).reshape([4, 4]),
                           lin, atol=1e-5)
+
+
+# --- -pad unit, -mi -n inf, unused inverse field (#171) --------------
+
+@pytest.mark.parametrize('unit,canonical', [
+    ('%', '%'), ('pct', '%'), ('PCT', '%'),
+    ('vox', 'vox'), ('Voxel', 'vox'), ('VOXELS', 'vox'),
+    ('mm', 'mm'), ('MM', 'mm'),
+])
+def test_autoreg_pad_unit(unit, canonical):
+    opt = parse(['-mse', *_FM, '-rig', '-pad', '5', unit])
+    assert opt.pad == 5 and opt.pad_unit == canonical
+
+
+def test_autoreg_pad_unit_optional():
+    opt = parse(['-mse', *_FM, '-rig', '-pad', '5', '-v', '0'])
+    assert opt.pad == 5 and opt.pad_unit == '%'
+    assert opt.verbose == 0
+
+
+@pytest.mark.parametrize('unit', ['cm', 'voxx', '10', 'out.nii'])
+def test_autoreg_pad_bad_unit_is_parse_error(unit):
+    with pytest.raises(ParseError) as e:
+        parse(['-mse', *_FM, '-rig', '-pad', '5', unit])
+    assert str(e.value) == (
+        f"-pad/--padding expects <unit: %|pct|vox|voxel|voxels|mm>, "
+        f"got {unit!r}")
+
+
+@pytest.mark.parametrize('word', ['inf', 'Inf', 'INF', 'infinity',
+                                  'Infinity', '+inf'])
+def test_autoreg_mi_order_inf(word):
+    opt = parse(['-mi', *_FM, '-n', word, '-rig'])
+    assert opt.losses[0].order == 'inf'
+
+
+def test_autoreg_mi_order_int():
+    opt = parse(['-mi', *_FM, '-n', '1', '-rig'])
+    assert opt.losses[0].order == 1
+
+
+@pytest.mark.parametrize('word', ['-inf', 'nan', 'abc', '1.5'])
+def test_autoreg_mi_order_bad_is_parse_error(word):
+    with pytest.raises(ParseError) as e:
+        parse(['-mi', *_FM, '-n', word, '-rig'])
+    assert str(e.value) == f"-n/--order expects <int> or 'inf', got {word!r}"
+
+
+@pytest.fixture
+def inverse_spy(monkeypatch):
+    """Count the inverse fields computed by write_data (dif and ffd)."""
+    from nitorch.cli.registration.autoreg import main
+    calls = []
+    exp, grid_inv = main.spatial.exp, main.grid_inv
+
+    def spy_exp(*a, **k):
+        if k.get('inverse'):
+            calls.append('exp')
+        return exp(*a, **k)
+
+    monkeypatch.setattr(main.spatial, 'exp', spy_exp)
+
+    def spy_grid_inv(*a, **k):
+        calls.append('grid_inv')
+        return grid_inv(*a, **k)
+
+    monkeypatch.setattr(main, 'grid_inv', spy_grid_inv)
+    return calls
+
+
+@pytest.mark.parametrize('trf', ['-dif', '-ffd'])
+def test_autoreg_unused_inverse_not_computed(images, timeout, inverse_spy,
+                                            trf):
+    before = set(os.listdir('.'))
+    _run('-mse', '-fix', 'fix.nii', 'fix.nii', '-o', 'false', 'false',
+         '-r', 'false', 'false', '-mov', 'mov.nii', 'mov.nii',
+         '-o', 'false', 'false', trf, '-o', 'false')
+    assert set(os.listdir('.')) == before
+    assert inverse_spy == []
+
+
+@pytest.mark.parametrize('trf,fn', [('-dif', 'exp'), ('-ffd', 'grid_inv')])
+def test_autoreg_used_inverse_computed(images, timeout, inverse_spy,
+                                       trf, fn):
+    _run('-mse', '-fix', 'fix.nii', 'fix.nii', '-o', 'false', 'fout.nii',
+         '-mov', 'mov.nii', 'mov.nii', '-o', 'false', 'false',
+         trf, '-o', 'false')
+    assert inverse_spy == [fn]
+    assert os.path.exists('fout.nii')
