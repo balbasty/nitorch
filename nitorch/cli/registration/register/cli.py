@@ -1,4 +1,5 @@
 from nitorch.cli.cli import commands
+from nitorch.cli.utils import setup_device as _setup_device
 from nitorch.core.cli import ParseError
 from .parser import (
     parser, help, default_hessian, default_momentum, default_affine_momentum
@@ -376,20 +377,7 @@ def _main(options):
 
 
 def setup_device(device='cpu', ndevice=0):
-    if device == 'gpu' and not torch.cuda.is_available():
-        warnings.warn('CUDA not available. Switching to CPU.')
-        device, ndevice = 'cpu', None
-    if device == 'cpu':
-        device = torch.device('cpu')
-        if ndevice:
-            torch.set_num_threads(ndevice)
-    else:
-        assert device == 'gpu'
-        if ndevice is not None:
-            device = torch.device(f'cuda:{ndevice}')
-        else:
-            device = torch.device('cuda')
-    return device
+    return _setup_device(device, ndevice)
 
 
 def get_spaces(fnames):

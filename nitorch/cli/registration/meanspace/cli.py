@@ -1,11 +1,11 @@
 import sys
 import shutil
-import warnings
 import torch
 import os.path as op
 from tempfile import mkdtemp
 
 from nitorch.cli.cli import commands
+from nitorch.cli.utils import setup_device as _setup_device
 from nitorch.core.cli import ParseError
 from nitorch import io
 # raising variant: errors must propagate to this command
@@ -38,16 +38,7 @@ commands['meanspace'] = cli
 
 
 def setup_device(device='cpu', ndevice=None):
-    if device == 'gpu' and not torch.cuda.is_available():
-        warnings.warn('CUDA not available. Switching to CPU.')
-        device, ndevice = 'cpu', None
-    if device == 'cpu':
-        if ndevice:
-            torch.set_num_threads(ndevice)
-        return torch.device('cpu')
-    if ndevice is not None:
-        return torch.device(f'cuda:{ndevice}')
-    return torch.device('cuda')
+    return _setup_device(device, ndevice, strict=False)
 
 
 def _device_args(device):
@@ -116,7 +107,11 @@ def _cli(args):
     print(shape)
     print(affine.cpu().numpy())
 
-    dir, base, ext = fileparts(op.abspath(options.input[0]))
+    # name parts of each input (used to format output names)
+    inputs = [op.abspath(path) for path in options.input]
+    parts = [dict(zip(('dir', 'base', 'ext'), fileparts(path)))
+             for path in inputs]
+    ext = parts[0]['ext']
 
     # write mean space image
     write_meanspace = options.output is not False
@@ -129,7 +124,7 @@ def _cli(args):
         tmpdir = mkdtemp()
         options.output = op.join(tmpdir, 'meanspace' + ext)
 
-    options.output = options.output.format(dir=dir, base=base, ext=ext)
+    options.output = options.output.format(**parts[0])
 
     try:
         io.savef(
@@ -140,10 +135,8 @@ def _cli(args):
 
         # write resliced images
         if options.resliced:
-            for input in options.input:
-                input = op.abspath(input)
-                dir, base, ext = fileparts(input)
-                output = options.resliced.format(dir=dir, base=base, ext=ext)
+            for input, input_parts in zip(inputs, parts):
+                output = options.resliced.format(**input_parts)
                 print(output)
                 reslice([input, '-o', output, '-t', options.output,
                          *_device_args(device)])

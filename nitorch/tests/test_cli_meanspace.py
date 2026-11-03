@@ -113,3 +113,20 @@ def test_setup_device(monkeypatch):
     monkeypatch.setattr(torch.cuda, 'is_available', lambda: False)
     with pytest.warns(UserWarning):
         assert meanspace_cli.setup_device('gpu', 1) == torch.device('cpu')
+
+
+def test_resliced_names(tmp_path, volume, monkeypatch):
+    other = str(tmp_path / 'sub' / 'other.nii')
+    os.makedirs(os.path.dirname(other))
+    nib.save(nib.load(volume), other)
+    calls = []
+    monkeypatch.setattr(meanspace_cli, 'reslice', lambda a: calls.append(a))
+    meanspace([volume, other, '-o', '{dir}/{base}.ms{ext}',
+               '-r', '{dir}/{base}.r{ext}', '--cpu'])
+    out = str(tmp_path / 'img.ms.nii.gz')
+    assert os.path.exists(out)
+    assert calls == [
+        [volume, '-o', str(tmp_path / 'img.r.nii.gz'), '-t', out, '--cpu'],
+        [other, '-o', str(tmp_path / 'sub' / 'other.r.nii'), '-t', out,
+         '--cpu'],
+    ]
