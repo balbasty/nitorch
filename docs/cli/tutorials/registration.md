@@ -127,8 +127,8 @@ and the `reg-affine` directory contains four files:
 | ------------------------------ | ------------------------------------------------------------------------------------------------- |
 | `affine.lta`                   | The transformation: a 4&times;4 world-to-world (RAS-to-RAS) matrix in a FreeSurfer LTA file. The file is named after the model. |
 | `sub-02_T1w.resliced.nii.gz`   | The moving image resampled onto the voxel grid of the fixed image (because of `-r`).               |
-| `sub-02_T1w.moved.nii.gz`      | The moving image with a modified header, in the registered space.                                  |
-| `sub-01_T1w.moved.nii.gz`      | The fixed image, likewise.                                                                         |
+| `sub-02_T1w.moved.nii.gz`      | The moving image with a modified header, aligned with the fixed image.                             |
+| `sub-01_T1w.moved.nii.gz`      | The fixed image with a modified header, aligned with the moving image.                             |
 
 The matrix in `affine.lta` is what you are after. Read it as a map from
 **fixed** world coordinates to **moving** world coordinates, in millimetres.
@@ -143,12 +143,17 @@ direction.
 The two `.moved` files show the other kind of output. They are written by
 default, for the fixed image as well as the moving one, and use *minimal
 reslicing*: for an affine registration, only the orientation matrix in the
-header is changed, and the voxel data are copied untouched. Open them together
-and they overlap, with no interpolation. Because the default affine is
-*symmetric*, each image is moved halfway towards the other, so neither of the
-two `.moved` files lies on the grid of the original fixed image. If you do not
-want them, add `-o false` after each of `@@fix` and `@@mov`. The `.resliced`
-image, in contrast, is always on the grid of the other image.
+header is changed, and the voxel data are copied untouched. Because the
+default affine is *symmetric*, both headers are changed, and each image
+receives the full transformation: the moving image is carried into the space
+of the fixed image, and the fixed image into the space of the moving image.
+Open `sub-02_T1w.moved.nii.gz` together with `sub-01_T1w.nii.gz` and they
+overlap, with no interpolation; likewise `sub-01_T1w.moved.nii.gz` with
+`sub-02_T1w.nii.gz`. The two `.moved` files do not overlap each other, since
+they are in opposite spaces. Each one keeps the voxel grid of its own input,
+so neither lies on the grid of the other image. If you do not want them, add
+`-o false` after each of `@@fix` and `@@mov`. The `.resliced` image, in
+contrast, is always on the grid of the other image.
 
 !!! tip "Check the result by eye"
     Compare the fixed image with the moving image before and after:
@@ -221,7 +226,7 @@ The directory `reg-nonlin` now contains:
 | `affine.lta`                   | The affine part. It is only meaningful together with the velocity field.                            |
 | `svf.nii.gz`                   | The velocity field: a volume with three components (the velocity along x, y and z) in its last dimension. |
 | `sub-02_T1w.resliced.nii.gz`   | The moving image warped onto the fixed grid, with both transformations applied.                     |
-| `sub-01_T1w.moved.nii.gz`, `sub-02_T1w.moved.nii.gz` | The two images moved to the registered space, as before. Now that there is a nonlinear part, the images are resampled rather than given only a new header. |
+| `sub-01_T1w.moved.nii.gz`, `sub-02_T1w.moved.nii.gz` | Each image carried into the space of the other, as before. Now that there is a nonlinear part, the images are resampled (on their own grid) rather than given only a new header. |
 
 The velocity field has its own lattice, described by the header of
 `svf.nii.gz`, which need not be the grid of the images.

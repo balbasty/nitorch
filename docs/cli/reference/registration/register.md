@@ -431,11 +431,19 @@ independent of the position.
 
 The position also determines the orientation matrices written to the
 `{base}.moved{ext}` files (this concerns the output headers only, not the
-loss). With `mov`, the orientation matrix of the moving image is adjusted by
-the affine and the fixed image keeps its own. With `fix`, it is the other way
-around. With `sym`, both images receive half of the affine, and end up in the
-halfway space. Full reslicing (`-r`) is not affected by the position: the
-output is always on the grid of the other image.
+loss). In an affine-only registration, an image whose orientation matrix is
+modified receives the full affine, which carries it into the space of the
+other image, and an image whose orientation matrix is not modified is copied
+as is. With `mov`, the moving image is carried into the fixed space and the
+fixed image keeps its own header, so the two `.moved` files overlap. With
+`fix`, it is the other way around. With `sym`, both orientation matrices are
+modified: the moving image is carried into the fixed space and the fixed
+image into the moving space, so each `.moved` file overlaps the other *input*
+image, not the other `.moved` file. With a nonlinear component, each `.moved`
+image is resampled into the space of the other image whatever the position
+(with `sym`, each orientation matrix then receives half of the affine). Full
+reslicing (`-r`) is not affected by the position: the output is always on the
+grid of the other image.
 
 ### Nonlinear: `@nonlin`
 
@@ -655,11 +663,12 @@ rather than after the optimisation has run.
 **Minimal reslicing** means that the image keeps its own voxel grid
 whenever possible. With a purely affine registration, the voxel data are
 copied unchanged and only the orientation matrix in the header is modified;
-the result can be viewed on top of the other image, without any
+a modified image can be viewed on top of the other input image, without any
 interpolation. If a nonlinear transformation is present, the image is
 resampled on its own grid. The position of the affine only decides which
 orientation matrices are modified: the moving image's with `mov`, the fixed
-image's with `fix`, and half of the affine on each with `sym`. **Full
+image's with `fix`, and both with `sym` (see
+[Position of the affine](#position-of-the-affine)). **Full
 reslicing** (`-r`), in contrast, always produces an image on the grid of the
 other image: the
 moving image on the fixed grid, and the fixed image on the moving grid.
