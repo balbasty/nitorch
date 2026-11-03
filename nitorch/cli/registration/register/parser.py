@@ -210,10 +210,12 @@ usage:
         -f, --fov *NAMES                Name of inputs used to compute mean space [all]
         -p, --pad VAL [UNIT]            Pad field of view by some amount [0 %]
         -2d [AXIS=2]                    Force transform to be 2d about AXIS
-    Shoot options:
-        --fixedpoint [ITER=10]          Forward warp = fixed-point inverse of the (more
-                                        accurate) inverse warp, with ITER iterations.
-                                        More inverse-consistent, slower. [0: off]
+        --inversion {default,push,newton}
+                                        Compute one side of the warp by inverting the
+                                        other [default]: smalldef/svf: the inverse;
+                                        shoot: the forward (from the more accurate
+                                        inverse). push: robust; newton: push + Newton
+                                        steps, most inverse-consistent, slowest.
 
 @optim options:
     NAME can take values:
@@ -740,11 +742,11 @@ nonlin.add_option('hessian', ('-h', '--hessian'), nargs='?',
 nonlin.add_option('is2d', '-2d', default=False, nargs='?',
                   action=cli.Actions.store_value(2),
                   convert=number_or_str(int))
-nonlin.add_option('fixedpoint', '--fixedpoint', default=0, nargs='?',
-                  action=cli.Actions.store_value(10), convert=int,
-                  help='Number of fixed-point iterations used to compute '
-                       'the forward shooting warp as the inverse of the '
-                       'inverse warp (0: compose)')
+nonlin.add_option('inversion', '--inversion', nargs=1, default='default',
+                  validation=cli.Validations.choice(
+                      ['default', 'push', 'newton']),
+                  help='How the side of the warp that is not computed '
+                       'directly is obtained by inverting the other one')
 nonlin.add_group(optim)
 
 

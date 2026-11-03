@@ -216,7 +216,17 @@ class BacktrackingLineSearch(torch.optim.Optimizer):
 # keys of the JSON sidecar (written by `nitorch register`) that are
 # forwarded to `spatial.shoot`
 shoot_keys = ('absolute', 'membrane', 'bending', 'lame', 'factor',
-              'steps', 'fast', 'forward_method', 'fixedpoint_iter')
+              'steps', 'fast', 'inversion')
+
+# The JSON sidecar `<name>.json` written by `nitorch register` next to
+# the nonlinear transform `<name>.nii.gz` holds:
+# - shoot: the shooting parameters (`shoot_keys`) and `"model": "shoot"`
+#   (older sidecars have no `"model"`: a JSON without it is a shooting
+#   JSON);
+# - svf, smalldef: `{"model": "svf"|"smalldef", "inversion": ...}`.
+# `"inversion"` (absent in older sidecars: 'default') is the method
+# used to compute, by numerical inversion, the side of the warp that is
+# not computed directly (see `NonLinModel`).
 
 
 def load_shoot_parameters(fname):
@@ -226,19 +236,75 @@ def load_shoot_parameters(fname):
     return {key: val for key, val in prm.items() if key in shoot_keys}
 
 
-def find_shoot_json(fname):
-    """Return the path of the shooting sidecar `<fname>.json`, if any.
+def load_sidecar_model(fname):
+    """Model (and inversion method) of a JSON sidecar.
 
-    The sidecar is only returned if it exists and contains shooting
-    parameters (i.e., a `'bending'` key), as written by `nitorch register`.
+    Returns
+    -------
+    model : {'shoot', 'svf', 'smalldef'}
+        'shoot' if the JSON does not say (older sidecars, or
+        user-provided shooting parameters).
+    inversion : {'default', 'push', 'newton'}
     """
+    from nitorch.spatial import check_inversion
+    with open(fname) as f:
+        prm = json.load(f)
+    if not isinstance(prm, dict):
+        return 'shoot', 'default'
+    return (prm.get('model', 'shoot'),
+            check_inversion(prm.get('inversion', 'default')))
+
+
+def _read_sidecar(fname):
     sidecar = file_mod(fname, ext='.json')
     if os.path.exists(sidecar):
         with open(sidecar, "r") as f:
-            prm = json.load(f)
-        if 'bending' in prm:
+            return sidecar, json.load(f)
+    return None, None
+
+
+def find_shoot_json(fname):
+    """Return the path of the velocity sidecar `<fname>.json`, if any.
+
+    The sidecar is only returned if it exists and was written by
+    `nitorch register` for a velocity: it contains shooting parameters
+    (i.e., a `'bending'` key) or describes a stationary velocity
+    (`"model": "svf"`, with its inversion method).
+    """
+    sidecar, prm = _read_sidecar(fname)
+    if prm is not None:
+        if 'bending' in prm or (isinstance(prm, dict) and
+                                prm.get('model') == 'svf'):
             return sidecar
     return None
+
+
+def find_displacement_json(fname):
+    """Return the path of the displacement sidecar `<fname>.json`, if any
+    (written by `nitorch register` for a smalldef model)."""
+    sidecar, prm = _read_sidecar(fname)
+    if isinstance(prm, dict) and prm.get('model') == 'smalldef':
+        return sidecar
+    return None
+
+
+def invert_displacement(disp, fname=None):
+    """Invert a voxel displacement field (`-id DISP`).
+
+    `spatial.grid_inv`, with the inversion method stored in the sidecar
+    `<fname>.json` (smalldef model): 'newton' refines the push inverse;
+    'default' and 'push' are the push inverse (as without sidecar).
+    """
+    from nitorch import spatial
+    method = 'push'
+    sidecar = find_displacement_json(fname) if fname else None
+    if sidecar:
+        _, inversion = load_sidecar_model(sidecar)
+        if inversion == 'newton':
+            method = 'newton'
+    if method == 'push':
+        return spatial.grid_inv(disp, type='disp')
+    return spatial.grid_inv(disp, type='disp', method=method)
 
 
 def velocity_time_bounds(t0=0, t1=1, square=False, inv=False):
@@ -355,6 +421,18 @@ def exponentiate_velocity(vel, affine, json=None, square=False, inv=False,
       else, both are composed (the accuracy of the composition is
       bounded by that of the inverse returned by `spatial.shoot`).
 
+    Inversion (the JSON's `"inversion"`, as `register --inversion`) is
+    applied to each map that is built, exactly as the model computes it
+    at `t = 1`, before any composition:
+
+    - Stationary velocity: the forward `exp(t*vel)` (t > 0) is computed
+      directly; the backward map `exp(-t*vel)` (t = t1 - t0 < 0) is the
+      numerical inverse of `exp(t*vel)` (if not 'default').
+    - Geodesic shooting: the inverse of `phi_t` is integrated directly;
+      `phi_t` itself is the numerical inverse of it (if not 'default').
+      For `0 < t0, t1`, `inv(phi_t0)` is direct and `phi_t1` inverted,
+      then they are composed.
+
     Bounds outside of [0, 1] extrapolate along the path.
 
     Parameters
@@ -364,9 +442,10 @@ def exponentiate_velocity(vel, affine, json=None, square=False, inv=False,
     affine : (dim+1, dim+1) tensor
         Orientation matrix of the velocity field.
     json : str, optional
-        Path to a JSON sidecar with shooting parameters. If provided,
-        the velocity is geodesically shot (`spatial.shoot`); otherwise
-        it is treated as a stationary velocity field (`spatial.exp`).
+        Path to a JSON sidecar with shooting parameters. If provided
+        (and it does not say `"model": "svf"`), the velocity is
+        geodesically shot (`spatial.shoot`); otherwise it is treated as
+        a stationary velocity field (`spatial.exp`).
     square : bool
         The velocity encodes the square of the transform to apply:
         halve the time bounds (`-v2`).
@@ -389,16 +468,20 @@ def exponentiate_velocity(vel, affine, json=None, square=False, inv=False,
 
     if t0 == t1:
         return torch.zeros_like(vel)
-    if json:
+    model, inversion = load_sidecar_model(json) if json else ('svf', 'default')
+    if model not in ('shoot', 'svf'):
+        raise ValueError(f'{json} describes a {model} model, '
+                         f'not a velocity')
+    if model == 'shoot':
         prm = load_shoot_parameters(json)
+        prm.pop('inversion', None)
         prm['voxel_size'] = spatial.voxel_size(affine)
 
         def shoot(t, inverse=False):
             kw = prm
-            if inverse:
-                # the inverse does not depend on how the forward is computed
-                kw = {key: val for key, val in prm.items()
-                      if key not in ('forward_method', 'fixedpoint_iter')}
+            if not inverse and inversion != 'default':
+                # (the inverse is integrated directly, whatever `inversion`)
+                kw = dict(prm, inversion=inversion)
             out = spatial.shoot(scaled(t)[None], displacement=True,
                                 return_inverse=inverse, **kw)
             return (out[-1] if inverse else out)[0]  # drop batch dimension
@@ -415,6 +498,9 @@ def exponentiate_velocity(vel, affine, json=None, square=False, inv=False,
     else:
         # exp(-t0 v) o exp(t1 v) = exp((t1 - t0) v)
         t = t1 - t0
+        if t < 0 and inversion != 'default':
+            disp = spatial.exp(scaled(-t)[None], displacement=True)
+            return spatial.grid_inv(disp[0], type='disp', method=inversion)
         disp = spatial.exp(scaled(abs(t))[None], displacement=True,
                            inverse=t < 0)
         return disp[0]  # drop batch dimension

@@ -336,18 +336,24 @@ def _main(options):
             fname = options.nonlin.output.format(
                 dir=odir, sep=os.path.sep, name=options.nonlin.name)
             io.savef(nonlin.dat.dat, fname, affine=nonlin.affine)
+            nldir, nlbase, _ = py.fileparts(fname)
+            fjson = os.path.join(nldir, nlbase + '.json')
             if isinstance(nonlin, objects.ShootModel):
-                nldir, nlbase, _ = py.fileparts(fname)
-                fname = os.path.join(nldir, nlbase + '.json')
-                with open(fname, 'w') as f:
+                with open(fjson, 'w') as f:
                     prm = dict(nonlin.penalty)
                     prm['factor'] = nonlin.factor / py.prod(nonlin.shape)
                     # integration parameters actually used, so that
                     # `reslice` exponentiates the velocity the same way
                     prm['steps'] = nonlin.steps
                     prm['fast'] = getattr(nonlin, 'fast', True)
-                    prm.update(nonlin.shoot_options)
+                    prm['inversion'] = nonlin.inversion
+                    prm['model'] = 'shoot'
                     json.dump(prm, f)
+            elif isinstance(nonlin, (objects.SVFModel, objects.SmallDefModel)):
+                # `reslice`/`compose`/`vexp` invert the warp the same way
+                with open(fjson, 'w') as f:
+                    json.dump(dict(model=nonlin.model,
+                                   inversion=nonlin.inversion), f)
             if options.verbose:
                 print('Nonlin ->', fname)
 
