@@ -99,7 +99,6 @@ These options describe one contrast and apply to the `-c` they follow.
 | `-mt`, `--mt-pulse`              | `[yes&vert;no]`        | Flags the contrast as MT-weighted. Alone, the flag means `yes`. | no MT pulse |
 | `-tf`, `--transmit`              | `FIELD [MAG] [UNIT]`   | B1 transmit map for this contrast. | none |
 | `-rf`, `--receive`               | `FIELD [MAG] [UNIT]`   | B1 receive map for this contrast. | none |
-| `-b0`, `--b0-field`              | `FIELD [MAG] [UNIT]`   | B0 map. Accepted but **not used**: B0 correction is not implemented. | none |
 | `-bw`, `--bandwidth`             | `BW [UNIT]`            | Accepted but currently has no effect. | unused |
 
 ### Shared field maps
@@ -110,7 +109,6 @@ These are given before the first `-c`.
 | --------------------- | ---------------------- | ----------- | ------- |
 | `-tf`, `--transmit`   | `FIELD [MAG] [UNIT]`   | B1 transmit map used by all contrasts that do not have their own. | none |
 | `-rf`, `--receive`    | `FIELD [MAG] [UNIT]`   | B1 receive map used by all contrasts that do not have their own. | none |
-| `-b0`, `--b0-field`   | `FIELD [MAG] [UNIT]`   | B0 map used by all contrasts that do not have their own. Accepted but **not used**: B0 correction is not implemented. | none |
 
 ### Reconstruction
 
@@ -126,8 +124,6 @@ These are given before the first `-c`.
 | `--lam-t1`           | `VAL`                         | Penalty weight of R1, overriding `--lam`. | `--lam` |
 | `--lam-t2`           | `VAL`                         | Penalty weight of R2\*, overriding `--lam`. | `--lam` |
 | `--lam-mt`           | `VAL`                         | Penalty weight of MTsat, overriding `--lam`. | `--lam` |
-| `--meetup`           | `[yes&vert;no]`               | Parsed, but distortion correction is not implemented in `greeq`, so this has no effect. Use [`estatics`](estatics.md) for MEETUP. | `no` |
-| `--lam-meetup`       | `VAL`                         | Parsed but has no effect, for the same reason. | `1e5` |
 
 A per-map weight of `0` switches the penalty off for that map only. To switch regularisation off for all maps, use `--regularization no`.
 
