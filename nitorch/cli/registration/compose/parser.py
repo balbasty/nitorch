@@ -91,8 +91,22 @@ itrf2 += [t[:-len('-square')] + '-inverse-square' for t in trf2
           if t.startswith('--')]
 
 
+def pop_value(args, tag, rest=None):
+    """Pop the value of an option -> (value, args)
+
+    Once `args` is exhausted (the option is the last one before `--`),
+    the value is taken from `rest` (the arguments after `--`), even if
+    it is dash-prefixed.
+    """
+    if not args and rest:
+        return rest.pop(0), args
+    cli.check_next_isvalue(args, tag)
+    val, *args = args
+    return val, args
+
+
 # --- TRF PARSER -------------------------------------------------------
-def parse_transform(args, options):
+def parse_transform(args, options, rest=None):
 
     tag, *args = args
 
@@ -121,18 +135,15 @@ def parse_transform(args, options):
     opt.inv = inv
     opt.square = square
 
-    cli.check_next_isvalue(args, tag)
-    opt.file, *args = args
+    opt.file, args = pop_value(args, tag, rest)
 
     while cli.next_istag(args):
         tag, *args = args
         if isinstance(opt, Displacement) and tag in ('-n', '--order'):
-            cli.check_next_isvalue(args, tag)
-            opt.order, *args = args
+            opt.order, args = pop_value(args, tag, rest)
             opt.order = int(opt.order)
         elif isinstance(opt, Displacement) and tag in ('-u', '--unit'):
-            cli.check_next_isvalue(args, tag)
-            opt.unit, *args = args
+            opt.unit, args = pop_value(args, tag, rest)
         else:
             args = [tag, *args]
             break
@@ -149,6 +160,10 @@ def parse(args):
     # This is the object that we will populate
     options = Composer()
 
+    # `--` ends option parsing: what follows completes the value of
+    # the option just before it (e.g., `-o -- -odd.nii`)
+    args, rest = cli.split_double_dash(args)
+
     while args:
         if cli.next_isvalue(args):
             raise ParseError(f'Value {args[0]} does not seem to belong '
@@ -162,7 +177,7 @@ def parse(args):
             raise ParseError(f'Squared displacement fields are not '
                              f'supported ({tag})')
         elif tag in (*trf, *itrf, *trf2, *itrf2):
-            args = parse_transform([tag, *args], options)
+            args = parse_transform([tag, *args], options, rest)
 
         # Help -> return empty option
         elif tag in ('-h', '--help'):
@@ -171,14 +186,11 @@ def parse(args):
 
         # Parse remaining top-level tags
         elif tag in ('-t', '--target'):
-            cli.check_next_isvalue(args, tag)
-            options.target, *args = args
+            options.target, args = pop_value(args, tag, rest)
         elif tag in ('-o', '--output'):
-            cli.check_next_isvalue(args, tag)
-            options.output, *args = args
+            options.output, args = pop_value(args, tag, rest)
         elif tag in ('-ou', '--output-unit'):
-            cli.check_next_isvalue(args, tag)
-            options.output_unit, *args = args
+            options.output_unit, args = pop_value(args, tag, rest)
         elif tag in ('-cpu', '--cpu'):
             options.device = 'cpu'
         elif tag in ('-gpu', '--gpu'):
@@ -191,4 +203,6 @@ def parse(args):
         else:
             raise ParseError(f'Unknown tag {tag}')
 
+    cli.check_rest_used(rest, "use '--' just before the value of the "
+                              "last option (e.g., -o -- <path>)")
     return options

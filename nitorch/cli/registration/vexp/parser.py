@@ -34,10 +34,13 @@ usage:
 def parse(args):
     struct = Vexp()
 
+    # `--` ends option parsing: what follows are input files
+    args, files_after_dd = cli.split_double_dash(args)
     struct.files = []
     while cli.next_isvalue(args):
         val, *args = args
         struct.files.append(val)
+    struct.files += files_after_dd
 
     while args:
         if cli.next_isvalue(args):

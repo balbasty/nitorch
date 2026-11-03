@@ -91,7 +91,7 @@ Running `nitorch topup` without arguments prints the help. An unknown subcommand
 
 The short option `-m` means `--mask`, and `-j` means `--modulation`.
 
-Options can be written before or after the positional inputs. The value of `-j` and `-d` is optional: when present, it must be one of `yes`, `no`, `true`, `false`, `1`, `0`, `on` or `off`. Any other word following the flag is treated as the next argument, and the flag means `yes`. For example, `topup fit -d pos.nii neg.nii` fits a diffeomorphic model. Options that take a list of values, on the other hand, still consume everything up to the next option, so give them after the inputs.
+Options can be written before or after the positional inputs. The value of `-j` and `-d` is optional: when present, it must be one of `yes`, `no`, `true`, `false`, `1`, `0`, `on` or `off`. Any other word following the flag is treated as the next argument, and the flag means `yes`. For example, `topup fit -d pos.nii neg.nii` fits a diffeomorphic model. Options that take a list of values, on the other hand, consume everything up to the next option, including the positional inputs if they come first. In `topup fit`, these are `-k`, `-p`, `-w`, `-n` and `-t`. Put the positional inputs first, or give these options last: `topup fit pos.nii neg.nii -w 8 4 1`, not `topup fit -w 8 4 1 pos.nii neg.nii`. Alternatively, end option parsing with `--` and write the inputs after it: `topup fit -p 100 -- pos.nii neg.nii`.
 
 ### Optimisation
 
@@ -126,7 +126,7 @@ Options can be written before or after the positional inputs. The value of `-j` 
 | `-v`, `--verbose`         | `[LVL]`      | Verbosity. | `1` |
 | `-h`, `--help`            |              | Print the built-in help. | |
 
-As with `topup fit`, options can be written before or after `FIELD`, and the value of `-m` and `-d` is optional: it must be one of `yes`, `no`, `true`, `false`, `1`, `0`, `on` or `off`, and any other word is treated as the next argument. A list-valued option placed directly before `FIELD` still consumes it: `topup apply -p pos.nii field.nii` reads `field.nii` as a second `POS` file, so give `-p` and `-n` after `FIELD`.
+As with `topup fit`, options can be written before or after `FIELD`, and the value of `-m` and `-d` is optional: it must be one of `yes`, `no`, `true`, `false`, `1`, `0`, `on` or `off`, and any other word is treated as the next argument. The list-valued options of `topup apply` are `-p` and `-n`. Each consumes everything up to the next option, so placed before `FIELD` they swallow it: `topup apply -p pos.nii field.nii` gives `-p` both files and leaves `FIELD` missing. Put `FIELD` first, or give `-p` and `-n` last: `topup apply field.nii -p pos.nii -n neg.nii`, or end option parsing with `--`: `topup apply -p a b -- dist.nii`.
 
 Because every file is written with its own `{dir}` and `{base}`, the default template never overwrites an input.
 

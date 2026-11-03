@@ -104,6 +104,8 @@ at most 1000 iterations, or earlier once the loss no longer changes.
 
 `affopt` has no positional arguments.
 
+A bare `--` completes the option just before it, so that the last value can start with a dash: `nitorch affopt -i fix mov -- -odd.nii`. Only the last option can take dash-prefixed values this way; write the others as `./-name`.
+
 ## Options
 
 | Option | Value | Description | Default |

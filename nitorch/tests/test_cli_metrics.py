@@ -337,3 +337,109 @@ def test_multi_pair_keys(tmp_path, images):
     # single pair: unchanged (channel index)
     res = run(['-p', fp, '-r', fr, '-m', 'mse', '-o', out])
     assert set(res['mse']) == {'0'}
+
+
+def _manual_hausdorff(pred, ref, label, percentile=1.):
+    """Directed (pred -> ref) Hausdorff, distance transform per channel."""
+    from scipy.ndimage import distance_transform_edt
+    pred = np.asarray(pred)
+    ref = np.asarray(ref)
+    if pred.ndim == 3:
+        pred, ref = pred[None], ref[None]
+    d = []
+    for p, r in zip(pred, ref):
+        dt = distance_transform_edt(r != label)
+        d.append(dt[p == label])
+    d = np.concatenate(d)
+    return d.max() if percentile == 1 else np.quantile(d, percentile)
+
+
+def test_hausdorff_missing_label_is_inf(tmp_path):
+    ref = np.zeros([6, 6, 6], dtype='int16')
+    ref[:3] = 1
+    ref[3:, :2] = 2
+    pred = np.array(ref)
+    pred[pred == 2] = 0      # label 2 missing from the prediction
+    pred[5, 5, 5] = 1
+    fp = save(tmp_path, 'pred.nii.gz', pred)
+    fr = save(tmp_path, 'ref.nii.gz', ref)
+    out = str(tmp_path / 'o.json')
+    with pytest.warns(UserWarning, match=r'\[2\].*excluded'):
+        res = run(['-p', fp, '-r', fr, '-m', 'hausdorff',
+                   '-s', 'macro', 'weighted', 'micro',
+                   '-o', out])['hausdorff']
+    assert res['2'] == math.inf
+    h1 = _manual_hausdorff(pred, ref, 1)
+    assert res['1'] == pytest.approx(h1)
+    # label 2 is excluded from all averages
+    assert res['macro'] == pytest.approx(h1)
+    assert res['weighted'] == pytest.approx(h1)
+    assert res['micro'] == pytest.approx(h1)
+
+
+def test_hausdorff_label_only_in_prediction_is_inf(tmp_path):
+    ref = np.zeros([6, 6, 6], dtype='int16')
+    ref[:3] = 1
+    pred = np.array(ref)
+    pred[5, 5, 5] = 3        # label 3 absent from the reference
+    fp = save(tmp_path, 'pred.nii.gz', pred)
+    fr = save(tmp_path, 'ref.nii.gz', ref)
+    out = str(tmp_path / 'o.json')
+    with pytest.warns(UserWarning, match=r'\[3\]'):
+        res = run(['-p', fp, '-r', fr, '-m', 'hausdorff', '-s', 'macro',
+                   '-o', out])['hausdorff']
+    assert res['3'] == math.inf
+    assert res['1'] == 0
+    assert res['macro'] == 0
+
+
+def test_hausdorff_all_labels_missing(tmp_path):
+    ref = np.zeros([6, 6, 6], dtype='int16')
+    ref[:3] = 1
+    pred = np.zeros_like(ref)
+    fp = save(tmp_path, 'pred.nii.gz', pred)
+    fr = save(tmp_path, 'ref.nii.gz', ref)
+    out = str(tmp_path / 'o.json')
+    with pytest.warns(UserWarning, match=r'\[1\]'):
+        res = run(['-p', fp, '-r', fr, '-m', 'hausdorff', 'hausdorff95',
+                   '-s', 'macro', 'weighted', 'micro', '-o', out])
+    for metric in ('hausdorff', 'hausdorff95'):
+        assert res[metric]['1'] == math.inf
+        assert res[metric]['macro'] == math.inf
+        assert res[metric]['weighted'] == math.inf
+        assert res[metric]['micro'] == math.inf
+
+
+def _two_channels():
+    ref = np.zeros([2, 7, 7, 7], dtype='int16')
+    ref[0, :3] = 1
+    ref[1, 4:] = 1
+    pred = np.array(ref)
+    pred[0, 4, 3, 3] = 1     # 2 voxels from ref (channel 0)
+    pred[1, 0, 0, 0] = 1     # 4 voxels from ref (channel 1)
+    return pred, ref
+
+
+def test_hausdorff_4d_per_channel(tmp_path):
+    pred, ref = _two_channels()
+    # 4D files: [X, Y, Z, C]
+    fp = save(tmp_path, 'pred.nii.gz', np.moveaxis(pred, 0, -1))
+    fr = save(tmp_path, 'ref.nii.gz', np.moveaxis(ref, 0, -1))
+    out = str(tmp_path / 'o.json')
+    res = run(['-p', fp, '-r', fr, '-m', 'hausdorff', 'hausdorff95',
+               '-o', out])
+    assert res['hausdorff']['1'] == pytest.approx(
+        _manual_hausdorff(pred, ref, 1))
+    assert res['hausdorff']['1'] == pytest.approx(4)
+    assert res['hausdorff95']['1'] == pytest.approx(
+        _manual_hausdorff(pred, ref, 1, 0.95), abs=1e-4)
+
+
+def test_hausdorff_pairs_per_channel(tmp_path):
+    pred, ref = _two_channels()
+    fp = [save(tmp_path, f'pred{i}.nii.gz', pred[i]) for i in range(2)]
+    fr = [save(tmp_path, f'ref{i}.nii.gz', ref[i]) for i in range(2)]
+    out = str(tmp_path / 'o.json')
+    res = run(['-p', *fp, '-r', *fr, '-m', 'hausdorff', '-o', out])
+    assert res['hausdorff']['1'] == pytest.approx(
+        _manual_hausdorff(pred, ref, 1))

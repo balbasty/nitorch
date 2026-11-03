@@ -394,3 +394,31 @@ def test_nonlin_hessian_bad_template_rejected():
                            ['@nonlin', '-h', '{x}'])
     with pytest.raises(ParseError, match='@nonlin -h/--hessian'):
         check_options(options)
+
+
+# --- `ent`/`entropy` loss removed (it never worked: no losses.Entropy) ---
+
+@pytest.mark.parametrize('name', ['ent', 'entropy'])
+def test_entropy_loss_rejected(name):
+    args = ['@loss', name] + IMAGES + ['@affine']
+    with pytest.raises(ParseError,
+                       match=rf"Invalid value '{name}' for --name; "
+                             r"choose from \{mi, .*\}") as exc:
+        parser.parse(args)
+    assert "'ent'" not in str(exc.value).split('choose from')[1]
+    assert ' ent,' not in str(exc.value) and ' ent}' not in str(exc.value)
+
+
+def test_unknown_loss_name_rejected():
+    with pytest.raises(ParseError, match="Invalid value 'foo' for --name"):
+        parser.parse(['@loss', 'foo'] + IMAGES + ['@affine'])
+
+
+def test_entropy_loss_not_in_help():
+    import re
+    from nitorch.cli.registration.register import parser as P
+    for text in P.help.values():
+        # "cross-entropy" (the `cat` loss) is fine
+        assert not re.search(r'(?<!cross-)\bent(ropy)?\b', text, re.I)
+        assert 'ent' not in P.loss.suboptions
+        assert 'entropy' not in P.loss_aliases

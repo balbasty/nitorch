@@ -242,8 +242,7 @@ Some practical guidance:
   this means one joint histogram per pair of channels, not one over all
   pairs.
 
-Two further names are accepted but remain experimental: `ent` (joint
-entropy) and `extra`. `extra` is not a loss at all: an
+One further name, `extra`, is accepted but is not a loss at all: an
 `@loss extra` group contributes nothing to the objective, but its moving
 image is warped with the final transformation and written out like any
 other. It still requires a `@@fix` and `@@mov`, the former being used to
@@ -705,6 +704,8 @@ nitorch reslice FLAIR.nii.gz -l2 affine.lta -v svf.nii.gz -l2 affine.lta \
     If you only need the moving image on the grid of the fixed image, ask for
     it with `-r` at registration time and skip the extra step. The recipes
     above are for other images that were not part of the registration.
+
+A bare `--` is not supported, since `register` has no positional inputs: it is an error. Write a file name that starts with a dash as `./-name`.
 
 ## Global options
 

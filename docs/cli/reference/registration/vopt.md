@@ -120,6 +120,8 @@ choose another one.
 
 `vopt` has no positional arguments.
 
+A bare `--` completes the option just before it, so that the last value can start with a dash: `nitorch vopt -i fix mov -- -odd.nii`. Only the last option can take dash-prefixed values this way; write the others as `./-name`.
+
 ## Options
 
 | Option | Value | Description | Default |
