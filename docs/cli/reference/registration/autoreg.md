@@ -410,6 +410,8 @@ which `-all -pyr 1 2 3` does.
 **Transformations.** The estimated transformations are always written. The
 default names are written in the current directory.
 
+Linear transformations are written as world-to-world (RAS-to-RAS) affine matrices in the FreeSurfer LTA format, so FreeSurfer tools can read them.
+
 | Transformation | Default file | Content |
 | -------------- | ------------ | ------- |
 | `-tr` | `translation.lta` | The matrix, in an `.lta` file. |

@@ -442,3 +442,25 @@ def test_autoreg_image_output_single_literal_path_rejected(tag):
                  tag, 'out.nii', '-rig'])
     key = 'updated' if tag == '-o' else 'resliced'
     assert getattr(opt.losses[0].moving, key) == ['out.nii']
+
+
+def test_autoreg_lta_is_ras_to_ras(images, timeout, monkeypatch):
+    # the linear transform acts in world space: it must be labelled
+    # RAS-to-RAS and its matrix written unchanged
+    from nitorch.cli.registration.autoreg import main as autoreg_main
+    seen = {}
+    linear_matrix = autoreg_main.linear_matrix
+
+    def spy(*args, **kwargs):
+        seen['lin'] = linear_matrix(*args, **kwargs)
+        return seen['lin']
+
+    monkeypatch.setattr(autoreg_main, 'linear_matrix', spy)
+    _run('-mse', '-fix', 'fix.nii', '-mov', 'mov.nii', '-rig', '-o', 'r.lta')
+    f = io.transforms.map('r.lta')
+    assert f.type() == ('ras', 'ras')
+    lin = seen['lin'].detach().double().reshape([4, 4])
+    assert torch.allclose(f.fdata(dtype=torch.double).reshape([4, 4]),
+                          lin, atol=1e-5)
+    assert torch.allclose(f.data(dtype=torch.double).reshape([4, 4]),
+                          lin, atol=1e-5)
