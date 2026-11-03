@@ -136,7 +136,8 @@ examples:
 # Shared with other nitorch parsers (so that `pop_values` errors are
 # caught as parse errors)
 from nitorch.core.cli import (  # noqa: E402
-    ParseError, pop_values, convert_value, Conversions)
+    ParseError, pop_values, convert_value, Conversions,
+    split_double_dash, check_rest_used)
 
 # --------------------
 #   DEFINE MAIN TAGS
@@ -263,16 +264,23 @@ image_keys = ('dir', 'base', 'ext')
 transform_keys = ('name', 'ext')
 
 
-def parse_image_output(args, tag):
+def parse_image_output(args, tag, rest=None):
     """Parse the values of -o/-r in a file group.
 
     Returns True (bare/true -> default path), False (false -> nothing
     written) or a list with one entry per file (path template, True or
-    False)."""
+    False).
+
+    If this is the last option before `--`, the arguments after `--`
+    (`rest`, emptied) are values too, even if dash-prefixed."""
     vals = []
     while next_isvalue(args):
         val, *args = args
         vals.append(check_template(bool_or_path(val), image_keys, tag))
+    if not args and rest:
+        vals += [check_template(bool_or_path(val), image_keys, tag)
+                 for val in rest]
+        del rest[:]
     if not vals:
         return args, True
     if len(vals) == 1 and isinstance(vals[0], bool):
@@ -301,13 +309,19 @@ def parse_pyramid(args):
     return args, levels
 
 
-def parse_file(args, opt):
-    """Parse a moving or fixed file"""
+def parse_file(args, opt, rest=None):
+    """Parse a moving or fixed file
+
+    If the file list is the last thing before `--`, the arguments after
+    `--` (`rest`, emptied) are files too, even if dash-prefixed."""
 
     opt.files = list()
     while next_isvalue(args):
         val, *args = args
         opt.files.append(val)
+    if not args and rest:
+        opt.files += rest
+        del rest[:]
 
     while args:
         if not next_istag(args):
@@ -316,11 +330,11 @@ def parse_file(args, opt):
         if tag in ('-o', '--output'):
             # Path to "updated" output file
             # (updated header + nonlin applied in original space)
-            args, opt.updated = parse_image_output(args, tag)
+            args, opt.updated = parse_image_output(args, tag, rest)
         elif tag in ('-r', '--resliced'):
             # Path to "resliced" output file
             # (lin + nonlin applied, final space = target space)
-            args, opt.resliced = parse_image_output(args, tag)
+            args, opt.resliced = parse_image_output(args, tag, rest)
         elif tag in ('-inter', '--interpolation'):
             opt.interpolation, = pop_values(
                 args, '-inter/--interpolation', 1, int, istag=istag)
@@ -364,7 +378,7 @@ def check_output_count(opt, key, tag):
                      f'or a single template; got {len(vals)}')
 
 
-def parse_moving_and_target(args, opt, group):
+def parse_moving_and_target(args, opt, group, rest=None):
     """Parse a loss that involves a moving and a target file"""
 
     factor = pop_factor(args, group)
@@ -377,10 +391,10 @@ def parse_moving_and_target(args, opt, group):
         tag, *args = args
         if tag in ('-mov', '--moving', '-src', '--source'):
             opt.moving = struct.MovingImageFile()
-            args = parse_file(args, opt.moving)
+            args = parse_file(args, opt.moving, rest)
         elif tag in ('-fix', '--fixed', '-trg', '--target'):
             opt.fixed = struct.FixedImageFile()
-            args = parse_file(args, opt.fixed)
+            args = parse_file(args, opt.fixed, rest)
         elif tag in ('-inter', '--interpolation'):
             opt.interpolation, = pop_values(
                 args, '-inter/--interpolation', 1, int, istag=istag)
@@ -424,7 +438,7 @@ def parse_moving_and_target(args, opt, group):
 
 
 # --- WORKER FOR MATCHING GROUPS ---------------------------------------
-def parse_match(args, options):
+def parse_match(args, options, rest=None):
     """Parse a loss group"""
     loss, *args = args
     opt = (struct.MILoss if loss in mi else
@@ -434,7 +448,7 @@ def parse_match(args, options):
            struct.CatLoss if loss in cat else
            struct.NoLoss)
     opt = opt()
-    args = parse_moving_and_target(args, opt, loss)
+    args = parse_moving_and_target(args, opt, loss, rest)
     options.losses.append(opt)
     return args
 
@@ -618,6 +632,10 @@ def parse(args):
         print(help)
         return {}
 
+    # `--` ends option parsing: what follows are values of the -fix/-mov
+    # file list (or of its -o/-r) placed just before `--`
+    args, rest = split_double_dash(args)
+
     while args:
         if next_isvalue(args):
             raise ParseError(f'Argument {args[0]} does not seem to '
@@ -625,7 +643,7 @@ def parse(args):
         tag, *args = args
         # Parse groups
         if tag in match_losses:
-            args = parse_match([tag, *args], options)
+            args = parse_match([tag, *args], options, rest)
         elif tag in transformations:
             args = parse_transform([tag, *args], options)
         elif tag in optim:
@@ -663,6 +681,9 @@ def parse(args):
         else:
             raise ParseError(f'Argument {tag} does not seem to '
                              f'belong to a group')
+
+    check_rest_used(rest, "use '--' just after the files of -fix/-mov "
+                          "(or the values of their -o/-r)")
 
     if not options.transformations:
         raise ParseError('No transformation specified. Use at least one of '

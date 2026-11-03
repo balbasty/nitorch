@@ -1,7 +1,8 @@
 import sys
 
 from nitorch.cli.cli import commands
-from nitorch.core.cli import ParseError, pop_values
+from nitorch.core.cli import (
+    ParseError, pop_values, split_double_dash, check_rest_used)
 from nitorch.io.transforms import loadf, savef
 from nitorch.spatial import optimal_affine
 
@@ -55,6 +56,7 @@ notes:
 
 usage:
     nitorch affopt --input <fix> <mov> <path> [--input ...]
+    nitorch affopt ... -i <fix> <mov> -- <path>  (<path> may start with -)
 
 arguments:
     -i, --input         Affine transform for one pair of images
@@ -95,8 +97,10 @@ class AskForHelp(Exception):
 
 def parse(args):
 
-    args = list(args)
-    if not args:
+    # `--` ends option parsing: what follows completes the values of
+    # the option just before it (e.g., `-i fix mov -- -odd.lta`)
+    args, rest = split_double_dash(args)
+    if not args and not rest:
         raise ParseError('No arguments')
 
     inputs = {}
@@ -108,10 +112,12 @@ def parse(args):
             raise AskForHelp
         elif tag in ('-i', '--input'):
             fix, mov, path = pop_values(
-                args, '-i/--input', 3, names='<fix> <mov> <path>')
+                args, '-i/--input', 3, names='<fix> <mov> <path>',
+                rest=rest)
             inputs[(fix, mov)] = path
         elif tag in ('-o', '--output'):
-            out, = pop_values(args, '-o/--output', 1, names='<path>')
+            out, = pop_values(args, '-o/--output', 1, names='<path>',
+                              rest=rest)
             if output is not None:
                 raise ParseError(f'Max one {tag} accepted')
             output = out
@@ -133,6 +139,8 @@ def parse(args):
             rigid = True
         else:
             raise ParseError(f'Unknown tag {tag}')
+    check_rest_used(rest, "use '--' just before a value of the last "
+                          "option (e.g., -i <fix> <mov> -- <path>)")
 
     output = output or '{label}_optimal.lta'
     affine = affine or False

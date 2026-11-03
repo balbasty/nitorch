@@ -102,8 +102,60 @@ def check_next_isvalue(args, group='', symbols='-'):
         raise ParseError(f'Expected a value for tag {group} but found nothing.')
 
 
+DOUBLE_DASH = '--'
+
+
+def split_double_dash(args, marker=DOUBLE_DASH):
+    """Split a list of arguments at the end-of-options marker (`--`)
+
+    Unix convention: a bare `--` ends option parsing; every argument
+    after it is a value (an input file, typically), even if it starts
+    with a dash (e.g., `-odd.nii`) or looks like an option (`-h`).
+    Only the first `--` is a marker: any later `--` is a value.
+
+    Hand-written parsers call this first, parse options from `opts`
+    as usual (it does not contain the marker), and then use `rest`
+    as values (usually, appended to their positional inputs).
+
+    Parameters
+    ----------
+    args : sequence of str
+        Command-line arguments. Not modified.
+    marker : str, default='--'
+
+    Returns
+    -------
+    opts : list of str
+        Arguments before the marker (all of them if there is none).
+    rest : list of str
+        Arguments after the marker (empty if there is none).
+    """
+    args = list(args)
+    if marker in args:
+        index = args.index(marker)
+        return args[:index], args[index+1:]
+    return args, []
+
+
+def check_rest_used(rest, hint=None):
+    """Raise a `ParseError` if some arguments after `--` were not used
+
+    Parameters
+    ----------
+    rest : list of str
+        Arguments left over after `--` (see `split_double_dash`).
+    hint : str, optional
+        Appended to the error message (e.g., what `--` can be used for).
+    """
+    if rest:
+        msg = f"Unexpected value {rest[0]!r} after '--'"
+        if hint:
+            msg += f': {hint}'
+        raise ParseError(msg)
+
+
 def pop_values(args, opt, n=1, convert=None, names=None, nmin=None,
-               istag=istag):
+               istag=istag, rest=None):
     """Pop the values of an option from the front of a list of arguments
 
     Helper for hand-written parsers: it replaces raw `args.pop(0)` calls,
@@ -135,6 +187,14 @@ def pop_values(args, opt, n=1, convert=None, names=None, nmin=None,
         Predicate telling if an argument is a tag (i.e., not a value).
         By default, dash-prefixed and not a number, so that `-1`, `-.5`
         or `-inf` are values.
+    rest : list of str, optional
+        Arguments found after an end-of-options marker (`--`, see
+        `split_double_dash`). Modified in place.
+        Once `args` is exhausted (i.e., this option is the last one
+        before `--`), missing values are popped from `rest`, without
+        checking whether they look like tags. This lets parsers that
+        have no positional inputs accept dash-prefixed values for the
+        option just before `--` (e.g., `-o -- -odd.nii`).
 
     Returns
     -------
@@ -164,7 +224,10 @@ def pop_values(args, opt, n=1, convert=None, names=None, nmin=None,
 
     values = []
     while len(values) < n:
-        if not args or istag(args[0]):
+        if not args and rest:
+            # after `--`: a value, even if dash-prefixed
+            value = rest.pop(0)
+        elif not args or istag(args[0]):
             if len(values) >= nmin:
                 break
             if nmin == n:
@@ -174,7 +237,8 @@ def pop_values(args, opt, n=1, convert=None, names=None, nmin=None,
             else:
                 count = f'{nmin} to {n} values'
             raise ParseError(f'{opt} expects {count}: {names}')
-        value = args.pop(0)
+        else:
+            value = args.pop(0)
         if convert is not None:
             name = names
             if value_names and len(values) < len(value_names):
@@ -1016,7 +1080,34 @@ class CommandParser:
             if istag(arg) and arg not in known:
                 raise ParseError(f'Unknown option {arg}')
 
+    def _parse_positionals_with_rest(self, args, rest, stops):
+        """Parse top-level positionals from the leading values of `args`
+        followed by all the values found after `--` (`rest`)."""
+        if not self.positionals:
+            name = self.name or 'this command'
+            check_rest_used(rest, f'{name} takes no positional arguments '
+                                  f'(write a dash-prefixed file name '
+                                  f'as ./-name)')
+        nlead = next((i for i, arg in enumerate(args) if arg in stops),
+                     len(args))
+        values = args[:nlead] + list(rest)
+        del args[:nlead]
+        obj = self.positionals.parse(values, stops=[])
+        if values:
+            position = nlead + len(rest) - len(values)
+            if position < nlead:
+                raise ParseError(f"Don't know what to do with "
+                                 f"'{values[0]}' at position {position}")
+            check_rest_used(values, 'too many positional arguments')
+        return obj
+
     def parse(self, args):
+        # A bare `--` ends option parsing: everything after it is a
+        # positional of the top-level command, even if dash-prefixed.
+        # Groups have no closing tag (and nested groups do not inherit
+        # their parent's stops), so "the innermost open group" at `--`
+        # is not well defined: values after `--` never go to a group.
+        args, rest = split_double_dash(args)
         help_opt = self._check_help_arg(args)
         if help_opt is not None:
             return Parsed(help=help_opt)
@@ -1024,7 +1115,10 @@ class CommandParser:
 
         nargs = len(args)
         alltags = list(self.options.tags) + list(self.groups.tags)
-        obj = self.positionals.parse(args, stops=alltags)
+        if rest:
+            obj = self._parse_positionals_with_rest(args, rest, alltags)
+        else:
+            obj = self.positionals.parse(args, stops=alltags)
         obj.merge(self.options.parse(args, stops=self.groups.tags))
         obj.merge(self.groups.parse(args))
         if args:

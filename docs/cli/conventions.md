@@ -128,13 +128,27 @@ value. This has three consequences.
   `-c -12.4 6.4 3.2`.
 - **Any other dash-prefixed argument must be a known option.** An argument
   such as `--nope` is an error, not a file name: the command stops with
-  `Unknown option --nope`. This includes `--tag=value` forms and a bare `--`.
+  `Unknown option --nope`. This includes `--tag=value` forms.
   A file name that starts with a dash must therefore be written with a
   directory in front of it, as in `./-odd-name.nii.gz`.
 - **`autoreg` is stricter.** It still treats any argument that starts with a
   dash as a tag, so negative numbers cannot be given to it as values.
 
 A lone `-` is a value, and so is a group tag such as `@loss`.
+
+### Ending option parsing with `--`
+
+As is usual on Unix, a bare `--` ends option parsing: every argument after it
+is a value, even if it starts with a dash. In most commands, those arguments
+are the top-level positional inputs, or are added to the input files. A later
+`--` is a value too, and `-h` after `--` is a value rather than a request for
+help.
+
+Commands differ in where the arguments after `--` go. Some, such as `register`
+and `affreg`, have no positional inputs and report `--` as an error; a few
+others attach the arguments to the option just before it. The command pages
+say so when it matters. Writing the name with a directory in front of it
+(`./-odd-name.nii.gz`) works everywhere.
 
 ### Keywords among numbers
 
