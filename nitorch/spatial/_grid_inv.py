@@ -41,7 +41,7 @@ newton_optims = ('fmg', 'fmg+cg', 'fmg+relax', 'cg', 'relax')
 
 
 def grid_inv(grid, type='grid', bound='dft', extrapolate=True,
-             method='push', newton_iter=3, newton_factor=1.,
+             method='push', newton_iter=5, newton_factor=1.,
              newton_optim='fmg', **prm):
     r"""Invert a dense deformation (or displacement) grid
 
@@ -108,7 +108,7 @@ def grid_inv(grid, type='grid', bound='dft', extrapolate=True,
         steps. More accurate, in particular on steep warps (large
         rotations or expansions); each step costs about as much as
         the push step.
-    newton_iter : int, default=3
+    newton_iter : int, default=5
         Number of Gauss-Newton steps (if `method='newton'`).
     newton_factor : float, default=1
         Weight of the regularisation of the Gauss-Newton steps, relative

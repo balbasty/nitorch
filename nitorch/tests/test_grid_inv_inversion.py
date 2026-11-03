@@ -276,11 +276,11 @@ def test_grid_inv_newton_converges(shape):
     assert _residual(u, w).max() < 1e-2
     # more steps, or a weaker step penalty, solve the equation better
     res = {}
-    for kw in (dict(newton_iter=1), dict(), dict(newton_iter=5),
+    for kw in (dict(newton_iter=1), dict(), dict(newton_iter=10),
                dict(newton_factor=0.1), dict(newton_factor=10)):
         w = spatial.grid_inv(u, type='disp', method='newton', **kw)
         res[tuple(kw.items())] = _residual(u, w).mean()
-    assert res[(('newton_iter', 1),)] > res[()] > res[(('newton_iter', 5),)]
+    assert res[(('newton_iter', 1),)] > res[()] > res[(('newton_iter', 10),)]
     assert res[(('newton_factor', 10),)] > res[()] \
         > res[(('newton_factor', 0.1),)]
 
@@ -316,7 +316,7 @@ def test_grid_inv_newton_regularisation():
     id = spatial.identity_grid(shape)
     wr = spatial.grid_inv(u, type='disp', **prm)
     jac = spatial.grid_jacobian(u, type='disp')
-    for _ in range(3):
+    for _ in range(5):
         r = compose(u, wr)
         j = spatial.grid_pull(jac.reshape([*shape, 4]).movedim(-1, 0),
                               id + wr, bound='dft', extrapolate=True,
@@ -350,12 +350,13 @@ def test_grid_inv_newton_batched_and_bounds(bound):
     # (the solvers treat a batch as one system, so their inexact solves
     # are not exactly batch-invariant. With 'zero', which is poorly
     # conditioned at the border, they differ by ~1e-2 for push and by up
-    # to ~1 voxel at the border after the Gauss-Newton steps)
+    # to ~1 voxel within 4 voxels of the border after the (default 5)
+    # Gauss-Newton steps)
     def close(x, y):
         if bound != 'zero':
             return torch.allclose(x, y, atol=1e-3)
         d = (x - y).abs()
-        return d.mean() < 3e-2 and d[..., 3:-3, 3:-3, :].max() < 0.25
+        return d.mean() < 6e-2 and d[..., 4:-4, 4:-4, :].max() < 0.25
     for b in range(3):
         wb = spatial.grid_inv(disp[b], type='disp', bound=bound,
                               method='newton')
