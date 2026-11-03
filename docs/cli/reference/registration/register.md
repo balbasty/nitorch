@@ -529,7 +529,7 @@ The cost relative to `default`, for a 3D image of 64³ voxels, is:
 | ---------- | ------- | -------- |
 | `shoot`    | 3 times | 3.5 times |
 | `svf`      | 5 times | 6.5 times |
-| `smalldef` | 1 time  | not measured |
+| `smalldef` | about 1 time | about 1 time |
 
 These figures concern the nonlinear update alone. A full registration spends most of its time elsewhere, so the overall slowdown is smaller.
 
