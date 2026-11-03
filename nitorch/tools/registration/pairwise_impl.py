@@ -613,6 +613,85 @@ class PairwiseRegisterStep:
 
         return ll
 
+    # ------------------------------------------------------------------
+    #   Reuse of the accepted line-search trial
+    # ------------------------------------------------------------------
+    # Line-search trials (`in_line_search=True`) do not keep their side
+    # effects: the transform of the optimised component is not cached,
+    # stateful losses are reset and the objective is not recorded. Line
+    # searches therefore used to evaluate the accepted point again, as a
+    # normal evaluation, to commit them. Instead, each trial now
+    # computes them as a normal evaluation would, hands them back (caches
+    # snapshotted and restored, loss states captured and restored), and
+    # the best trial is kept. A normal, loss-only evaluation at exactly
+    # the parameters of that trial commits it without recomputing.
+
+    _trial = None
+
+    def _cache_owners(self, kind):
+        """Objects whose `_cache`/`_icache` a normal evaluation of `kind`
+        sets, but a line-search trial does not"""
+        if kind == 'vel':
+            owners = [self.nonlin, getattr(self.nonlin, '_model', None)]
+        elif kind == 'affine':
+            owners = [getattr(self.affine, 'dat', None)]
+        else:  # 'affine_only' does not cache
+            owners = []
+        return [o for o in owners if o is not None]
+
+    def _get_caches(self, kind):
+        return [(o, {k: o.__dict__[k] for k in ('_cache', '_icache')
+                     if k in o.__dict__})
+                for o in self._cache_owners(kind)]
+
+    @staticmethod
+    def _set_caches(caches):
+        for owner, values in caches:
+            for key, value in values.items():
+                setattr(owner, key, value)
+
+    @staticmethod
+    def _param_tensor(param):
+        if isinstance(param, AffineModel.Parameters):
+            param = param.dat
+        return param
+
+    def _stash_trial(self, kind, step, param, total, data_ll, penalties,
+                     states, caches0):
+        """Keep the side effects of a line-search trial if it is the best
+        one so far, then restore the caches it set."""
+        caches = self._get_caches(kind)
+        self._set_caches(caches0)
+        best = self._trial
+        if best is not None and best['kind'] == kind and \
+                not (float(total) < best['total']):
+            return
+        self._trial = dict(
+            kind=kind, step=step, total=float(total), data=data_ll,
+            param=self._param_tensor(param).detach().clone(),
+            penalties=penalties, states=states, caches=caches,
+            last_step=self.last_step)
+
+    def _commit_trial(self, kind, param, grad, hess):
+        """Commit the stashed trial if `param` is exactly its parameters
+        (and only the loss is requested). Returns the objective, or None
+        (the caller then evaluates normally). The stash is cleared by any
+        normal evaluation."""
+        trial, self._trial = self._trial, None
+        if trial is None or grad or hess or self.verbose > 2 \
+                or trial['kind'] != kind:
+            return None
+        param = self._param_tensor(param)
+        if not (torch.is_tensor(param) and param.shape == trial['param'].shape
+                and torch.equal(param, trial['param'])):
+            return None
+        for loss, state in zip(self.losses, trial['states']):
+            loss.loss.set_state(state)
+        self._set_caches(trial['caches'])
+        self.last_step = trial['last_step']
+        return self.print(trial['step'], trial['data'].clone(),
+                          **trial['penalties'], in_line_search=False)
+
     def init_penalties(self):
         """Initialise the penalties that each step of a joint model takes
         from the other component (`do_affine` uses the last velocity
@@ -627,6 +706,13 @@ class PairwiseRegisterStep:
     def do_vel(self, vel, grad=False, hess=False, in_line_search=False):
         """Forward pass for updating the nonlinear component"""
 
+        if not in_line_search:
+            committed = self._commit_trial('vel', vel, grad, hess)
+            if committed is not None:
+                return committed
+        caches0 = self._get_caches('vel') if in_line_search else None
+        trial_states = []
+
         sumloss = None
         sumgrad = None
         sumhess = None
@@ -638,11 +724,11 @@ class PairwiseRegisterStep:
         vel0 = vel
         if needs_inverse:
             phi0, iphi0 = self.nonlin.exp2(
-                vel0, recompute=True, cache_result=not in_line_search)
+                vel0, recompute=True, cache_result=True)
             ivel0 = -vel0
         else:
             phi0 = self.nonlin.exp(
-                vel0, recompute=True, cache_result=not in_line_search)
+                vel0, recompute=True, cache_result=True)
             iphi0 = ivel0 = None
         if self.affine:
             recompute_affine = self.last_step != 'nonlin'
@@ -771,6 +857,7 @@ class PairwiseRegisterStep:
                 llx, g, h = loss.loss.loss_grad_hess(*loss_args, **loss_kwargs)
             del loss_args, loss_kwargs
             if in_line_search:
+                trial_states.append(loss.loss.get_state())
                 loss.loss.set_state(state)
 
             # ----------------------------------------------------------
@@ -814,8 +901,13 @@ class PairwiseRegisterStep:
         # ==============================================================
         #                           VERBOSITY
         # ==============================================================
-        sumloss = self.print('nonlin', sumloss, lla=self.lla, llv=llv,
+        penalties = dict(lla=self.lla, llv=llv)
+        data_ll = sumloss.clone() if in_line_search else None
+        sumloss = self.print('nonlin', sumloss, **penalties,
                              in_line_search=in_line_search)
+        if in_line_search:
+            self._stash_trial('vel', 'nonlin', vel, sumloss, data_ll,
+                              penalties, trial_states, caches0)
 
         # ==============================================================
         #                           RETURN
@@ -877,6 +969,13 @@ class PairwiseRegisterStep:
     def do_affine(self, logaff, grad=False, hess=False, in_line_search=False):
         """Forward pass for updating the affine component (nonlin is not None)"""
 
+        if not in_line_search:
+            committed = self._commit_trial('affine', logaff, grad, hess)
+            if committed is not None:
+                return committed
+        caches0 = self._get_caches('affine') if in_line_search else None
+        trial_states = []
+
         sumloss = None
         sumgrad = None
         sumhess = None
@@ -890,13 +989,13 @@ class PairwiseRegisterStep:
         recompute_nonlin = self.last_step != 'affine'
         if needs_inverse:
             aff0, iaff0, gaff0, igaff0 = self.affine.exp2(
-                logaff0, grad=True, cache_result=not in_line_search)
+                logaff0, grad=True, cache_result=True)
             phi0, iphi0 = self.nonlin.exp2(
                 cache_result=True, recompute=recompute_nonlin)
         else:
             iaff0, igaff0, iphi0 = None, None, None
             aff0, gaff0 = self.affine.exp(
-                logaff0, grad=True, cache_result=not in_line_search)
+                logaff0, grad=True, cache_result=True)
             phi0 = self.nonlin.exp(
                 cache_result=True, recompute=recompute_nonlin)
         self.last_step = 'affine'
@@ -1000,6 +1099,7 @@ class PairwiseRegisterStep:
                 llx, g, h = loss.loss.loss_grad_hess(*loss_args, **loss_kwargs)
             del loss_args, loss_kwargs
             if in_line_search:
+                trial_states.append(loss.loss.get_state())
                 loss.loss.set_state(state)
 
             # ----------------------------------------------------------
@@ -1088,8 +1188,13 @@ class PairwiseRegisterStep:
         # ==============================================================
         #                           VERBOSITY
         # ==============================================================
-        sumloss = self.print('affine', sumloss, lla=lla, llv=self.llv,
+        penalties = dict(lla=lla, llv=self.llv)
+        data_ll = sumloss.clone() if in_line_search else None
+        sumloss = self.print('affine', sumloss, **penalties,
                              in_line_search=in_line_search)
+        if in_line_search:
+            self._stash_trial('affine', 'affine', logaff, sumloss, data_ll,
+                              penalties, trial_states, caches0)
 
         # ==============================================================
         #                           RETURN
@@ -1103,6 +1208,13 @@ class PairwiseRegisterStep:
 
     def do_affine_only(self, logaff, grad=False, hess=False, in_line_search=False):
         """Forward pass for updating the affine component (nonlin is None)"""
+
+        if not in_line_search:
+            committed = self._commit_trial('affine_only', logaff, grad, hess)
+            if committed is not None:
+                return committed
+        caches0 = self._get_caches('affine_only') if in_line_search else None
+        trial_states = []
 
         sumloss = None
         sumgrad = None
@@ -1195,6 +1307,7 @@ class PairwiseRegisterStep:
                 llx, g, h = loss.loss.loss_grad_hess(*loss_args, **loss_kwargs)
             del loss_args, loss_kwargs
             if in_line_search:
+                trial_states.append(loss.loss.get_state())
                 loss.loss.set_state(state)
 
             # ----------------------------------------------------------
@@ -1250,8 +1363,13 @@ class PairwiseRegisterStep:
         # ==============================================================
         #                           VERBOSITY
         # ==============================================================
-        sumloss = self.print('affine_only', sumloss, lla=lla,
+        penalties = dict(lla=lla)
+        data_ll = sumloss.clone() if in_line_search else None
+        sumloss = self.print('affine_only', sumloss, **penalties,
                              in_line_search=in_line_search)
+        if in_line_search:
+            self._stash_trial('affine_only', 'affine_only', logaff, sumloss, data_ll,
+                              penalties, trial_states, caches0)
 
         # ==============================================================
         #                           RETURN
