@@ -85,6 +85,8 @@ def read_info(options):
             trf.affine = read_affine(trf.file)
         else:
             trf.affine, trf.shape = read_field(trf.file)
+        if isinstance(trf, Velocity) and not trf.json:
+            trf.json = helpers.find_shoot_json(trf.file)
     if options.target:
         options.target = read_file(options.target)
     else:
@@ -131,10 +133,9 @@ def write_data(options):
             trf.shape = squeeze_to_nd(f.shape, 3, 1)
             trf.dat = f.fdata(**backend).reshape(trf.shape)
             trf.shape = trf.shape[:3]
-            if trf.square:
-                trf.dat.mul_(0.5)
-            trf.dat = spatial.exp(trf.dat[None], displacement=True,
-                                  inverse=trf.inv)[0]
+            trf.dat = helpers.exponentiate_velocity(
+                trf.dat, trf.affine, json=trf.json,
+                square=trf.square, inv=trf.inv)
             trf.inv = False
             trf.square = False
             trf.order = 1
