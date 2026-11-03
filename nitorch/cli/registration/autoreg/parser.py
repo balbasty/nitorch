@@ -135,7 +135,8 @@ examples:
 
 # Shared with other nitorch parsers (so that `pop_values` errors are
 # caught as parse errors)
-from nitorch.core.cli import ParseError, pop_values  # noqa: E402
+from nitorch.core.cli import (  # noqa: E402
+    ParseError, pop_values, convert_value, Conversions)
 
 # --------------------
 #   DEFINE MAIN TAGS
@@ -212,10 +213,23 @@ def next_isvalue(args):
     return args and isvalue(args[0])
 
 
-def check_next_isvalue(args, group):
+def pop_bool(args, opt):
+    """Pop an optional bool value (bare flag -> True)"""
     if not next_isvalue(args):
-        raise ParseError(f'Expected a value for tag {group} '
-                         f'but found nothing.')
+        return True
+    return convert_value(args.pop(0), opt, Conversions.strict_bool, '<bool>')
+
+
+def pop_all(args, opt, convert=float):
+    """Pop (and convert) all values until the next tag"""
+    return pop_values(args, opt, float('inf'), convert, nmin=0, istag=istag)
+
+
+def pop_factor(args, opt):
+    """Pop the optional leading factor of a group"""
+    if next_isvalue(args):
+        return convert_value(args.pop(0), opt, float, '<factor: float>')
+    return None
 
 
 def bool_or_path(x):
@@ -266,19 +280,24 @@ def parse_image_output(args, tag):
     return args, vals
 
 
+def _pyramid_level(level):
+    if ':' in level:
+        level = level.split(':')
+        if len(level) > 3:
+            raise ValueError(level)
+        start = int(level[0] or 1)
+        stop = (int(level[1] or start) if len(level) > 1 else start) + 1
+        step = (int(level[2] or 1) if len(level) > 2 else 1)
+        return list(range(start, stop, step))
+    return [int(level)]
+
+
 def parse_pyramid(args):
     levels = []
     while next_isvalue(args):
         level, *args = args
-        if ':' in level:
-            level = level.split(':')
-            start = int(level[0] or 1)
-            stop = (int(level[1] or start) if len(level) > 1 else start) + 1
-            step = (int(level[2] or 1) if len(level) > 2 else 1)
-            level = list(range(start, stop, step))
-        else:
-            level = [int(level)]
-        levels.extend(level)
+        levels.extend(convert_value(level, '-pyr/--pyramid', _pyramid_level,
+                                    '<int> or [start]:stop[:step]'))
     return args, levels
 
 
@@ -319,15 +338,38 @@ def parse_file(args, opt):
         else:
             args = [tag, *args]
             break
+    check_output_count(opt, 'updated', '-o')
+    check_output_count(opt, 'resliced', '-r')
     return args
 
 
-def parse_moving_and_target(args, opt):
+def check_output_count(opt, key, tag):
+    """One -o/-r value per input file, or a single one for all files"""
+    vals = getattr(opt, key)
+    nfiles = len(opt.files)
+    if not isinstance(vals, list) or not nfiles or len(vals) == nfiles:
+        return
+    if len(vals) == 1:
+        val = vals[0]
+        if isinstance(val, str) and not any(
+                f in ('dir', 'base') for _, f, _, _
+                in string.Formatter().parse(val)):
+            raise ParseError(
+                f'{tag}: a single path for {nfiles} input files would '
+                f'overwrite itself; use a template such as '
+                f'{{base}}.moved{{ext}}, one value per file, or true/false')
+        setattr(opt, key, vals * nfiles)
+        return
+    raise ParseError(f'{tag} expects 1 value per input file ({nfiles}), '
+                     f'or a single template; got {len(vals)}')
+
+
+def parse_moving_and_target(args, opt, group):
     """Parse a loss that involves a moving and a target file"""
 
-    if args and not next_istag(args):
-        opt.factor, *args = args
-        opt.factor = float(opt.factor)
+    factor = pop_factor(args, group)
+    if factor is not None:
+        opt.factor = factor
 
     while args:
         if not next_istag(args):
@@ -354,20 +396,9 @@ def parse_moving_and_target(args, opt):
             else:
                 opt.pyramid = [1]
         elif tag in ('-exc', '--exclude'):
-            opt.exclude = True
-            if next_isvalue(args):
-                opt.exclude, *args = args
-                if opt.exclude[0].lower() == 't':
-                    opt.exclude = True
-                elif opt.exclude[0].lower() == 'f':
-                    opt.exclude = False
-                else:
-                    opt.exclude = bool(int(opt.exclude))
+            opt.exclude = pop_bool(args, '-exc/--exclude')
         elif isinstance(opt, struct.MILoss) and tag in ('-p', '--patch'):
-            opt.patch = list()
-            while next_isvalue(args):
-                val, *args = args
-                opt.patch.append(int(val))
+            opt.patch = pop_all(args, '-p/--patch', int)
         elif isinstance(opt, struct.MILoss) and tag in ('-f', '--fwhm'):
             opt.fwhm, = pop_values(
                 args, '-f/--fwhm', 1, float, istag=istag)
@@ -383,17 +414,9 @@ def parse_moving_and_target(args, opt):
                 convert=lambda x: x if x == 'inf' else int(x),
                 names="<int> or 'inf'")
         elif isinstance(opt, struct.DiceLoss) and tag in ('-w', '--weights'):
-            opt.weights = True
-            while next_isvalue(args):
-                val, *args = args
-                if isinstance(opt.weights, bool):
-                    opt.weights = []
-                opt.weights.append(float(val))
+            opt.weights = pop_all(args, '-w/--weights') or True
         elif isinstance(opt, struct.DiceLoss) and tag in ('-l', '--labels'):
-            opt.labels = []
-            while next_isvalue(args):
-                val, *args = args
-                opt.labels.append(int(val))
+            opt.labels = pop_all(args, '-l/--labels', int)
         else:
             args = [tag, *args]
             break
@@ -411,7 +434,7 @@ def parse_match(args, options):
            struct.CatLoss if loss in cat else
            struct.NoLoss)
     opt = opt()
-    args = parse_moving_and_target(args, opt)
+    args = parse_moving_and_target(args, opt, loss)
     options.losses.append(opt)
     return args
 
@@ -429,9 +452,9 @@ def parse_transform(args, options):
            None)
     opt = opt()
 
-    if next_isvalue(args):
-        opt.factor, *args = args
-        opt.factor = float(opt.factor)
+    factor = pop_factor(args, trf)
+    if factor is not None:
+        opt.factor = factor
 
     while args:
         if not next_istag(args):
@@ -445,10 +468,7 @@ def parse_transform(args, options):
                       None)
             optreg = optreg()
             islinelastic = isinstance(optreg, struct.LinearElasticLoss)
-            factor = []
-            while next_isvalue(args):
-                val, *args = args
-                factor.append(float(val))
+            factor = pop_all(args, tag)
             if factor:
                 optreg.factor = (factor[0] if not islinelastic else factor)
             opt.losses.append(optreg)
@@ -471,15 +491,7 @@ def parse_transform(args, options):
                 opt.output = check_template(bool_or_path(opt.output),
                                             transform_keys, tag)
         elif isinstance(opt, struct.Diffeo) and tag in ('-sd', '--smalldef'):
-            opt.smalldef = True
-            if next_isvalue(args):
-                val, *args = args
-                if val.lower().startswith('f'):
-                    opt.smalldef = False
-                elif val.lower().startswith('t'):
-                    opt.smalldef = True
-                else:
-                    opt.smalldef = bool(int(val))
+            opt.smalldef = pop_bool(args, '-sd/--smalldef')
         elif tag in ('-pyr', '--pyramid'):
             args, levels = parse_pyramid(args)
             if levels:
@@ -487,20 +499,9 @@ def parse_transform(args, options):
             else:
                 opt.pyramid = [1]
         elif isinstance(opt, struct.Linear) and tag in ('-z', '--zero'):
-            opt.shift = True
-            if next_isvalue(args):
-                val, *args = args
-                if val.lower().startswith('f'):
-                    opt.shift = False
-                elif val.lower().startswith('t'):
-                    opt.shift = True
-                else:
-                    opt.shift = bool(int(val))
+            opt.shift = pop_bool(args, '-z/--zero')
         elif isinstance(opt, struct.FFD) and tag in ('-g', '--grid'):
-            opt.grid = []
-            while next_isvalue(args):
-                val, *args = args
-                opt.grid.append(int(val))
+            opt.grid = pop_all(args, '-g/--grid', int)
         else:
             args = [tag, *args]
             break
@@ -639,15 +640,7 @@ def parse(args):
 
         # Parse remaining top-level tags
         elif tag in ('-prg', '--progressive'):
-            options.progressive = True
-            if next_isvalue(args):
-                options.progressive, *args = args
-                if options.progressive[0] in ('t', 'y'):
-                    options.progressive = True
-                elif options.progressive[0] in ('f', 'n'):
-                    options.progressive = False
-                else:
-                    options.progressive = bool(int(options.progressive))
+            options.progressive = pop_bool(args, '-prg/--progressive')
         elif tag in ('-pad', '--padding'):
             options.pad, = pop_values(
                 args, '-pad/--padding', 1, float, istag=istag)

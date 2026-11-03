@@ -172,3 +172,27 @@ def test_crop_like_other_layout(tmp_path, volume, axcodes):
     np.testing.assert_allclose(f.affine, img.affine)
     np.testing.assert_array_equal(np.asarray(f.dataobj),
                                   np.asarray(img.dataobj))
+
+
+# --- parser: garbled values (#171) -----------------------------------
+
+@pytest.mark.parametrize('tag,name', [('-s', '-s/--size'),
+                                      ('--size', '-s/--size'),
+                                      ('-c', '-c/--center'),
+                                      ('--center', '-c/--center')])
+def test_crop_garbled_value_is_parse_error(tag, name):
+    from nitorch.cli.misc.crop.parser import parse
+    from nitorch.core.cli import ParseError
+    with pytest.raises(ParseError) as e:
+        parse(['in.nii', tag, '4', 'abc', 'ras'])
+    assert str(e.value) == f"{name} expects <float> or vox|ras, got 'abc'"
+
+
+def test_crop_size_center_grammar_unchanged():
+    from nitorch.cli.misc.crop.parser import parse
+    opt = parse(['in.nii', '-s', '4', '-6.5', 'RAS', '-c', '1', '2', '3',
+                 'vox', '-o', 'out.nii'])
+    assert opt.size == [4., -6.5]
+    assert opt.size_space == 'RAS'
+    assert opt.center == [1., 2., 3.]
+    assert opt.center_space == 'vox'

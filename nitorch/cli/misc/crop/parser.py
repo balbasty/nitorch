@@ -74,7 +74,8 @@ def parse(args):
                 if val.lower() in ('vox', 'ras'):
                     struct.size_space = val
                 else:
-                    struct.size.append(float(val))
+                    struct.size.append(cli.convert_value(
+                        val, '-s/--size', float, '<float> or vox|ras'))
         elif tag in ('-c', '--center'):
             struct.center = []
             while cli.next_isvalue(args):
@@ -82,7 +83,8 @@ def parse(args):
                 if val.lower() in ('vox', 'ras'):
                     struct.center_space = val
                 else:
-                    struct.center.append(float(val))
+                    struct.center.append(cli.convert_value(
+                        val, '-c/--center', float, '<float> or vox|ras'))
         elif tag in ('-b', '--bounding-box'):
             struct.bbox = True
             if cli.next_isvalue(args):

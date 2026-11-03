@@ -305,3 +305,140 @@ def test_autoreg_output_false_writes_nothing(images, timeout):
          '-r', 'true', '-rig', '-o', 'false')
     new = set(os.listdir('.')) - before
     assert new == {'mov.resliced.nii'}
+
+
+# --- garbled values, bool words, -pyr, -o/-r count (#171) ------------
+
+_FM = ['-fix', 'f.nii', '-mov', 'm.nii']
+
+
+@pytest.mark.parametrize('argv,msg', [
+    (['-mi', *_FM, '-p', '3', 'abc', '-rig'],
+     "-p/--patch expects <int>, got 'abc'"),
+    (['-dice', *_FM, '-w', '1', 'abc', '-rig'],
+     "-w/--weights expects <float>, got 'abc'"),
+    (['-dice', *_FM, '-l', '1', 'abc', '-rig'],
+     "-l/--labels expects <int>, got 'abc'"),
+    (['-mse', *_FM, '-ffd', '-g', '5', 'abc'],
+     "-g/--grid expects <int>, got 'abc'"),
+    (['-mse', *_FM, '-dif', '-ben', 'abc'],
+     "-ben expects <float>, got 'abc'"),
+    (['-mse', *_FM, '-aff', '-le', '1', 'abc'],
+     "-le expects <float>, got 'abc'"),
+    (['-mse', 'abc', *_FM, '-rig'],
+     "-mse expects <factor: float>, got 'abc'"),
+    (['-mse', *_FM, '-rig', 'abc'],
+     "-rig expects <factor: float>, got 'abc'"),
+    (['-mse', *_FM, '-rig', '-pyr', 'abc'],
+     "-pyr/--pyramid expects <int> or [start]:stop[:step], got 'abc'"),
+    (['-mse', *_FM, '-pyr', '1:x', '-rig'],
+     "-pyr/--pyramid expects <int> or [start]:stop[:step], got '1:x'"),
+    (['-mse', '-fix', 'f.nii', '-pyr', '2', 'x', '-mov', 'm.nii', '-rig'],
+     "-pyr/--pyramid expects <int> or [start]:stop[:step], got 'x'"),
+    (['-all', '-pyr', 'x', '-mse', *_FM, '-rig'],
+     "-pyr/--pyramid expects <int> or [start]:stop[:step], got 'x'"),
+])
+def test_autoreg_garbled_values_are_named_parse_errors(argv, msg):
+    with pytest.raises(ParseError) as e:
+        parse(argv)
+    assert str(e.value) == msg
+
+
+def test_autoreg_variable_length_grammar_unchanged():
+    opt = parse(['-mi', '2', *_FM, '-p', '3', '4', '-pyr', '1:3',
+                 '-dice', *_FM, '-l', '1', '2', '-w', '0.5', '-1',
+                 '-ffd', '0.5', '-g', '4', '5', '6', '-ben', '2',
+                 '-aff', '-le', '1', '2', '-pyr', '2', '3'])
+    mi, dc = opt.losses
+    assert mi.factor == 2. and mi.patch == [3, 4] and mi.pyramid == [1, 2, 3]
+    assert dc.labels == [1, 2] and dc.weights == [0.5, -1.]
+    ffd, aff = opt.transformations
+    assert ffd.factor == 0.5 and ffd.grid == [4, 5, 6]
+    assert ffd.losses[0].factor == 2.
+    assert aff.losses[0].factor == [1., 2.]
+    assert aff.pyramid == [2, 3]
+
+
+@pytest.mark.parametrize('word,value', [
+    ('1', True), ('0', False), ('true', True), ('False', False),
+    ('yes', True), ('no', False), ('t', True), ('n', False)])
+def test_autoreg_bool_words(word, value):
+    opt = parse(['-mse', *_FM, '-exc', word, '-aff', '-z', word,
+                 '-dif', '-sd', word, '-prg', word])
+    assert opt.losses[0].exclude is value
+    aff, dif = opt.transformations
+    assert aff.shift is value
+    assert dif.smalldef is value
+    assert opt.progressive is value
+
+
+@pytest.mark.parametrize('argv,name', [
+    (['-mse', *_FM, '-exc', 'maybe', '-rig'], '-exc/--exclude'),
+    (['-mse', *_FM, '-aff', '-z', 'maybe'], '-z/--zero'),
+    (['-mse', *_FM, '-dif', '-sd', 'maybe'], '-sd/--smalldef'),
+    (['-mse', *_FM, '-rig', '-prg', 'maybe'], '-prg/--progressive'),
+])
+def test_autoreg_bad_bool_is_parse_error(argv, name):
+    with pytest.raises(ParseError) as e:
+        parse(argv)
+    assert str(e.value) == f"{name} expects <bool>, got 'maybe'"
+
+
+def test_autoreg_bare_bool_flags():
+    opt = parse(['-mse', *_FM, '-exc', '-aff', '-z', '-dif', '-sd', '-prg'])
+    assert opt.losses[0].exclude is True
+    assert opt.transformations[0].shift is True
+    assert opt.transformations[1].smalldef is True
+    assert opt.progressive is True
+
+
+def test_autoreg_transform_pyramid_levels():
+    opt = parse(['-mse', *_FM, '-rig', '-pyr', '1:3', '-lr', '0.5'])
+    rig, = opt.transformations
+    assert rig.pyramid == [1, 2, 3]
+    assert rig.lr == 0.5
+    opt = parse(['-mse', *_FM, '-rig', '-pyr'])
+    assert opt.transformations[0].pyramid == [1]
+
+
+@pytest.mark.parametrize('tag', ['-o', '-r'])
+def test_autoreg_image_output_count(tag):
+    with pytest.raises(ParseError) as e:
+        parse(['-mse', '-fix', 'f.nii', '-mov', 'a.nii', 'b.nii', 'c.nii',
+               tag, 'x.nii', 'y.nii', '-rig'])
+    assert str(e.value) == (f'{tag} expects 1 value per input file (3), '
+                            f'or a single template; got 2')
+    with pytest.raises(ParseError):
+        parse(['-mse', '-fix', 'f.nii', '-mov', 'a.nii',
+               tag, 'x.nii', 'y.nii', '-rig'])
+
+
+def test_autoreg_image_output_single_template():
+    opt = parse(['-mse', '-fix', 'f.nii', '-mov', 'a.nii', 'b.nii',
+                 '-o', '{base}.out{ext}', '-r', 'no', '-rig'])
+    assert opt.losses[0].moving.updated == ['{base}.out{ext}'] * 2
+    assert opt.losses[0].moving.resliced is False
+    opt = parse(['-mse', '-fix', 'f.nii', '-mov', 'a.nii', 'b.nii',
+                 '-o', 'true', 'x.nii', '-rig'])
+    assert opt.losses[0].moving.updated == [True, 'x.nii']
+
+
+def test_autoreg_check_next_isvalue_removed():
+    from nitorch.cli.registration.autoreg import parser
+    assert not hasattr(parser, 'check_next_isvalue')
+
+
+@pytest.mark.parametrize('tag', ['-o', '-r'])
+def test_autoreg_image_output_single_literal_path_rejected(tag):
+    with pytest.raises(ParseError) as e:
+        parse(['-mse', '-fix', 'f.nii', '-mov', 'a.nii', 'b.nii',
+               tag, 'out.nii', '-rig'])
+    assert str(e.value) == (
+        f'{tag}: a single path for 2 input files would overwrite itself; '
+        f'use a template such as {{base}}.moved{{ext}}, one value per '
+        f'file, or true/false')
+    # a single literal path for a single file is fine
+    opt = parse(['-mse', '-fix', 'f.nii', '-mov', 'a.nii',
+                 tag, 'out.nii', '-rig'])
+    key = 'updated' if tag == '-o' else 'resliced'
+    assert getattr(opt.losses[0].moving, key) == ['out.nii']
