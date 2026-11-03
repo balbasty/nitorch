@@ -848,16 +848,25 @@ def reslice(moving, fname, like, inv=False, lin=None, nonlin=None,
         io.savef(dat.cpu(), ofname, like=file.fname, affine=like.affine.cpu())
 
 
+def _writes(fnames):
+    """True if an output (list of per-file names, None = skipped) writes
+    at least one file"""
+    if isinstance(fnames, (list, tuple)):
+        return any(fnames)
+    return bool(fnames)
+
+
 def write_data(options):
 
     device = torch.device(options.device)
     backend = dict(dtype=torch.float, device='cpu')
 
-    need_inv = False
-    for loss in options.losses:
-        if loss.fixed and (loss.fixed.resliced or loss.fixed.updated):
-            need_inv = True
-            break
+    # The inverse field is only used to write fixed images. Per-file
+    # outputs are lists in which a skipped file is `None`, so a list
+    # of `None` (e.g. `-o false false`) writes nothing.
+    need_inv = any(loss.fixed and (_writes(loss.fixed.resliced) or
+                                   _writes(loss.fixed.updated))
+                   for loss in options.losses)
 
     # affine matrix
     lin = None
@@ -898,9 +907,9 @@ def write_data(options):
                    device='cpu',
                    verbose=options.verbose)
         nonlin = dict(disp=d, affine=d_aff)
-        if moving.updated:
+        if _writes(moving.updated):
             update(moving, moving.updated, lin=lin, nonlin=nonlin, **prm)
-        if moving.resliced:
+        if _writes(moving.resliced):
             reslice(moving, moving.resliced, like=fixed, lin=lin, nonlin=nonlin, **prm)
         if not fixed:
             continue
@@ -910,7 +919,7 @@ def write_data(options):
                    device='cpu',
                    verbose=options.verbose)
         nonlin = dict(disp=id, affine=d_aff)
-        if fixed.updated:
+        if _writes(fixed.updated):
             update(fixed, fixed.updated, inv=True, lin=lin, nonlin=nonlin, **prm)
-        if fixed.resliced:
+        if _writes(fixed.resliced):
             reslice(fixed, fixed.resliced, inv=True, like=moving, lin=lin, nonlin=nonlin, **prm)
