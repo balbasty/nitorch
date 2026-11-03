@@ -176,15 +176,52 @@ def pop_values(args, opt, n=1, convert=None, names=None, nmin=None,
             raise ParseError(f'{opt} expects {count}: {names}')
         value = args.pop(0)
         if convert is not None:
-            try:
-                value = convert(value)
-            except (ValueError, TypeError):
-                name = names
-                if value_names and len(values) < len(value_names):
-                    name = value_names[len(values)]
-                raise ParseError(f'{opt} expects {name}, got {value!r}')
+            name = names
+            if value_names and len(values) < len(value_names):
+                name = value_names[len(values)]
+            value = convert_value(value, opt, convert, name)
         values.append(value)
     return values
+
+
+def convert_value(value, opt, convert, name=None):
+    """Convert the value of an option, raising a `ParseError` on failure
+
+    Companion of `pop_values`, for parsers that pop values themselves
+    (e.g., loops that mix keywords and numbers).
+
+    Parameters
+    ----------
+    value : str
+        Value to convert.
+    opt : str or sequence of str
+        Option name(s), used in error messages.
+    convert : callable
+        Conversion (e.g., `float`).
+        A `ValueError` or `TypeError` is turned into a `ParseError`.
+    name : str, optional
+        Name of the value, used in error messages.
+        Default: `<float>`/`<int>` if `convert` is `float`/`int`,
+        else `<value>`.
+
+    Returns
+    -------
+    value
+        Converted value.
+
+    Raises
+    ------
+    ParseError
+        If the conversion fails, e.g. `-w/--weight expects <float>, got 'abc'`.
+    """
+    if not isinstance(opt, str):
+        opt = '/'.join(opt)
+    if name is None:
+        name = {float: '<float>', int: '<int>'}.get(convert, '<value>')
+    try:
+        return convert(value)
+    except (ValueError, TypeError):
+        raise ParseError(f'{opt} expects {name}, got {value!r}')
 
 
 class Parsed(dict):
@@ -273,6 +310,17 @@ class Conversions:
             return bool(int(x))
         except ValueError:
             return x
+
+    @staticmethod
+    def strict_bool(x):
+        """Parse a bool (true/false, yes/no or an integer).
+
+        Unlike `bool`, raise a `ValueError` if the input is not a bool."""
+        if x.lower() in ('t', 'true', 'y', 'yes'):
+            return True
+        if x.lower() in ('f', 'false', 'n', 'no'):
+            return False
+        return bool(int(x))
 
     @staticmethod
     def device(device):
