@@ -86,10 +86,11 @@ def parse(args):
         elif tag in ('-b', '--bounding-box'):
             struct.bbox = True
             if cli.next_isvalue(args):
-                struct.bbox = float(args.pop(0))
+                struct.bbox, = cli.pop_values(args, '-b/--bounding-box', 1,
+                                              float)
         elif tag in ('-k', '--like'):
-            cli.check_next_isvalue(args, tag)
-            struct.like = args.pop(0)
+            struct.like, = cli.pop_values(args, '-k/--like', 1,
+                                          names='<file>')
         elif tag in ('-o', '--output'):
             struct.output = []
             while cli.next_isvalue(args):
