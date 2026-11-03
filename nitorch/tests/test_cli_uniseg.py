@@ -205,3 +205,14 @@ def test_multichannel_custom_name(setup):
               inputs=('ch1.nii', 'ch2.nii'))
     assert out == ['mybias.1.nii', 'mybias.2.nii',
                    'nobias_1.nii', 'nobias_2.nii']
+
+
+def test_parse_error_prints_full_help(capsys):
+    """On a ParseError, uniseg prints the whole help text, not one character."""
+    from nitorch.cli.segmentation.uniseg.cli import cli
+    from nitorch.cli.segmentation.uniseg.parser import help as uniseg_help
+    rc = cli(['x.nii', '-a', 'sometimes'])
+    out, err = capsys.readouterr()
+    assert rc == 1
+    assert '[ERROR]' in err
+    assert out.strip() == uniseg_help.strip()
