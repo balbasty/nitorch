@@ -125,7 +125,7 @@ and the `reg-affine` directory contains four files:
 
 | File                           | Content                                                                                           |
 | ------------------------------ | ------------------------------------------------------------------------------------------------- |
-| `affine.lta`                   | The transformation: a 4&times;4 matrix in a FreeSurfer LTA file. The file is named after the model. |
+| `affine.lta`                   | The transformation: a 4&times;4 world-to-world (RAS-to-RAS) matrix in a FreeSurfer LTA file. The file is named after the model. |
 | `sub-02_T1w.resliced.nii.gz`   | The moving image resampled onto the voxel grid of the fixed image (because of `-r`).               |
 | `sub-02_T1w.moved.nii.gz`      | The moving image with a modified header, in the registered space.                                  |
 | `sub-01_T1w.moved.nii.gz`      | The fixed image, likewise.                                                                         |

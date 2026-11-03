@@ -41,7 +41,7 @@ With no `-k`, `like` and `self` are the same thing, so that `nitorch orient FILE
 
 ### The transform file
 
-With `-t`, `orient` also writes a linear transformation file (`.lta`) for each output. It contains the matrix $M_\text{new} M_\text{old}^{-1}$, that is, the transformation that takes world coordinates under the old orientation matrix to world coordinates under the new one. It lets you track how far the image was moved. Give `-t` alone to write it under the default name, or follow it with filenames to choose where it is written. Without `-t`, no transformation file is written.
+With `-t`, `orient` also writes a linear transformation file (`.lta`) for each output. It contains the matrix $M_\text{new} M_\text{old}^{-1}$, that is, the transformation that takes world coordinates under the old orientation matrix to world coordinates under the new one. It is labelled as a world-to-world (RAS-to-RAS) affine, so FreeSurfer tools can read it. It lets you track how far the image was moved. Give `-t` alone to write it under the default name, or follow it with filenames to choose where it is written. Without `-t`, no transformation file is written.
 
 ## Arguments
 
