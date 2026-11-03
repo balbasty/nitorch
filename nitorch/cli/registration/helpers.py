@@ -215,7 +215,7 @@ class BacktrackingLineSearch(torch.optim.Optimizer):
 # keys of the JSON sidecar (written by `nitorch register`) that are
 # forwarded to `spatial.shoot`
 shoot_keys = ('absolute', 'membrane', 'bending', 'lame', 'factor',
-              'steps', 'fast')
+              'steps', 'fast', 'forward_method', 'fixedpoint_iter')
 
 
 def load_shoot_parameters(fname):
@@ -270,6 +270,10 @@ def exponentiate_velocity(vel, affine, json=None, square=False, inv=False):
     if json:
         prm = load_shoot_parameters(json)
         prm['voxel_size'] = spatial.voxel_size(affine)
+        if inv:
+            # the inverse does not depend on how the forward is computed
+            prm.pop('forward_method', None)
+            prm.pop('fixedpoint_iter', None)
         disp = spatial.shoot(vel[None], displacement=True,
                              return_inverse=inv, **prm)
         if inv:

@@ -346,6 +346,7 @@ def _main(options):
                     # `reslice` exponentiates the velocity the same way
                     prm['steps'] = nonlin.steps
                     prm['fast'] = getattr(nonlin, 'fast', True)
+                    prm.update(nonlin.shoot_options)
                     json.dump(prm, f)
             if options.verbose:
                 print('Nonlin ->', fname)

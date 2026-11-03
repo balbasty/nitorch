@@ -210,6 +210,10 @@ usage:
         -f, --fov *NAMES                Name of inputs used to compute mean space [all]
         -p, --pad VAL [UNIT]            Pad field of view by some amount [0 %]
         -2d [AXIS=2]                    Force transform to be 2d about AXIS
+    Shoot options:
+        --fixedpoint [ITER=10]          Forward warp = fixed-point inverse of the (more
+                                        accurate) inverse warp, with ITER iterations.
+                                        More inverse-consistent, slower. [0: off]
 
 @optim options:
     NAME can take values:
@@ -736,6 +740,11 @@ nonlin.add_option('hessian', ('-h', '--hessian'), nargs='?',
 nonlin.add_option('is2d', '-2d', default=False, nargs='?',
                   action=cli.Actions.store_value(2),
                   convert=number_or_str(int))
+nonlin.add_option('fixedpoint', '--fixedpoint', default=0, nargs='?',
+                  action=cli.Actions.store_value(10), convert=int,
+                  help='Number of fixed-point iterations used to compute '
+                       'the forward shooting warp as the inverse of the '
+                       'inverse warp (0: compose)')
 nonlin.add_group(optim)
 
 

@@ -1593,6 +1593,51 @@ class ShootModel(NonLinModel):
 
     model = 'shoot'
 
+    def __init__(self, dat=None, factor=1, penalty=None, steps=8,
+                 kernel=None, fixedpoint=0, **backend):
+        """
+
+        Parameters
+        ----------
+        dat : Displacement or tensor or list[int], optional
+            Pre-allocated velocity or its shape
+        factor : float, default=1
+            Regularization factor
+        penalty : dict(absolute, membrane, bending, lame), optional
+            Regularization factor for each component.
+            Informed values are used by default.
+        steps : int, default=8
+            Number of integration steps.
+        kernel : tensor, optional
+            Pre-computed Greens kernel.
+        fixedpoint : int, default=0
+            If > 0, compute the forward transform as the fixed-point
+            inverse of the inverse transform, with this many iterations
+            (`spatial.shoot(forward_method='fixedpoint')`).
+            Else, compose it along the geodesic (`forward_method='compose'`).
+        **backend
+        """
+        self.fixedpoint = int(fixedpoint or 0)
+        super().__init__(dat, factor, penalty, steps, kernel, **backend)
+
+    @property
+    def shoot_options(self):
+        """Options of `spatial.shoot` that select the forward method"""
+        if self.fixedpoint:
+            return dict(forward_method='fixedpoint',
+                        fixedpoint_iter=self.fixedpoint)
+        return dict(forward_method='compose')
+
+    def downsample(self, factor=2, **kwargs):
+        obj = super().downsample(factor, **kwargs)
+        obj.fixedpoint = self.fixedpoint
+        return obj
+
+    def upsample(self, factor=2, **kwargs):
+        obj = super().upsample(factor, **kwargs)
+        obj.fixedpoint = self.fixedpoint
+        return obj
+
     def set_dat(self, dat, affine=None, **backend):
         super().set_dat(dat, affine, **backend)
         self.reset_kernel()
@@ -1609,7 +1654,7 @@ class ShootModel(NonLinModel):
             grid = spatial.shoot(v, self.kernel, steps=self.steps,
                                  factor=factor / py.prod(self.shape),
                                  voxel_size=self.voxel_size, **penalty,
-                                 displacement=True)
+                                 displacement=True, **self.shoot_options)
         else:
             grid = self._cache
         if cache_result:
@@ -1661,7 +1706,8 @@ class ShootModel(NonLinModel):
             grid, igrid = spatial.shoot(v, self.kernel, steps=self.steps,
                                         factor=factor / py.prod(self.shape),
                                         voxel_size=self.voxel_size, **penalty,
-                                        return_inverse=True, displacement=True)
+                                        return_inverse=True, displacement=True,
+                                        **self.shoot_options)
         if cache_result:
             self._cache = grid
             self._icache = igrid

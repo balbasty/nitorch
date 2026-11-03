@@ -227,3 +227,98 @@ def test_fixedpoint_cuda():
     assert psi.is_cuda
     assert torch.allclose(psi.cpu(), psi_cpu, atol=1e-4)
     assert torch.allclose(phi.cpu(), phi_cpu, atol=1e-4)
+
+
+# ----------------------------------------------------------------------
+# registration wiring: ShootModel, `register --fixedpoint`, reslice
+# ----------------------------------------------------------------------
+def test_shoot_model_fixedpoint():
+    from nitorch.tools.registration.objects import ShootModel
+    shape = [10, 10, 10]
+    vel = make_vel(shape, 3.)
+    for fixedpoint in (0, 4):
+        model = ShootModel(vel.clone(), factor=1, fixedpoint=fixedpoint)
+        penalty = dict(model.penalty)
+        factor = penalty.pop('factor')
+        prm = dict(**penalty, factor=factor / py.prod(shape),
+                   voxel_size=model.voxel_size, displacement=True)
+        if fixedpoint:
+            prm.update(forward_method='fixedpoint', fixedpoint_iter=4)
+        psi, phi = spatial.shoot(vel, model.kernel, **prm,
+                                 return_inverse=True)
+        assert torch.equal(model.exp(), psi)
+        grid, igrid = model.exp2()
+        assert torch.equal(grid, psi) and torch.equal(igrid, phi)
+        assert torch.equal(model.iexp(), phi)
+        # pyramid levels keep the option
+        assert model.downsample(shape=[5, 5, 5]).fixedpoint == fixedpoint
+        assert model.upsample(shape=[12, 12, 12]).fixedpoint == fixedpoint
+
+
+@pytest.mark.parametrize('flag,expected', [
+    ([], {'forward_method': 'compose'}),
+    (['--fixedpoint'], {'forward_method': 'fixedpoint',
+                        'fixedpoint_iter': 10}),
+    (['--fixedpoint', '3'], {'forward_method': 'fixedpoint',
+                             'fixedpoint_iter': 3}),
+])
+def test_register_fixedpoint_json_and_reslice(tmp_path, monkeypatch, flag,
+                                              expected):
+    import json
+    import numpy as np
+    nib = pytest.importorskip('nibabel')
+    from nitorch.cli.registration.register.cli import _cli
+    from nitorch.cli.registration.reslice import main as reslice_main
+    from nitorch.cli.registration.reslice import struct as reslice_struct
+
+    def write(path, dat):
+        nib.save(nib.Nifti1Image(np.asarray(dat, dtype='float32'),
+                                 np.eye(4)), path)
+        return path
+
+    rng = np.random.default_rng(0)
+    fix = write(str(tmp_path / 'fix.nii.gz'), rng.random([12, 12, 12]))
+    mov = write(str(tmp_path / 'mov.nii.gz'), rng.random([12, 12, 12]))
+    vel = str(tmp_path / 'vel.nii.gz')
+
+    calls = []
+    shoot = spatial.shoot
+
+    def spy(*args, **kwargs):
+        calls.append(kwargs)
+        return shoot(*args, **kwargs)
+
+    monkeypatch.setattr(spatial, 'shoot', spy)
+    _cli(['@loss', 'mse', '@@fix', fix, '-o', 'false', '@@mov', mov,
+          '-o', 'false', '@nonlin', 'shoot', '-s', '3', *flag, '-o', vel,
+          '@@optim', 'gd', '-n', '1', '@optim', '-n', '1',
+          '@pyramid', '-l', '0'])
+    # the registration used the option for the forward transform
+    fwd_calls = [kw for kw in calls if 'forward_method' in kw]
+    assert fwd_calls
+    for kw in fwd_calls:
+        assert kw['forward_method'] == expected['forward_method']
+        assert kw.get('fixedpoint_iter') == expected.get('fixedpoint_iter')
+    # ... wrote it next to the velocity
+    with open(tmp_path / 'vel.json') as f:
+        prm = json.load(f)
+    for key, val in expected.items():
+        assert prm[key] == val
+    assert ('fixedpoint_iter' in prm) == ('fixedpoint_iter' in expected)
+
+    # ... and reslice applies the same warp
+    for inv in (False, True):
+        calls.clear()
+        trf = reslice_struct.Velocity()
+        trf.file = vel
+        trf.json = str(tmp_path / 'vel.json')
+        trf.inv = inv
+        trf.square = False
+        reslice_main.exponentiate_transforms([trf])
+        assert len(calls) == 1
+        if inv:
+            # the inverse does not depend on the forward method
+            assert 'forward_method' not in calls[0]
+        else:
+            for key, val in expected.items():
+                assert calls[0][key] == val
