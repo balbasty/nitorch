@@ -402,7 +402,7 @@ parser.add_option('framerate', ('-r', '--framerate'), nargs=1, convert=float,
 # Loss group
 loss_aliases = {'nmi': 'mi', 'l1': 'mad', 'l2': 'mse', 'tukey': 'tuk',
                 'ncc': 'cc', 'lncc': 'lcc', 'cce': 'cat', 'f1': 'dice',
-                'entropy': 'ent', 'squeezed': 'sqz', 'prod': 'dot',
+                'squeezed': 'sqz', 'prod': 'dot',
                 'gmm': 'gmmi', 'lgmm': 'lgmmi'}
 loss_choices = list(loss_aliases.values()) + ['emmi', 'ndot', 'extra']
 loss_choices = cli.Positional('name', nargs='?', default='mi',
@@ -421,12 +421,17 @@ class _LossGroup(cli.NamedGroup):
             all_stops += option.tags
         all_stops += self.groups.tags
         results = cli.Parsed()
+        nargs0 = len(args)
         results.name = self.switch.parse(args, all_stops)
         results.merge(self.positionals.parse(args, all_stops))
         options = self.options + self.suboptions.get(results.name, [])
         before = list(args)
         results.merge(options.parse(args, all_stops))
         if args and args[0] not in all_stops and not args[0].startswith('@'):
+            if len(args) == nargs0 and not args[0].startswith('-'):
+                # first value is neither a loss name nor a factor
+                # (e.g. `@loss foo`): report it as an invalid loss name
+                raise self.switch._invalid_value(args[0])
             self._stray(results.name, options, before, args)
         results.merge(self.groups.parse(args, all_stops))
         return results
@@ -492,12 +497,6 @@ loss.add_suboption('mi', 'bins', ('-b', '--bins'), nargs='1*2?', default=32,
 loss.add_suboption('mi', 'fwhm', ('-f', '--fwhm'), nargs='1*', default=0,
                    convert=float, help='Smoothing of the joint histogram, in bins.')
 loss.add_suboption('mi', 'order', ('-n', '--order'), nargs='1*2?', default=[3],
-                   convert=int, help='Spline order of the joint histogram')
-loss.add_suboption('ent', 'bins', ('-b', '--bins'), nargs='1*2?', default=32,
-                   convert=int, help='Number of bins in joint histogram')
-loss.add_suboption('ent', 'fwhm', ('-f', '--fwhm'), nargs='1*', default=0,
-                   convert=float, help='Smoothing of the joint histogram, in bins.')
-loss.add_suboption('ent', 'order', ('-n', '--order'), nargs='1*2?', default=[3],
                    convert=int, help='Spline order of the joint histogram')
 loss.add_suboption('lcc', patch_option)
 loss.add_suboption('lcc', stride_option)
