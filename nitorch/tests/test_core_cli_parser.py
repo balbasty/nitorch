@@ -50,8 +50,17 @@ def test_invalid_choice_names_value_and_choices(tag):
     ['f.nii', '--mode', '-v'],           # followed by a known option
 ])
 def test_missing_choice_still_not_enough_arguments(args):
-    with pytest.raises(ParseError, match='Not enough arguments for option mode'):
+    with pytest.raises(ParseError) as e:
         _parser().parse(args)
+    assert str(e.value) == ('Not enough arguments for option mode: expected '
+                            'at least 1 but got 0. Choose from {a, b, c}.')
+
+
+def test_missing_value_without_choices():
+    with pytest.raises(ParseError) as e:
+        _parser().parse(['f.nii', '--num'])
+    assert str(e.value) == ('Not enough arguments for option num: expected '
+                            'at least 1 but got 0.')
 
 
 def test_invalid_converted_value_is_named():
@@ -130,6 +139,51 @@ def test_opt_out_keeps_unknown_options_as_values():
 
 
 # --- real commands ------------------------------------------------------
+
+def _optinorm(args, capsys):
+    from nitorch.cli.registration.optinorm.cli import cli as optinorm
+    rc = optinorm(args)
+    out, err = capsys.readouterr()
+    return rc, out, err
+
+
+@pytest.mark.parametrize('args', [
+    ['a.nii', 'b.nii', '--nope'],
+    ['--nope', 'a.nii', 'b.nii'],
+])
+def test_optinorm_unknown_option(args, capsys):
+    rc, out, err = _optinorm(args, capsys)
+    assert rc == 1
+    assert '[ERROR] Unknown option --nope' in err
+    assert out.strip()  # help
+
+
+def test_optinorm_invalid_affine(capsys):
+    rc, _, err = _optinorm(['a.nii', 'b.nii', '--affine', 'foo'], capsys)
+    assert rc == 1
+    assert ("[ERROR] Invalid value 'foo' for --affine; "
+            "choose from {rigid, similitude, affine}") in err
+
+
+@pytest.mark.parametrize('args', [
+    ['a.nii', 'b.nii', '--affine'],              # end of command line
+    ['a.nii', 'b.nii', '--affine', '-a', '1'],   # followed by an option
+])
+def test_optinorm_missing_affine(args, capsys):
+    rc, _, err = _optinorm(args, capsys)
+    assert rc == 1
+    assert ('[ERROR] Not enough arguments for option affine: expected at '
+            'least 1 but got 0. Choose from {rigid, similitude, affine}.') in err
+
+
+def test_optinorm_negative_numbers_are_values():
+    from nitorch.cli.registration.optinorm.parser import parser
+    opt = parser.parse(['a.nii', 'b.nii', '-a', '-1', '--membrane', '-0.5',
+                        '--affine', 'affine'])
+    assert opt.input == ['a.nii', 'b.nii']
+    assert opt.absolute == -1. and opt.membrane == -0.5
+    assert opt.affine == 'affine'
+
 
 def test_topup_invalid_loss_and_unknown_option(capsys):
     from nitorch.cli.qmri.topup.main import cli as topup

@@ -360,15 +360,31 @@ class Option:
 
     __str__ = __repr__
 
+    def _choices_str(self):
+        """'{a, b, c}' if validated by `Validations.choice`, else None"""
+        choices = getattr(self.validation, 'choices', None)
+        if choices is None:
+            return None
+        return '{' + ', '.join(map(str, choices)) + '}'
+
     def _invalid_value(self, arg):
         """ParseError for a value that is present but rejected"""
         # name the option by its long tag (or its name if positional)
         tags = [tag for tag in self.tags if tag.startswith('--')] or self.tags
         label = tags[0] if tags else self.name
         msg = f'Invalid value {arg!r} for {label}'
-        choices = getattr(self.validation, 'choices', None)
-        if choices is not None:
-            msg += '; choose from {' + ', '.join(map(str, choices)) + '}'
+        choices = self._choices_str()
+        if choices:
+            msg += f'; choose from {choices}'
+        return ParseError(msg)
+
+    def _missing_value(self, mn, count):
+        """ParseError for a value that is missing"""
+        msg = (f'Not enough arguments for option {self.name}: '
+               f'expected at least {mn} but got {count}.')
+        choices = self._choices_str()
+        if choices:
+            msg += f' Choose from {choices}.'
         return ParseError(msg)
 
     def parse(self, args, stops=tuple()):
@@ -403,9 +419,7 @@ class Option:
                         # a value is present (not an option or group
                         # tag), but it is not accepted
                         raise self._invalid_value(next_arg)
-            raise ParseError(f'Not enough arguments for option '
-                             f'{self.name}: expected at least {mn} '
-                             f'but got {nargs_count}.')
+            raise self._missing_value(mn, nargs_count)
         if mx == float('inf'):
             while args:
                 next_arg = args[0]
