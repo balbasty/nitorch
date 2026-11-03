@@ -291,8 +291,11 @@ def shoot(
     steps=8,
     fast=True,
     verbose=False,
+    forward_method='compose',
+    fixedpoint_iter=10,
+    fixedpoint_tol=0,
 ):
-    """Exponentiate a velocity field by geodesic shooting.
+    r"""Exponentiate a velocity field by geodesic shooting.
 
     Notes
     -----
@@ -329,6 +332,34 @@ def shoot(
         If True, use a faster integration scheme, which may induce
         some numerical error (the energy is not exactly preserved
         along time). Else, use the slower but more precise scheme.
+    verbose : bool, default=False
+        Print the energy at each time step.
+    forward_method : {'compose', 'fixedpoint'}, default='compose'
+        How the forward transform (`grid`) is computed.
+
+        - 'compose': accumulate the small inverse steps by
+          right-composition, $\psi \gets \psi \circ (id - v_t/T)$.
+          This is a first-order scheme that interpolates the
+          accumulated transform at every step, so `grid` is less
+          accurate than `igrid` and `grid` and `igrid` are not
+          exactly inverse of each other.
+        - 'fixedpoint': the inverse transform `igrid`
+          ($\varphi$, which is integrated more accurately) is always
+          computed, and `grid` is obtained as its inverse by the
+          fixed-point iteration
+          $\psi \gets id - (\varphi - id) \circ \psi$,
+          initialized with $2 id - \varphi$ (the transform is not
+          composed along the way). This makes `grid` and `igrid`
+          (nearly) inverse-consistent and `grid` more accurate, at the
+          cost of `fixedpoint_iter` extra interpolations.
+    fixedpoint_iter : int, default=10
+        Maximum number of fixed-point iterations
+        (if `forward_method='fixedpoint'`).
+    fixedpoint_tol : float, default=0
+        Stop the fixed-point iterations early once the largest change
+        of any displacement component falls below this value (in
+        voxels). The default (0) always runs `fixedpoint_iter`
+        iterations, which avoids a device synchronization per iteration.
 
     Returns
     -------
@@ -352,6 +383,11 @@ def shoot(
     # and was distributed as part of [SPM](https://www.fil.ion.ucl.ac.uk/spm)
     # under the GNU General Public Licence (version >= 2).
 
+    if forward_method not in ('compose', 'fixedpoint'):
+        raise ValueError(f"forward_method must be 'compose' or 'fixedpoint' "
+                         f"but got {forward_method!r}")
+    fixedpoint = forward_method == 'fixedpoint'
+
     vel = torch.as_tensor(vel)
     backend = utils.backend(vel)
     dim = vel.shape[-1]
@@ -372,8 +408,11 @@ def shoot(
     id = identity_grid(spatial, **backend)
     mom = mom0 = regulariser_grid(vel, **prm, bound='dft')
     vel = vel / steps
-    disp = -vel
-    if return_inverse or not fast:
+    disp = None if fixedpoint else -vel
+    # the inverse is needed by the exact scheme and by the fixed-point
+    # computation of the forward transform
+    need_inverse = return_inverse or not fast or fixedpoint
+    if need_inverse:
         idisp = vel.clone()
 
     for i in range(1, abs(steps)):
@@ -401,17 +440,71 @@ def shoot(
         # $\psi \gets \psi \circ (id - \tfrac{1}{T} v)$
         # JA: I found that simply using
         # $\psi \gets \psi - \tfrac{1}{T} (D \psi) v$ was not so stable.
-        disp = _pull_grid(disp, id - vel, **pull_prm).sub_(vel)
-        if return_inverse or not fast:
+        if not fixedpoint:
+            disp = _pull_grid(disp, id - vel, **pull_prm).sub_(vel)
+        if need_inverse:
             idisp += _pull_grid(vel, id + idisp, **pull_prm)
 
     if verbose:
         print('')
+    if fixedpoint:
+        # $\psi \gets \varphi^{-1}$, initialized with $2 id - \varphi$
+        # (the composed $\psi$ is a better initial guess, but computing
+        # it costs `steps-1` pulls, more than the iterations it saves)
+        disp = _fixedpoint_inverse(idisp, idisp.neg(), id, fixedpoint_iter,
+                                   fixedpoint_tol, **pull_prm)
     if not displacement:
         disp += id
         if return_inverse:
             idisp += id
     return (disp, idisp) if return_inverse else disp
+
+
+def _fixedpoint_inverse(disp, init, id, max_iter=10, tol=0, **pull_prm):
+    r"""Invert a displacement field by fixed-point iterations.
+
+    Solves $\varphi \circ \psi = id$ for $\psi$, written as
+    $\psi - id = -(\varphi - id) \circ \psi$, by iterating the
+    right-hand side. The iteration converges where the displacement of
+    $\varphi$ is contractive (Lipschitz constant < 1), which holds for
+    smooth geodesic shooting steps; elsewhere a good initialisation
+    keeps the result close to a sensible transform.
+
+    Parameters
+    ----------
+    disp : ([batch], *spatial, dim) tensor
+        Displacement field to invert.
+    init : ([batch], *spatial, dim) tensor
+        Initial guess of the inverse displacement. Overwritten.
+    id : (*spatial, dim) tensor
+        Identity grid.
+    max_iter : int, default=10
+        Number of iterations.
+    tol : float, default=0
+        If > 0, stop once the largest absolute change of a displacement
+        component is below `tol`.
+
+    Returns
+    -------
+    idisp : ([batch], *spatial, dim) tensor
+        Inverse displacement.
+
+    """
+    idisp = init
+    if max_iter <= 0:
+        return idisp
+    disp = disp.neg()
+    for _ in range(max_iter):
+        new_idisp = _pull_grid(disp, id + idisp, **pull_prm)
+        if tol:
+            with torch.no_grad():
+                delta = (new_idisp - idisp).abs_().max()
+            idisp = new_idisp
+            if delta <= tol:
+                break
+        else:
+            idisp = new_idisp
+    return idisp
 
 
 # def shoot_backward(vel, mugrad, grad, hess=None, greens=None,
