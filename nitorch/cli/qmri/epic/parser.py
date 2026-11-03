@@ -10,11 +10,12 @@ additional constraint that makes the process more robust to imperfect
 fieldmaps.
 
 usage: 
-    nitorch epic *ECHOES -f FIELDMAP [options]
+    nitorch epic *ECHOES [-f FIELDMAP] [options]
     
     *ECHOES                             Acquired bipolar echoes
     -r, --reversed *ECHOES              Reversed-polarity echoes
     -f, --fieldmap                      Fieldmap (in Hz) or voxel shift map
+                                        [none: denoise only, no distortion correction]
     -o, --output                        Path to corrected echoes [{dir}/{base}_epic{ext}]
     -d, --direction {rl,ap,is}          Readout direction [largest]
     -p, --polarity {[+],-}              Polarity of the first echo
@@ -62,7 +63,7 @@ parser.add_option('extrapolate', ('-e', '--extrapolate'), nargs='?', default=Fal
 parser.add_option('slicewise', ('-s', '--slicewise'), nargs='?', default=0,
                   convert=int, action=cli.Actions.store_value(1),
                   help='Perform slicewise or chunkwise')
-parser.add_option('penalty', ('-p', '--penalty'), nargs=1, default=100,
+parser.add_option('penalty', '--penalty', nargs=1, default=100,
                   convert=float, help='Regularization value')
 parser.add_option('maxiter', ('-m', '--maxiter'), nargs='1*2', default=[20, 32],
                   convert=int, help='Maximum number of iterations')
@@ -77,7 +78,7 @@ parser.add_option('verbose', ('-q', '--quiet'),
                   nargs=0, action=cli.Actions.store_value(0),
                   help='No verbosity')
 parser.add_option('gpu', '--gpu',
-                  nargs='?', default='cpu',
+                  nargs='?', default=('cpu', None),
                   convert=cli.Conversions.device('gpu'),
                   action=cli.Actions.store_value(('gpu', None)),
                   help='Use GPU (if available)')

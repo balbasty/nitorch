@@ -2142,11 +2142,14 @@ def affine_conv(affine, shape, kernel_size, stride=1, padding=0,
         if transposed:
             oshape += [(L - 1) * S - 2 * Pi + D * (K - 1) + Po + 1]
             scale += [1/S]
-            offset += [(Pi - (K-1)/2)/S]
+            # inverse of the forward map below: j = (i + P - D*(K-1)/2) / S
+            offset += [(Pi - D*(K-1)/2)/S]
         else:
             oshape += [math.floor((L + Plo + Phi - D * (K - 1) - 1) / S + 1)]
             scale += [S]
-            offset += [(K-1)/2 - Plo]
+            # output voxel j covers input voxels j*S - Plo + D*k,
+            # k = 0..K-1, whose centre is j*S - Plo + D*(K-1)/2
+            offset += [D*(K-1)/2 - Plo]
 
     # build voxel-to-voxel transformation matrix
     lin = torch.diag(torch.as_tensor(scale, **info))

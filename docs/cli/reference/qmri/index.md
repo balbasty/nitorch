@@ -49,5 +49,5 @@ undistorted data ─────────────────────
 - **Contrasts and echoes.** `estatics` and `greeq` describe their input with repeated `-c` groups, one per contrast, each listing its echoes after `-e`. Global options must come before the first `-c`.
 - **Units.** Times given without a unit are read as seconds, flip angles as degrees. Add `ms` where you mean milliseconds.
 - **Output files.** The mapping commands write fixed names (`R2star`, `PD`, ...) next to the first input unless you pass `-o`. See each page for the list and units.
-- **Devices.** The commands run on the CPU by default; see [Hardware](../../conventions.md#hardware) for the GPU options. `epic` is an exception and needs `--cpu` or `--gpu` to be given explicitly.
+- **Devices.** The commands run on the CPU by default; see [Hardware](../../conventions.md#hardware) for the GPU options.
 - **General conventions.** Image formats, option parsing and filename templates are described in [Conventions](../../conventions.md).

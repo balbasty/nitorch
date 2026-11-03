@@ -157,7 +157,8 @@ def parse(args):
 
     while args:
         if not cli.next_istag(args):
-            break
+            raise cli.ParseError(f'Value {args[0]} does not seem to belong '
+                                 f'to a tag.')
         tag, *args = args
 
         # Parse transforms

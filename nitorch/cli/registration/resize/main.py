@@ -27,6 +27,9 @@ def resize(argv=None):
         if options.voxel_size and options.factor:
             raise ParseError('Options -f/--factor and -v/--voxel-size '
                              'are mutually exclusive.')
+        if not (options.factor or options.voxel_size or options.shape):
+            raise ParseError('Need at least one of -f/--factor, '
+                             '-v/--voxel-size or -s/--shape.')
 
         files = read_info(options.files)
         write_data(files, options)
@@ -34,8 +37,10 @@ def resize(argv=None):
     except ParseError as e:
         print(help)
         print(f'[ERROR] {str(e)}', file=sys.stderr)
-    # except Exception as e:
-    #     print(f'[ERROR] {str(e)}', file=sys.stderr)
+        return 1
+    except Exception as e:
+        print(f'[ERROR] {str(e)}', file=sys.stderr)
+        return 1
 
 
 commands['resize'] = resize

@@ -13,7 +13,7 @@ be built from source.
 ## Requirements
 
 NITorch needs Python and PyTorch. The package metadata is permissive (it
-declares Python 3.6 or later and PyTorch 1.4 or later), but only a few
+declares Python 3.6 or later and PyTorch 1.6 or later), but only a few
 combinations are actually tested. The continuous-integration tests run on Linux
 with the CPU build of PyTorch, with:
 
@@ -173,7 +173,7 @@ pip install "nitorch[io,plot] @ git+https://github.com/balbasty/nitorch"
 
 The repository contains two `conda/*.yml` files (`nitorch.yml` and
 `nitorch-demo.yml`). They date from the first versions of NITorch, pin Python
-3.6, PyTorch 1.5 and CUDA 10.1, and do not install NITorch itself, so we do
+3.6, PyTorch 1.6 and CUDA 10.1, and do not install NITorch itself, so we do
 not recommend them for a new installation.
 
 ## Docker

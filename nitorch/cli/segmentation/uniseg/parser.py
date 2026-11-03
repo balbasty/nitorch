@@ -96,13 +96,32 @@ def convert_device(device):
     return _convert
 
 
+def validate_options(options):
+    """Check choice-valued options and raise a readable ParseError.
+
+    (Values are not validated by the parser itself: with nargs='?',
+    an invalid value would just be left unconsumed, giving an obscure
+    "Don't know what to do with ..." error.)"""
+    def _show(choices):
+        return ', '.join('no' if c is False else str(c) for c in choices)
+    for name, flags, choices in (
+            ('align', '-a/--align', aff_choices),
+            ('mrf', '--mrf', mrf_choices)):
+        value = getattr(options, name)
+        if value not in choices:
+            raise cli.ParseError(
+                f'Invalid value {value!r} for {flags}: expected one of '
+                f'{_show(choices)} (or yes).')
+    return options
+
+
 parser = cli.CommandParser('uniseg', help=help)
 # --- inputs -----------------------------------------------------------
 parser.add_positional('input', nargs='+')
 parser.add_option('tpm', ('-t', '--tpm'), nargs='+', default=None)
 parser.add_option('tpm', '--no-tpm', nargs=0,
                   action=cli.Actions.store_value(False))
-parser.add_option('mask', ('-m', '--mask'), nargs='?', default=None)
+parser.add_option('mask', ('-m', '--mask'), nargs=1, default=None)
 # --- outputs ----------------------------------------------------------
 parser.add_option('output', ('-o', '--output'), nargs=1, default=None)
 for space in ('nat', 'mni', 'wrp'):
@@ -138,10 +157,23 @@ for space in ('nat', 'mni', 'wrp'):
                       action=cli.Actions.store_value(True), default=False)
 parser.add_option('mni_vx', '--mni-vx', nargs=1, default=None, convert=float)
 # --- components -------------------------------------------------------
-mrf_aliases = {'yes': 'learn'}
-mrf_choices = ['learn', 'always', 'once', 'no']
-aff_aliases = {'yes': 'learn'}
-aff_choices = ['always', 'once', 'no']
+mrf_aliases = {True: 'learn'}
+mrf_choices = ['learn', 'always', 'once', False]
+aff_aliases = {True: 'always'}
+aff_choices = ['always', 'once', False]
+
+
+def bool_or_choice(aliases):
+    """Parse yes/no/true/false/1/0 as booleans (then apply aliases),
+    and leave other strings untouched (they are validated afterwards)."""
+    def _convert(x):
+        x = cli.Conversions.bool(x)
+        if isinstance(x, bool):
+            x = aliases.get(x, x)
+        return x
+    return _convert
+
+
 parser.add_option(f'clusters', ('-k', '--clusters'), nargs='+',
                   convert=int, default=None)
 parser.add_option(f'bias', ('-b', '--bias'), nargs='?', convert=bool_or_str,
@@ -149,9 +181,8 @@ parser.add_option(f'bias', ('-b', '--bias'), nargs='?', convert=bool_or_str,
 parser.add_option(f'bias', '--no-bias', nargs=0,
                   action=cli.Actions.store_value(False))
 parser.add_option(f'align', ('-a', '--align'), nargs='?',
-                  convert=lambda x: aff_aliases.get(x, x),
-                  validation=cli.Validations.choice(aff_choices),
-                  action=cli.Actions.store_value(True), default=True)
+                  convert=bool_or_choice(aff_aliases),
+                  action=cli.Actions.store_value('always'), default='always')
 parser.add_option(f'align', '--no-align', nargs=0,
                   action=cli.Actions.store_value(False))
 parser.add_option(f'warp', ('-w', '--warp'), nargs='?', convert=bool_or_str,
@@ -163,8 +194,7 @@ parser.add_option(f'mix', '--mix', nargs='?', convert=bool_or_str,
 parser.add_option(f'mix', '--no-mix', nargs=0,
                   action=cli.Actions.store_value(False))
 parser.add_option(f'mrf', '--mrf', nargs='?',
-                  convert=lambda x: mrf_aliases.get(x, x),
-                  validation=cli.Validations.choice(mrf_choices),
+                  convert=bool_or_choice(mrf_aliases),
                   action=cli.Actions.store_value('learn'), default='once')
 parser.add_option(f'mrf', '--no-mrf', nargs=0,
                   action=cli.Actions.store_value(False))

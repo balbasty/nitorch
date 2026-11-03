@@ -2,7 +2,8 @@ import os.path
 import torch
 import warnings
 from nitorch.core.py import make_list, fileparts
-from nitorch.core.utils import unfold, quantile
+from nitorch.core import py
+from nitorch.core.utils import quantile
 from nitorch.cli.cli import commands
 from nitorch.core.cli import ParseError
 from nitorch.spatial import smooth, voxel_size
@@ -26,8 +27,10 @@ def cli(args=None):
     except ParseError as e:
         print(help)
         print(f'[ERROR] {str(e)}', file=sys.stderr)
-    # except Exception as e:
-    #     print(f'[ERROR] {str(e)}', file=sys.stderr)
+        return 1
+    except Exception as e:
+        print(f'[ERROR] {str(e)}', file=sys.stderr)
+        return 1
 
 
 commands['metrics'] = cli
@@ -46,56 +49,88 @@ def _cli(args):
     # can assume an [X, Y, Z, T, C] layout
 
     device = setup_device(*options.device)
-    is_label = any(metric in label_metrics for metric in options.metrics)
 
-    pred, _ = load_data(options.pred, is_label, device)
-    ref, affine = load_data(options.ref, is_label, device)
-    vx = voxel_size(affine).tolist()
-    if pred.shape != ref.shape:
-        raise ValueError('Incompatible shapes')
+    # expand metric groups (and drop the group names themselves)
+    metrics = []
+    for metric in options.metrics:
+        if metric == 'labels':
+            group = label_metrics[1:]
+        elif metric == 'images':
+            group = image_metrics[1:]
+        else:
+            group = [metric]
+        metrics += [m for m in group if m not in metrics]
+    lab_metrics = [m for m in metrics if m in label_metrics]
+    img_metrics = [m for m in metrics if m in image_metrics]
 
-    fwhm = options.fwhm
-    unit = 'vox'
-    if isinstance(fwhm[-1], str):
-        *fwhm, unit = fwhm
-    fwhm = make_list(fwhm, len(vx))
-    fwhm = [f/v for f, v in zip(fwhm, vx)] if unit == 'mm' else fwhm[:len(vx)]
-
-    metrics = options.metrics
-    if 'labels' in metrics:
-        metrics = label_metrics
-    if 'image' in metrics:
-        metrics = image_metrics
-
-    if 'ssim' in options.metrics or 'psnr' in metrics:
-        rng = options.range
-        if len(rng) == 1:
-            rng = (0, rng[0])
-        elif len(rng) == 0:
-            rng = None
+    # dynamic range (SSIM/PSNR)
+    rng = options.range
+    if len(rng) == 1:
+        rng = (0, rng[0])
+    elif len(rng) == 0:
+        rng = None
+    else:
+        rng = tuple(rng)
 
     results = {}
-    if is_label:
-        results = compute_label_metrics(
-            metrics, pred, ref, options.average, options.exclude)
-    else:
-        for metric in options.metrics:
+    if lab_metrics:
+        pred, _ = load_data(options.pred, True, device)
+        ref, affine = load_data(options.ref, True, device)
+        if pred.shape != ref.shape:
+            raise ValueError('Incompatible shapes')
+        results.update(compute_label_metrics(
+            lab_metrics, pred, ref, options.average, options.exclude))
+    if img_metrics:
+        pred, _ = load_data(options.pred, False, device)
+        ref, affine = load_data(options.ref, False, device)
+        if pred.shape != ref.shape:
+            raise ValueError('Incompatible shapes')
+        vx = voxel_size(affine).tolist()
+
+        # SSIM window
+        fwhm = list(options.fwhm)
+        unit = 'vox'
+        if any(isinstance(f, str) and f.lower() == 'full' for f in fwhm):
+            fwhm = 'full'
+        else:
+            if isinstance(fwhm[-1], str):
+                *fwhm, unit = fwhm
+                unit = unit.lower()
+            if unit not in ('vox', 'mm') or not fwhm or \
+                    any(isinstance(f, str) for f in fwhm):
+                raise ParseError(f'Invalid --ssim-fwhm: {options.fwhm}')
+            fwhm = make_list(fwhm, len(vx))[:len(vx)]
+            if unit == 'mm':
+                fwhm = [f/v for f, v in zip(fwhm, vx)]
+
+        for metric in img_metrics:
             kwargs = dict()
             if metric == 'ssim':
                 kwargs['fwhm'] = fwhm
                 kwargs['gauss'] = options.gauss
-                kwargs['range'] = rng
+                kwargs['data_range'] = rng
             elif metric == 'psnr':
-                kwargs['range'] = rng
-            results[metric] = globals()[metric](pred, ref, options.average, **kwargs)
+                kwargs['data_range'] = rng
+            results[metric] = globals()[metric](pred, ref, options.average,
+                                                **kwargs)
 
-    dir, base, _ = fileparts(options.pred[0])
-    ofname = options.output.format(dir=dir or '.', sep=os.path.sep, base=base)
-    if options.append:
+    # JSON keys are always strings: convert now so that merging with an
+    # existing file does not create duplicate keys (1 vs "1")
+    results = json.loads(json.dumps(results))
+
+    dir, base, ext = fileparts(options.pred[0])
+    ofname = options.output.format(dir=dir or '.', sep=os.path.sep,
+                                   base=base, ext=ext)
+    if options.append and os.path.exists(ofname):
         with open(ofname) as f:
-            results = json.load(f).update({
-                (options.pred[0], options.ref[0]): results
-            })
+            old_results = json.load(f)
+        for metric, value in results.items():
+            if isinstance(old_results.get(metric), dict) \
+                    and isinstance(value, dict):
+                old_results[metric].update(value)
+            else:
+                old_results[metric] = value
+        results = old_results
     with open(ofname, 'w') as f:
         json.dump(results, f, indent=4)
 
@@ -239,7 +274,7 @@ def nlr(tp, tn, fp, fn):
     return fn * (tn + fp) / (tn * (tp + fn))
 
 
-def mse(pred, ref, average=None):
+def mse(pred, ref, average=()):
     results = {}
     acc = 0
     for c in range(len(ref)):
@@ -260,7 +295,7 @@ def mse(pred, ref, average=None):
     return results
 
 
-def rmse(pred, ref, average=None):
+def rmse(pred, ref, average=()):
     results = {}
     acc = 0
     for c in range(len(ref)):
@@ -273,7 +308,7 @@ def rmse(pred, ref, average=None):
 
     results0 = dict(results)
     if 'micro' in average:
-        results['micro'] = (acc / ref.numel()).ref.sqrt_()
+        results['micro'] = (acc / ref.numel()).sqrt_()
     if 'macro' in average:
         results['macro'] = sum(results0.values()) / len(results0)
 
@@ -282,7 +317,7 @@ def rmse(pred, ref, average=None):
     return results
 
 
-def mrse(pred, ref, average=None):
+def mrse(pred, ref, average=()):
     results = {}
     for c in range(len(ref)):
         pred1 = pred[c]
@@ -300,7 +335,7 @@ def mrse(pred, ref, average=None):
     return results
 
 
-def mad(pred, ref, average=None):
+def mad(pred, ref, average=()):
     results = {}
     for c in range(len(ref)):
         pred1 = pred[c]
@@ -318,20 +353,34 @@ def mad(pred, ref, average=None):
     return results
 
 
-def psnr(pred, ref, average=None, range=None):
+def _dynamic_range(ref, data_range=None):
+    """Width of the dynamic range: max - min.
+
+    By default (`data_range=None`), the min/max of the *reference* are used.
+    """
+    if data_range is None:
+        data_range = (ref.min(), ref.max())
+    mn, mx = data_range
+    return mx - mn
+
+
+def psnr(pred, ref, average=(), data_range=None):
+    """Peak Signal-to-Noise Ratio = 10 * log10(peak**2 / MSE)
+
+    The peak is the width of the dynamic range of the reference
+    (max - min), or of `data_range` if provided.
+    """
     results = {}
     for c in range(len(ref)):
         pred1 = pred[c]
         ref1 = ref[c]
-        range1 = range or (0, pred.max())
-        peak = range1[1]
+        peak = _dynamic_range(ref1, data_range)
         mse = (pred1 - ref1).square().mean()
         results[c] = 10 * torch.log10(peak**2 / mse)
 
     results0 = dict(results)
     if 'micro' in average:
-        range1 = range or (0, pred.max())
-        peak = range1[1]
+        peak = _dynamic_range(ref, data_range)
         mse = (pred - ref).square().mean()
         results['micro'] = 10 * torch.log10(peak**2 / mse)
     if 'macro' in average:
@@ -342,43 +391,31 @@ def psnr(pred, ref, average=None, range=None):
     return results
 
 
-def ssim(pred, ref, average=None, range=None, fwhm=3, gauss=False):
-    if fwhm == 'full':
-        return ssim_full(pred, ref, average, range)
-    if gauss:
-        return ssim_gauss(pred, ref, average, range)
+def _ssim_map(pred_mean, ref_mean, pred_var, ref_var, cov, data_range,
+              k1=0.01, k2=0.03):
+    """SSIM (Wang et al., 2004) from (local) first and second moments
 
-    k1, k2 = 0.01, 0.03
-    ndim = pred.dim() - 1
-    fwhm = make_list(fwhm, ndim)
-    fwhm = [int(math.ceil(f)) for f in fwhm]
+    SSIM = ((2 * mu_x * mu_y + C1) * (2 * cov_xy + C2)) /
+           ((mu_x**2 + mu_y**2 + C1) * (var_x + var_y + C2))
+    with C1 = (k1 * L)**2, C2 = (k2 * L)**2 and L the dynamic range.
+    """
+    c1, c2 = (k1 * data_range) ** 2, (k2 * data_range) ** 2
+    ssim = (2 * pred_mean * ref_mean + c1) * (2 * cov + c2)
+    ssim = ssim / ((pred_mean ** 2 + ref_mean ** 2 + c1) *
+                   (pred_var + ref_var + c2))
+    return ssim
 
-    def _ssim(p, r, l):
-        c1, c2 = (k1 * l) ** 2, (k2 * l) ** 2
-        p = unfold(p, fwhm)
-        dims = list(range(-ndim, 0))
-        pred_mean = p.mean(dims)
-        pred_var = p.var(dims)
-        ref_mean = r.mean(dims)
-        ref_var = r.var(dims)
-        cov = ((p - pred_mean) * (r - ref_mean)).mean(dims)
-        ssim = (2 * pred_mean * ref_mean) * (2 * cov + c2)
-        ssim /= (pred_mean ** 2 + ref_mean ** 2 + c1) * (pred_var + ref_var + c2)
-        return ssim.mean().cpu()
 
+def _ssim_average(_ssim, pred, ref, average, data_range):
     results = {}
     for c in range(len(ref)):
         pred1 = pred[c]
         ref1 = ref[c]
-        range1 = range or (0, pred.max())
-        range1 = range1[1] - range1[0]
-        results[c] = _ssim(pred1, ref1, range1)
+        results[c] = _ssim(pred1, ref1, _dynamic_range(ref1, data_range))
 
     results0 = dict(results)
     if 'micro' in average:
-        range1 = range or (0, pred.max())
-        range1 = range1[1] - range1[0]
-        results['micro'] = _ssim(pred, ref, range1)
+        results['micro'] = _ssim(pred, ref, _dynamic_range(ref, data_range))
     if 'macro' in average:
         results['macro'] = sum(results0.values()) / len(results0)
 
@@ -387,83 +424,81 @@ def ssim(pred, ref, average=None, range=None, fwhm=3, gauss=False):
     return results
 
 
-def ssim_gauss(pred, ref, average=None, range=None, fwhm=3):
+def ssim(pred, ref, average=(), data_range=None, fwhm=3, gauss=False):
+    """Structural Similarity Index Measure
 
-    k1, k2 = 0.01, 0.03
+    fwhm : 'full' -> global statistics
+           otherwise, if gauss -> Gaussian window with this FWHM (in voxels)
+           otherwise -> sliding square window of this size (in voxels)
+    """
+    if fwhm == 'full':
+        return ssim_full(pred, ref, average, data_range)
+    if gauss:
+        return ssim_gauss(pred, ref, average, data_range, fwhm)
+
+    ndim = pred.dim() - 1
+    fwhm = make_list(fwhm, ndim)
+    fwhm = [max(int(math.ceil(f)), 1) for f in fwhm]
+    pool = getattr(torch.nn.functional, f'avg_pool{ndim}d')
+
+    def box(x):
+        # local mean over a sliding window (stride 1, valid region only)
+        size = [min(f, s) for f, s in zip(fwhm, x.shape[-ndim:])]
+        batch, spatial = x.shape[:-ndim], x.shape[-ndim:]
+        x = pool(x.reshape([-1, 1, *spatial]), size, stride=1)
+        return x.reshape([*batch, *x.shape[-ndim:]])
+
+    def _ssim(p, r, l):
+        size = [min(f, s) for f, s in zip(fwhm, p.shape[-ndim:])]
+        n = py.prod(size)
+        # sample (unbiased) statistics, as in Wang et al. (2004)
+        unbias = n / max(n - 1, 1)
+        pred_mean = box(p)
+        ref_mean = box(r)
+        pred_var = (box(p * p) - pred_mean * pred_mean).mul_(unbias)
+        ref_var = (box(r * r) - ref_mean * ref_mean).mul_(unbias)
+        cov = (box(p * r) - pred_mean * ref_mean).mul_(unbias)
+        ssim = _ssim_map(pred_mean, ref_mean, pred_var, ref_var, cov, l)
+        return ssim.mean().cpu()
+
+    return _ssim_average(_ssim, pred, ref, average, data_range)
+
+
+def ssim_gauss(pred, ref, average=(), data_range=None, fwhm=3):
+    """SSIM with Gaussian-weighted local statistics (weights sum to one)"""
+
     ndim = pred.dim() - 1
     fwhm = make_list(fwhm, ndim)
 
     def _ssim(p, r, l):
-        c1, c2 = (k1 * l) ** 2, (k2 * l) ** 2
-        norm = p.numel()
-        pred_mean = smooth(p, fwhm=fwhm, dim=ndim).div_(norm)
-        pred_var = smooth(p * p, fwhm=fwhm, dim=ndim).div_(norm)
-        ref_mean = smooth(r, fwhm=fwhm, dim=ndim).div_(norm)
-        ref_var = smooth(r * r, fwhm=fwhm, dim=ndim).div_(norm)
-        cov = smooth(p * r, fwhm=fwhm, dim=ndim).div_(norm)
+        pred_mean = smooth(p, fwhm=fwhm, dim=ndim)
+        ref_mean = smooth(r, fwhm=fwhm, dim=ndim)
+        pred_var = smooth(p * p, fwhm=fwhm, dim=ndim)
+        ref_var = smooth(r * r, fwhm=fwhm, dim=ndim)
+        cov = smooth(p * r, fwhm=fwhm, dim=ndim)
         pred_var -= pred_mean * pred_mean
         ref_var -= ref_mean * ref_mean
         cov -= pred_mean * ref_mean
-        ssim = (2 * pred_mean * ref_mean) * (2 * cov + c2)
-        ssim /= (pred_mean ** 2 + ref_mean ** 2 + c1) * (pred_var + ref_var + c2)
-        return ssim.mean()
+        ssim = _ssim_map(pred_mean, ref_mean, pred_var, ref_var, cov, l)
+        return ssim.mean().cpu()
 
-    results = {}
-    for c in range(len(ref)):
-        pred1 = pred[c]
-        ref1 = ref[c]
-        range1 = range or (0, pred.max())
-        range1 = range1[1] - range1[0]
-        results[c] = _ssim(pred1, ref1, range1)
-
-    results0 = dict(results)
-    if 'micro' in average:
-        range1 = range or (0, pred.max())
-        range1 = range1[1] - range1[0]
-        results['micro'] = _ssim(pred, ref, range1)
-    if 'macro' in average:
-        results['macro'] = sum(results0.values()) / len(results0)
-
-    for label in results.keys():
-        results[label] = results[label].item()
-    return results
+    return _ssim_average(_ssim, pred, ref, average, data_range)
 
 
-def ssim_full(pred, ref, average=None, range=None):
-
-    k1, k2 = 0.01, 0.03
+def ssim_full(pred, ref, average=(), data_range=None):
+    """SSIM with global statistics (single window covering the image)"""
 
     def _ssim(p, r, l):
-        c1, c2 = (k1 * l) ** 2, (k2 * l) ** 2
-        pred_mean = p.mean().cpu()
-        pred_var = p.var().cpu()
-        ref_mean = r.mean().cpu()
-        ref_var = r.var().cpu()
-        cov = ((p - pred_mean) * (r - ref_mean)).mean().cpu()
-        ssim = (2 * pred_mean * ref_mean) * (2 * cov + c2)
-        ssim /= (pred_mean ** 2 + ref_mean ** 2 + c1) * (pred_var + ref_var + c2)
-        return ssim
+        pred_mean = p.mean()
+        pred_var = p.var()
+        ref_mean = r.mean()
+        ref_var = r.var()
+        # sample (unbiased) covariance, consistent with `var()`
+        cov = ((p - pred_mean) * (r - ref_mean)).sum() / max(p.numel() - 1, 1)
+        ssim = _ssim_map(pred_mean, ref_mean, pred_var, ref_var, cov, l)
+        return ssim.cpu()
 
-
-    results = {}
-    for c in range(len(ref)):
-        pred1 = pred[c]
-        ref1 = ref[c]
-        range1 = range or (0, pred.max())
-        range1 = range1[1] - range1[0]
-        results[c] = _ssim(pred1, ref1, range1)
-
-    results0 = dict(results)
-    if 'micro' in average:
-        range1 = range or (0, pred.max())
-        range1 = range1[1] - range1[0]
-        results['micro'] = _ssim(pred, ref, range1)
-    if 'macro' in average:
-        results['macro'] = sum(results0.values()) / len(results0)
-
-    for label in results.keys():
-        results[label] = results[label].item()
-    return results
+    return _ssim_average(_ssim, pred, ref, average, data_range)
 
 
 def hausdorff95(pred, ref, average=None, exclude=(0,)):

@@ -42,8 +42,9 @@ class SpatialLattice:
         if torch.is_tensor(kernel):
             kernel = kernel.shape[-self.dim():]
         affine, shape = affine_conv(
-            self.affine, self.shape, kernel, stride, padding,
-            output_padding, transposed)
+            self.affine, self.shape, kernel, stride=stride or 1,
+            padding=padding, output_padding=output_padding,
+            transposed=transposed)
         return SpatialLattice(shape, affine)
 
     def pad(self, padsize, side=None):

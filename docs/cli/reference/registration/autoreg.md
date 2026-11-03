@@ -60,10 +60,8 @@ writes each moving image with the transformation applied. See
 [Outputs](#outputs).
 
 !!! warning "At least one transformation is needed"
-    If the command contains no transformation group (`-tr`, `-rig`, `-sim`,
-    `-aff`, `-ffd` or `-dif`), nothing is optimised: the images are only copied
-    to their output files. Contrary to what the built-in help suggests, there
-    is no default transformation.
+    There is no default transformation. If the command contains none of `-tr`,
+    `-rig`, `-sim`, `-aff`, `-ffd` or `-dif`, `autoreg` stops with an error.
 
 ## Command-line grammar
 
@@ -75,9 +73,15 @@ a transformation inside a transformation group; `-lr` sets the learning rate
 of an optimiser or a relative learning rate of a transformation; `-h` is the
 help except inside an `-lbfgs` group, where it is the history size).
 
-Any argument that begins with a dash is a tag, including negative numbers, and
-every argument that is not a tag must belong to a group. File names therefore
-cannot start with a dash.
+Any argument that begins with a dash is a tag, unless it is a number: `-1`,
+`-.5` and `-1e-3` are values, so negative numbers can be given wherever a value
+is expected (factors, `-w`, `-t`, `-lr`, ...). Every argument that is not a tag
+must belong to a group. File names therefore cannot start with a dash.
+
+Running `nitorch autoreg` with no arguments prints the help. If the command
+line cannot be parsed, or if the registration fails, `autoreg` prints
+`[ERROR]` followed by a message on the standard error stream, without a
+traceback, and exits with status 1.
 
 The following tags open a group:
 
@@ -174,12 +178,9 @@ nitorch autoreg -all -nit 200 -mi -fix ... -mov ... -aff
 All images are rescaled before the registration, channel by channel, so that
 the 1st percentile of intensities maps to 0 and the 95th percentile to 1.
 
-Two limitations of the current version are worth knowing. For `-dice`, use
-floating-point probability maps (one channel per class): integer label volumes
-are meant to be converted to one-hot maps on the fly, but that conversion does
-not work in the current code. When you use `-oth`, add `-v 0` to your command;
-with the default verbosity, the summary printed at the start does not handle
-these groups.
+For `-dice`, the images can be soft segments (one channel per class) or
+integer label volumes, which are converted on the fly to one-hot maps, with one
+channel per label.
 
 #### Options common to all loss groups
 
@@ -210,8 +211,11 @@ each pair of channels.
 
 | Option | Value | Description | Default |
 | ------ | ----- | ----------- | ------- |
-| `-l`, `--labels` | `LABEL...` | Labels to use. | all labels except 0 |
-| `-w`, `--weights` | `WEIGHT...` | Weight of each label. Only the first value is retained in the current version. | unweighted |
+| `-l`, `--labels` | `LABEL...` | Labels to use. Each one becomes a channel of the one-hot maps built from integer label volumes. | all labels except 0 |
+| `-w`, `--weights` | `[WEIGHT...]` | Weight of each label (or channel). A single value is repeated for all labels. A bare `-w` weights each label by its size in the fixed image. | unweighted |
+
+The loss is the soft Dice coefficient averaged over labels; the background is
+excluded.
 
 ### Image block options
 
@@ -254,12 +258,17 @@ coordinates of the fixed images.
 | Option | Value | Description | Default |
 | ------ | ----- | ----------- | ------- |
 | `-sd`, `--smalldef` | `[BOOL]` | (`-dif` only) Penalise the exponentiated transformation (the displacement) instead of the velocity field. A bare `-sd` means yes. | no |
-| `-g`, `--grid` | `SIZE...` | (`-ffd` only) Number of nodes of the grid. Accepted, but it has no effect in the current version: the grid has the resolution of the current pyramid level. | |
+| `-g`, `--grid` | `SIZE...` | (`-ffd` only) Number of control points (nodes) of the grid, along each dimension. A single value is used for all dimensions. | `10` |
 
 The nonlinear field lives on the mean space of all the fixed and moving images
 that are not excluded with `-exc`, at the resolution of its pyramid level (see
 [Pyramids](#pyramids)). Its displacements are expressed in voxels of that grid. The
 extent of the grid can be enlarged with `-pad`.
+
+A `-dif` field is stored at the resolution of the current pyramid level. An
+`-ffd` field is different: its parameters live on a grid of nodes whose size is
+set by `-g`, and which keeps this size across pyramid levels. The pyramid only
+changes the resolution of the dense field that the nodes encode.
 
 #### Options common to all transformations
 
@@ -267,7 +276,7 @@ extent of the grid can be enlarged with `-pad`.
 | ------ | ----- | ----------- | ------- |
 | `-lr`, `--learning-rate` | `LR` | Learning rate of this transformation, relative to the learning rate of the optimiser (the two are multiplied). | `1` |
 | `-wd`, `--weight-decay` | `WD` | Weight decay of this transformation, relative to the optimiser's (the two are multiplied). | `0` |
-| `-init`, `--init` | `FILE` | Initial value, read from a file. Accepted by the parser, but its handling is incomplete in the current version; do not rely on it. | zero (identity) |
+| `-init`, `--init` | `FILE` | Initial value, read from a file. For a linear transformation, the file holds a matrix (for example a previous `.lta`), and the estimated refinement is composed on the left of it. For `-dif`, it is a 3-channel field that keeps its own orientation and is downsampled to the coarsest `-pyr` level. For `-ffd`, the loaded field is used as is: its grid defines the grid of nodes, and `-g` is ignored. | zero (identity) |
 | `-o`, `--output` | `[FILE]` | Output file for the estimated transformation; see [Outputs](#outputs). With no value, use the default. | `{name}{ext}` |
 | `-pyr`, `--pyramid` | `LEVEL...` | Resolution levels of a nonlinear field; see [Pyramids](#pyramids). Ignored for linear transformations. | `1` |
 
@@ -325,11 +334,6 @@ is not what the code does. No regulariser is placed on linear transformations.
 | `-pyr`, `--pyramid` | `LEVEL...` | Images and nonlinear fields | `1` |
 | `-o`, `--output` | `FILE` | Output name of the transformations | `{name}{ext}` |
 
-!!! warning "`-stop` inside `-all`"
-    In the current version, `-stop` in an `-all` group also discards the two
-    arguments that follow it. Put `-stop` in an optimiser group instead, or make
-    it the last thing on the command line.
-
 The built-in help also lists `-r`, `-init` and `-exc` as default options; the
 code does not accept them in an `-all` group.
 
@@ -343,9 +347,6 @@ code does not accept them in an `-all` group.
 | `-cpu`, `--cpu` | | Run on the CPU. This is the default device. | |
 | `-gpu`, `--gpu` | `[N]` | Run on a GPU, optionally the one numbered `N`. | |
 | `-h`, `--help` | | Print the built-in help and exit. | |
-
-Do not turn off progressive freeing (`-prg false`) when you give several pyramid levels
-to a nonlinear transformation: the registration would not terminate.
 
 ## Optimisation
 
@@ -362,8 +363,8 @@ parameters that are free so far, and then more parameters are freed. The order i
    [Pyramids](#pyramids)). Once free, the linear parameters keep being
    optimised.
 
-With `-prg false`, all parameters are free from the first stage and there is a
-single stage.
+With `-prg false`, all parameters are free from the first stage. A nonlinear
+field with several pyramid levels then gets one more stage for each finer level.
 
 Within a stage, the learning rate is reduced automatically when the loss stops
 improving (PyTorch's `ReduceLROnPlateau`). The stage stops after `-nit`
@@ -405,7 +406,7 @@ default names are written in the current directory.
 | `-rig` | `rigid.lta` | The matrix, in an `.lta` file. |
 | `-sim` | `similitude.lta` | The matrix, in an `.lta` file. |
 | `-aff` | `affine.lta` | The matrix, in an `.lta` file. |
-| `-ffd` | `ffd.nii.gz` | The grid of FFD parameters (the spline coefficients of the displacement field). |
+| `-ffd` | `ffd.nii.gz` | The grid of nodes (the spline coefficients of the displacement field), with its own orientation matrix. It is not a dense field on the image grid. |
 | `-dif` | `diffeo.nii.gz` | The velocity field, with the orientation matrix of the mean space. |
 
 You can change the name with `-o` in the transformation group or in `-all`. The
@@ -493,7 +494,7 @@ Register intensity images and carry a segmentation along, with nearest-neighbour
 interpolation. The segmentation is not part of the loss:
 
 ```shell
-nitorch autoreg -v 0 -mi -fix T1w.nii.gz -mov FLAIR.nii.gz \
+nitorch autoreg -mi -fix T1w.nii.gz -mov FLAIR.nii.gz \
         -oth -mov FLAIR_seg.nii.gz -inter 0 \
         -rig
 ```

@@ -11,8 +11,10 @@ usage:
     -m, --metrics           Metrics to compute. See below.
     -s, --average           Compute mean metrics for multiple labels/images: {'micro', 'macro', 'weighted'}
     -x, --exclude [0]       Labels that should never be considered foreground (can be "none")
-    -a, --append            Append result if output JSON file exists
-    -o, --output            Output filenames (default: {dir}/{base}.metrics.json)
+    -a, --append            Merge results into the output JSON file if it exists
+    -o, --output            Output filename (default: {dir}/{base}.metrics.json)
+                            Can use {dir}, {sep}, {base} and {ext} of the first
+                            predicted image.
         --cpu [N=0]         Use CPU with N threads. If N=0: as many threads as CPUs.
         --gpu [ID=0]        Use GPU
     
@@ -38,18 +40,21 @@ metrics for images
     rmse        Root Mean Squared Error
     mrse        Mean Root Squared Error
     mad         Median Absolute Deviation
-    psnr        Peak Signal-to-Noise Ratio
+    psnr        Peak Signal-to-Noise Ratio      = 10 * log10(range**2 / MSE)
     ssim        Structural Similarity Index Measure
     images      All of the above
 
 ssim options:
-    --ssim-fwhm [3]         Window size or full-width half max of Gaussian kernel. Can be "full"
-    --ssim-gauss            Use Gaussian kernel rather than square window
-    --range [[MN] MX]       Dynamic range. Default is min/max of reference.
+    --ssim-fwhm [3] [vox]   Window size or full-width half max of Gaussian kernel,
+                            in voxels (vox) or millimeters (mm).
+                            Can be "full" (global statistics).
+    --ssim-gauss            Use Gaussian kernel rather than square sliding window
+    --range [[MN=0] MX]     Dynamic range (used by psnr and ssim).
+                            Default is min/max of reference.
 """
 
 label_metrics = ['labels', 'dice', 'jaccard', 'accuracy', 'ppv', 'npv', 'fdr',
-                 'tpr', 'fpr', 'tnr', 'plr', 'nlr', 'hausdorff', 'hausdorff95']
+                 'tpr', 'fpr', 'fnr', 'tnr', 'plr', 'nlr', 'hausdorff', 'hausdorff95']
 image_metrics = ['images', 'mse', 'rmse', 'mrse', 'mad', 'psnr', 'ssim']
 metrics = label_metrics + image_metrics
 

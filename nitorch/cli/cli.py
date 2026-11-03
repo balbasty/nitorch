@@ -7,6 +7,14 @@ Subcommands should register themselves by doing:
 ```
 The registered function should be a parser which takes the list of
 command-line arguments (without the command name) as input.
+
+Exit status: a command function reports a failure (a `ParseError` or any
+other exception it caught and printed as `[ERROR] ...`) by returning a
+non-zero integer (by convention, 1); it must not call `sys.exit` itself, so
+that it can be called programmatically. `cli` turns that into the return
+value of the `nitorch` executable (the console script and
+`python -m nitorch` pass it to `sys.exit`). Any other return value
+(including `None`) means success.
 """
 import sys
 
@@ -55,7 +63,7 @@ def cli(args=None):
     if tag == 'help':
         if args:
             if args[0] in commands.keys():
-                return commands[args[0]](['-h'])
+                return _status(commands[args[0]](['-h']))
             else:
                 print(help())
                 print(f'[ERROR] Unknown command "{args[0]}"', file=sys.stderr)
@@ -70,4 +78,16 @@ def cli(args=None):
         print(help())
         print(f'[ERROR] Unknown command "{tag}"', file=sys.stderr)
         return 1
-    return commands[tag](args)
+    return _status(commands[tag](args))
+
+
+def _status(rc):
+    """Convert the return value of a command into an exit status.
+
+    Only a non-zero integer (not a bool) signals a failure; commands may
+    return arbitrary objects on success, which must not reach `sys.exit`
+    (it would print them and exit with status 1).
+    """
+    if isinstance(rc, int) and not isinstance(rc, bool) and rc != 0:
+        return rc
+    return 0

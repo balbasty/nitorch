@@ -15,7 +15,8 @@ from nitorch import io, spatial
 from nitorch.core.py import fileparts
 from nitorch.cli.registration.register.cli import _cli as register
 from nitorch.cli.registration.meanspace.cli import _cli as meanspace
-from nitorch.cli.registration.reslice.main import reslice
+# raising variant: errors must propagate to this command
+from nitorch.cli.registration.reslice.main import _reslice as reslice
 from .parser import steps as all_steps
 
 # basis used by `optimal_affine` for each affine model of `register`
@@ -200,7 +201,7 @@ def optinorm(inputs, output='norm', steps=all_steps, both=False,
                 weights = {(i, j): io.map(paths.pair_hessian(i, j))
                            for i, j in pairs}
             optimal = spatial.optimal_svf(svfs, weights=weights, **prm)
-            labels = list(set(label for pair in svfs for label in pair))
+            labels = spatial.svf_labels(svfs)
             for i in range(len(inputs)):
                 io.savef(optimal[labels.index(i)], paths.opt_svf(i, mode),
                          like=paths.pair_svf(*pairs[0]))

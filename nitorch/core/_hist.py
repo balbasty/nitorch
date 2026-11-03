@@ -13,6 +13,7 @@ from nitorch.core import kernels
 import torch
 from typing import List
 from . import py, dtypes
+from .math import maximum
 
 
 # ======================================================================
@@ -1284,7 +1285,7 @@ def _guard_range(min, max):
     if not max.dtype.is_floating_point:
         max = max.to(min.dtype)
     min, max = torch.broadcast_tensors(min, max)
-    scale = torch.maximum(min.abs(), max.abs()).clamp_min(1)
+    scale = maximum(min.abs(), max.abs()).clamp_min(1)
     bad = (max - min) <= 4 * torch.finfo(min.dtype).eps * scale
     if bad.any():
         center = (min + max) / 2

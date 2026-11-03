@@ -1,11 +1,27 @@
-__all__ = ["optimal_svf"]
+__all__ = ["optimal_svf", "svf_labels"]
 import torch
 from nitorch.core.py import prod
 from nitorch.core.linalg import lmdiv, sym_matvec
+from nitorch.core.utils import fast_movedim
 from nitorch.spatial import solve_grid_fmg
 
 
-def optimal_svf(svf, weights=None, squared=True, **prm):
+def svf_labels(pairs):
+    """Ordered list of unique subject labels in a collection of pairs.
+
+    Labels are sorted when they are mutually comparable, otherwise they
+    are returned in order of first appearance. This is the order of the
+    subjects in the output of `optimal_svf`.
+    """
+    labels = list(dict.fromkeys(label for pair in pairs for label in pair))
+    try:
+        labels = sorted(labels)
+    except TypeError:
+        pass
+    return labels
+
+
+def optimal_svf(svf, weights=None, squared=True, verbose=False, **prm):
     """Compute optimal "template-to-subj" SVFs from "subj-to-subj" pairs.
 
     Parameters
@@ -16,13 +32,16 @@ def optimal_svf(svf, weights=None, squared=True, **prm):
         Weight for each pair
     squared : bool
         If true, weight contains squared weights (== precision)
+    verbose : bool
+        Print progress
     **prm
         Regularization parameters
 
     Returns
     -------
     optimal : (N, *shape, D) tensor
-        Optimal template-to-subject SVFs
+        Optimal template-to-subject SVFs, in the order of
+        `svf_labels(svf)`
 
     """
     backend = dict(
@@ -34,12 +53,19 @@ def optimal_svf(svf, weights=None, squared=True, **prm):
     shape = list(svf.values())[0].shape[-ndim-1:-1]
 
     # compute list of unique labels
-    labels = list(set([label for pair in svf for label in pair]))
+    labels = svf_labels(svf)
 
     # compute log-optimal parameters
     N = len(labels)
-    K = len(svf)
     D = ndim
+
+    def complete_pairs(d, negate=True):
+        # add missing reverse directions (b, a) for every given (a, b).
+        # iterate over a snapshot: the dict grows during the loop.
+        d = dict(d)
+        for (a, b), v in list(d.items()):
+            d.setdefault((b, a), -v if negate else v)
+        return d
 
     def load(d):
         return {
@@ -52,17 +78,19 @@ def optimal_svf(svf, weights=None, squared=True, **prm):
 
         # ensure forward/backward are present
         # (avoids bias if some are and others are not)
-        svf = dict(svf)
-        for (a, b), v in svf.items():
-            svf.setdefault((b, a), -v)
+        svf = complete_pairs(svf)
+        K = len(svf)
 
         if weights:
-            weights = dict(weights)
-            for (a, b), w in weights.items():
-                weights.setdefault((b, a), w)
+            weights = complete_pairs(weights, negate=False)
             if set(svf.keys()) - set(weights.keys()):
-                meanw = sum(w.mean() for w in weights.values())
+                # fill missing weights with the mean (diagonal) weight,
+                # as a (*shape, 1) field so that it is treated as a
+                # scalar (isotropic) precision
+                meanw = sum(w[..., :D].mean() for w in weights.values())
                 meanw /= len(weights)
+                ref = next(iter(weights.values()))
+                meanw = meanw.expand(ref.shape[:-1] + (1,))
                 for (a, b) in svf.keys():
                     weights.setdefault((a, b), meanw)
 
@@ -124,7 +152,7 @@ def optimal_svf(svf, weights=None, squared=True, **prm):
         # reshape and zero-center
         z = z.reshape(z.shape[:-1] + (N, D))
         z -= torch.mean(z, dim=-2, keepdim=True)
-        z = torch.movedim(z, -2, 0)
+        z = fast_movedim(z, -2, 0)
 
         # Build absolute matrix
         w = torch.zeros([N, *shape[:2], (D*(D+1))//2])
@@ -147,9 +175,8 @@ def optimal_svf(svf, weights=None, squared=True, **prm):
 
         # ensure forward/backward are present
         # (avoids bias if some are and others are not)
-        svf = dict(svf)
-        for (a, b), v in svf.items():
-            svf.setdefault((b, a), -v)
+        svf = complete_pairs(svf)
+        K = len(svf)
 
         w = torch.zeros([K, N])
         for p, (i, j) in enumerate(svf.keys()):
@@ -161,34 +188,35 @@ def optimal_svf(svf, weights=None, squared=True, **prm):
         z = lmdiv(w.to(x), x.unsqueeze(-1), method='pinv', rcond=1e-5)
         z = z.squeeze(-1)
         z -= torch.mean(z, dim=-1, keepdim=True)  # zero-center
-        z = torch.movedim(z, -1, 0)
+        z = fast_movedim(z, -1, 0)
         w = w.abs().sum(0)
         return z, w
 
     def fit(svf, weights):
         return fit_weighted(svf, weights) if weights else fit_unweighted(svf)
 
-    print("fit")
+    log = print if verbose else (lambda *a, **k: None)
+    log("fit")
     if ndim == 3:
         # slicewise
         z = torch.zeros([N, *shape, D])
         if weights:
             w = torch.zeros([N, *shape, (D*(D+1))//2])
         for k in range(shape[-1]):
-            print("slice: ", k, end='\r')
+            log("slice: ", k, end='\r')
             vk = dict(zip(svf.keys(), [v[:, :, k, :] for v in svf.values()]))
             if weights:
                 wk = dict(zip(weights.keys(), [w[:, :, k, :] for w in weights.values()]))
                 z[..., k, :], w[..., k, :] = fit(vk, wk)
             else:
                 z[..., k, :], w = fit(vk, None)
-        print("")
+        log("")
     else:
         z, w = fit(svf, weights)
 
     # regularize
     if prm:
-        print("regularize")
+        log("regularize")
         alpha0 = prm.get("factor", 1.0)
         alpha0 = alpha0 / prod(z.shape[1:-1])
         prm["factor"] = alpha0

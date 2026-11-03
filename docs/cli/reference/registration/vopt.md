@@ -56,10 +56,11 @@ of the moving image, and the path to a stationary velocity field that warps the
 moving image to the fixed one. Labels are arbitrary strings (`mtw`, `01`,
 `sub-02_T1w`); they only serve to tell which pairs involve the same image, and
 they are used in the names of the output files. If you give the same pair
-twice, the last file wins. If only one direction of a pair is given, the other
-is assumed to be its negative (the inverse transformation). Leaving pairs out
-can bias the estimate, but the bias averages out when there are many subjects
-and the pairs you evaluate are sampled at random.
+twice, the last file wins. A pair given in one direction only is taken as the
+negative of the reverse direction (the inverse transformation), whether or not
+you provide weights. You therefore only need to give one direction of each pair.
+Leaving pairs out can bias the estimate, but the bias averages out when there
+are many subjects and the pairs you evaluate are sampled at random.
 
 All velocity fields must be defined on the same voxel grid, as 3D vector
 fields with three components (see
@@ -73,8 +74,10 @@ with either one value per voxel (the same weight for the three components),
 three values (one weight per component) or six values (the independent
 entries of a symmetric $3 \times 3$ precision matrix: three diagonal entries,
 followed by the three off-diagonal ones). The weight of a pair is also used for
-its reverse. Pairs that have a field but no weight receive the mean of the other
-weights. If you give no `-w` option at all, all pairs are weighted equally.
+its reverse: if you give it for one direction only, it is copied to the other.
+If only some pairs have a weight, the others receive an isotropic weight equal
+to the mean of the given weights (averaged over their diagonal entries). If you
+give no `-w` option at all, all pairs are weighted equally.
 
 ### Regularisation
 
@@ -95,7 +98,10 @@ Accepted values are `dct2`, `dct1`, `dst2`, `dst1`, `dft`, `zero` and
 
 ### Output
 
-For every label, `vopt` writes one velocity field. The header (orientation
+For every label, `vopt` writes one velocity field. Subjects are sorted by
+label before they are written. Labels are strings, so they are sorted as
+strings (`10` comes before `2`), which only matters if you rely on the order in
+which `{label}` is expanded. The header (orientation
 matrix and grid) is copied from the first input file. The output path is a
 template in which these placeholders are expanded:
 
@@ -109,8 +115,6 @@ template in which these placeholders are expanded:
 The default is `{dir}{sep}{label}_optimal.nii.gz`, which writes NIfTI files
 next to the first input. Create the output directory beforehand when you
 choose another one.
-
-While running, `vopt` prints progress messages to the standard output.
 
 ## Arguments
 

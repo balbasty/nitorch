@@ -74,3 +74,29 @@ def test_affreg_run_writes_lta(tmp_path, images):
     affreg_cli._cli(['-m', mov, '-f', fix, '-l', 'mse', '-p', '0',
                      '-n', '2', '-x', 'false', '-v', '0'])
     assert _ltas(tmp_path) == ['rigid.lta']
+
+
+# ----------------------------------------------------------------------
+#   #171: only the moving image's outputs are written
+# ----------------------------------------------------------------------
+
+def test_affreg_fixed_image_outputs_disabled(monkeypatch):
+    opt = register_parser.parse(_register_args(monkeypatch))
+    assert opt.loss[0].fix.output is False
+    assert opt.loss[0].fix.resliced is False
+    assert opt.loss[0].mov.output == '{dir}/{base}.moved{ext}'
+
+
+def test_affreg_run_writes_no_fixed_moved(tmp_path, images):
+    fix, mov = images
+    affreg_cli._cli(['-m', mov, '-f', fix, '-l', 'mse', '-p', '0',
+                     '-n', '2', '-o', 'false', '-v', '0'])
+    assert not (tmp_path / 'fix.moved.nii.gz').exists()
+    assert (tmp_path / 'mov.moved.nii.gz').exists()
+
+
+def test_affreg_run_moving_outputs_off_writes_nothing(tmp_path, images):
+    fix, mov = images
+    affreg_cli._cli(['-m', mov, '-f', fix, '-l', 'mse', '-p', '0',
+                     '-n', '2', '-o', 'false', '-x', 'false', '-v', '0'])
+    assert sorted(os.listdir(tmp_path)) == ['fix.nii.gz', 'mov.nii.gz']

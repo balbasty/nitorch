@@ -364,8 +364,11 @@ def get_data(x, w, affine, dim, **backend):
                 f = f.squeeze(dim)
             if ndim(f) > dim + 1:
                 raise ValueError('Too many dimensions')
-        if f.dim > dim:
-            f = f.movedim(-1, 0)
+        if ndim(f) > dim:
+            if torch.is_tensor(f):
+                f = utils.movedim(f, -1, 0)
+            else:
+                f = f.movedim(-1, 0)
         else:
             f = f[None]
         return f

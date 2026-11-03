@@ -1,7 +1,7 @@
 import warnings
 from nitorch.cli.cli import commands
 from nitorch.core.cli import ParseError
-from .parser import parser, help
+from .parser import parser, help, validate_options
 from nitorch.tools.uniseg import uniseg, path_spm_prior, get_data
 from nitorch import io, spatial
 from nitorch.core import utils, py, linalg
@@ -22,8 +22,10 @@ def cli(args=None):
     except ParseError as e:
         print(help[1])
         print(f'[ERROR] {str(e)}', file=sys.stderr)
-    # except Exception as e:
-    #     print(f'[ERROR] {str(e)}', file=sys.stderr)
+        return 1
+    except Exception as e:
+        print(f'[ERROR] {str(e)}', file=sys.stderr)
+        return 1
 
 
 commands['uniseg'] = cli
@@ -37,6 +39,7 @@ def cli_parse(args):
     if options.help:
         print(help)
         return
+    validate_options(options)
     if options.verbose > 3:
         print(options)
         print('')
@@ -86,6 +89,7 @@ def main(options):
         prior=options.tpm,
         do_bias=options.bias,
         do_warp=options.warp,
+        do_affine=options.align,
         do_mixing=options.mix,
         do_mrf=options.mrf,
         wishart=wishart_mode,
@@ -111,7 +115,26 @@ def main(options):
 def get_format_dict(fname, dir0):
     dir, base, ext = py.fileparts(fname)
     dir = dir0 or dir or '.'
-    return dict(dir=dir, sep=os.sep, base=base, ext=ext)
+    return dict(dir=dir, sep=os.sep, base=base, ext=ext, c=1)
+
+
+def channel_fnames(template, inputs, dir0):
+    """One distinct filename per input channel.
+
+    The template is formatted with each input's own {dir}/{base}/{ext}
+    (and {c}, the 1-based channel index). If two channels still end up
+    with the same name (custom name without {base}/{c}, or inputs with
+    the same base name), a `.{c}` index is inserted before the extension.
+    """
+    names = [template.format(**dict(get_format_dict(ref, dir0), c=c+1))
+             for c, ref in enumerate(inputs)]
+    if len(set(names)) < len(names):
+        indexed = []
+        for c, name in enumerate(names):
+            dir, base, ext = py.fileparts(name)
+            indexed.append(os.path.join(dir, f'{base}.{c+1}{ext}'))
+        names = indexed
+    return names
 
 
 def write_outputs(z, prm, options):
@@ -134,7 +157,7 @@ def write_outputs(z, prm, options):
         fname = fname.format(**format_dict)
         if options.verbose > 0:
             print('prob.nat     ->', fname)
-        io.savef(torch.movedim(z, 0, -1), fname, like=ref_native, dtype='float32')
+        io.savef(utils.movedim(z, 0, -1), fname, like=ref_native, dtype='float32')
 
     if options.labels_nat or (options.all_nat and options.labels_nat is not False):
         fname = options.labels_nat or '{dir}{sep}{base}.labels.nat{ext}'
@@ -150,14 +173,14 @@ def write_outputs(z, prm, options):
             fname = fname.format(**format_dict)
             if options.verbose > 0:
                 print('bias.nat     ->', fname)
-            io.savef(torch.movedim(bias, 0, -1), fname, like=ref_native, dtype='float32')
+            io.savef(utils.movedim(bias, 0, -1), fname, like=ref_native, dtype='float32')
         else:
-            for c, (bias1, ref1) in enumerate(zip(bias, options.input)):
-                format_dict1 = get_format_dict(ref1, options.output)
-                fname = fname.format(**format_dict1)
+            fnames = channel_fnames(fname, options.input, options.output)
+            for c, (bias1, ref1, fname1) in enumerate(
+                    zip(bias, options.input, fnames)):
                 if options.verbose > 0:
-                    print(f'bias.nat.{c+1}   ->', fname)
-                io.savef(bias1, fname, like=ref1, dtype='float32')
+                    print(f'bias.nat.{c+1}   ->', fname1)
+                io.savef(bias1, fname1, like=ref1, dtype='float32')
         del bias
 
     if (options.nobias_nat or options.all_nat) and options.bias:
@@ -167,14 +190,14 @@ def write_outputs(z, prm, options):
             fname = fname.format(**format_dict)
             if options.verbose > 0:
                 print('nobias.nat   ->', fname)
-            io.savef(torch.movedim(nobias, 0, -1), fname, like=ref_native)
+            io.savef(utils.movedim(nobias, 0, -1), fname, like=ref_native)
         else:
-            for c, (nobias1, ref1) in enumerate(zip(bias, options.input)):
-                format_dict1 = get_format_dict(ref1, options.output)
-                fname = fname.format(**format_dict1)
+            fnames = channel_fnames(fname, options.input, options.output)
+            for c, (nobias1, ref1, fname1) in enumerate(
+                    zip(nobias, options.input, fnames)):
                 if options.verbose > 0:
-                    print(f'nobias.nat.{c+1} ->', fname)
-                io.savef(nobias1, fname, like=ref1)
+                    print(f'nobias.nat.{c+1} ->', fname1)
+                io.savef(nobias1, fname1, like=ref1)
         del nobias
 
     if (options.warp_nat or options.all_nat) and options.warp:
@@ -190,7 +213,7 @@ def write_outputs(z, prm, options):
         fname = fname.format(**format_dict)
         if options.verbose > 0:
             print('prior.nat     ->', fname)
-        io.savef(torch.movedim(prm['warped'], 0, -1), fname, like=ref_native, dtype='float32')
+        io.savef(utils.movedim(prm['warped'], 0, -1), fname, like=ref_native, dtype='float32')
 
     # --- MNI space ----------------------------------------------------
     if options.tpm is False:
@@ -202,7 +225,11 @@ def write_outputs(z, prm, options):
     dat_affine = io.map(ref_native).affine
     mni_affine = mni_affine.to(**backend)
     dat_affine = dat_affine.to(**backend)
-    prm_affine = prm['affine'].to(**backend)
+    prm_affine = prm.get('affine', None)
+    if prm_affine is None:
+        # no TPM alignment (--no-align)
+        prm_affine = torch.eye(4)
+    prm_affine = prm_affine.to(**backend)
     dat_affine = prm_affine @ dat_affine
     if options.mni_vx:
         vx = spatial.voxel_size(mni_affine)
@@ -212,14 +239,14 @@ def write_outputs(z, prm, options):
 
     if options.prob_mni or options.labels_mni or options.all_mni:
         z_mni = spatial.reslice(z, dat_affine, mni_affine, mni_shape)
-        if options.prob_mni:
+        if options.prob_mni or options.all_mni:
             fname = options.prob_mni or '{dir}{sep}{base}.prob.mni{ext}'
             fname = fname.format(**format_dict)
             if options.verbose > 0:
                 print('prob.mni     ->', fname)
-            io.savef(torch.movedim(z_mni, 0, -1), fname, like=ref_native,
+            io.savef(utils.movedim(z_mni, 0, -1), fname, like=ref_native,
                      affine=mni_affine, dtype='float32')
-        if options.labels_mni:
+        if options.labels_mni or options.all_mni:
             fname = options.labels_mni or '{dir}{sep}{base}.labels.mni{ext}'
             fname = fname.format(**format_dict)
             if options.verbose > 0:
@@ -230,11 +257,11 @@ def write_outputs(z, prm, options):
 
     if options.prior_mni or options.all_mni:
         mu_mni = spatial.reslice(prm['warped'], dat_affine, mni_affine, mni_shape)
-        fname = options.prob_mni or '{dir}{sep}{base}.prior.mni{ext}'
+        fname = options.prior_mni or '{dir}{sep}{base}.prior.mni{ext}'
         fname = fname.format(**format_dict)
         if options.verbose > 0:
             print('prior.mni     ->', fname)
-        io.savef(torch.movedim(mu_mni, 0, -1), fname, like=ref_native,
+        io.savef(utils.movedim(mu_mni, 0, -1), fname, like=ref_native,
                  affine=mni_affine, dtype='float32')
         del mu_mni
 
@@ -248,50 +275,50 @@ def write_outputs(z, prm, options):
                 fname = fname.format(**format_dict)
                 if options.verbose > 0:
                     print('bias.mni     ->', fname)
-                io.savef(torch.movedim(bias, 0, -1), fname, like=ref_native,
+                io.savef(utils.movedim(bias, 0, -1), fname, like=ref_native,
                          affine=mni_affine, dtype='float32')
             else:
-                for c, (bias1, ref1) in enumerate(zip(bias, options.input)):
-                    format_dict1 = get_format_dict(ref1, options.output)
-                    fname = fname.format(**format_dict1)
+                fnames = channel_fnames(fname, options.input, options.output)
+                for c, (bias1, ref1, fname1) in enumerate(
+                        zip(bias, options.input, fnames)):
                     if options.verbose > 0:
-                        print(f'bias.mni.{c+1}   ->', fname)
-                    io.savef(bias1, fname, like=ref1, affine=mni_affine,
+                        print(f'bias.mni.{c+1}   ->', fname1)
+                    io.savef(bias1, fname1, like=ref1, affine=mni_affine,
                              dtype='float32')
 
         if options.nobias_mni or options.all_mni:
             nobias = spatial.reslice(dat, dat_affine, mni_affine, mni_shape)
             nobias *= bias
-            fname = options.bias_mni or '{dir}{sep}{base}.nobias.mni{ext}'
+            fname = options.nobias_mni or '{dir}{sep}{base}.nobias.mni{ext}'
             if len(options.input) == 1:
                 fname = fname.format(**format_dict)
                 if options.verbose > 0:
                     print('nobias.mni   ->', fname)
-                io.savef(torch.movedim(nobias, 0, -1), fname, like=ref_native,
+                io.savef(utils.movedim(nobias, 0, -1), fname, like=ref_native,
                          affine=mni_affine)
             else:
-                for c, (nobias1, ref1) in enumerate(zip(bias, options.input)):
-                    format_dict1 = get_format_dict(ref1, options.output)
-                    fname = fname.format(**format_dict1)
+                fnames = channel_fnames(fname, options.input, options.output)
+                for c, (nobias1, ref1, fname1) in enumerate(
+                        zip(nobias, options.input, fnames)):
                     if options.verbose > 0:
-                        print(f'nobias.mni.{c+1} ->', fname)
-                    io.savef(nobias1, fname, like=ref1, affine=mni_affine)
+                        print(f'nobias.mni.{c+1} ->', fname1)
+                    io.savef(nobias1, fname1, like=ref1, affine=mni_affine)
             del nobias
 
         del bias
 
     need_iwarp = (options.warp_mni or options.prob_wrp or options.labels_wrp or
-                  options.bias_wrp or options.nobias_wrp or options.all_mni or
-                  options.all_wrp)
+                  options.prior_wrp or options.bias_wrp or options.nobias_wrp or
+                  options.all_mni or options.all_wrp)
     need_iwarp = need_iwarp and options.warp
     if not need_iwarp:
         return
 
     iwarp = spatial.grid_inv(prm['warp'], type='disp')
-    iwarp = iwarp.movedim(-1, 0)
+    iwarp = utils.movedim(iwarp, -1, 0)
     iwarp = spatial.reslice(iwarp, dat_affine, mni_affine, mni_shape,
                             interpolation=2, bound='dft', extrapolate=True)
-    iwarp = iwarp.movedim(0, -1)
+    iwarp = utils.movedim(iwarp, 0, -1)
     iaff = mni_affine.inverse() @ dat_affine
     iwarp = linalg.matvec(iaff[:3, :3], iwarp)
 
@@ -309,15 +336,15 @@ def write_outputs(z, prm, options):
 
     if options.prob_wrp or options.labels_wrp or options.all_wrp:
         z_mni = spatial.grid_pull(z, iwarp)
-        if options.prob_mni or options.all_wrp:
-            fname = options.prob_mni or '{dir}{sep}{base}.prob.wrp{ext}'
+        if options.prob_wrp or options.all_wrp:
+            fname = options.prob_wrp or '{dir}{sep}{base}.prob.wrp{ext}'
             fname = fname.format(**format_dict)
             if options.verbose > 0:
                 print('prob.wrp     ->', fname)
-            io.savef(torch.movedim(z_mni, 0, -1), fname, like=ref_native,
+            io.savef(utils.movedim(z_mni, 0, -1), fname, like=ref_native,
                      affine=mni_affine, dtype='float32')
-        if options.labels_mni or options.all_wrp:
-            fname = options.labels_mni or '{dir}{sep}{base}.labels.wrp{ext}'
+        if options.labels_wrp or options.all_wrp:
+            fname = options.labels_wrp or '{dir}{sep}{base}.labels.wrp{ext}'
             fname = fname.format(**format_dict)
             if options.verbose > 0:
                 print('labels.wrp   ->', fname)
@@ -327,13 +354,13 @@ def write_outputs(z, prm, options):
 
     if options.prior_wrp or options.all_wrp:
         mu_mni = spatial.grid_pull(prm['warped'], iwarp)
-        fname = options.prob_mni or '{dir}{sep}{base}.prior.wrp{ext}'
+        fname = options.prior_wrp or '{dir}{sep}{base}.prior.wrp{ext}'
         fname = fname.format(**format_dict)
         if options.verbose > 0:
             print('prior.wrp     ->', fname)
-        io.savef(torch.movedim(mu_mni, 0, -1), fname, like=ref_native,
+        io.savef(utils.movedim(mu_mni, 0, -1), fname, like=ref_native,
                  affine=mni_affine, dtype='float32')
-        del z_mni
+        del mu_mni
 
     if options.bias and (options.bias_wrp or options.nobias_wrp or options.all_wrp):
         bias = spatial.grid_pull(prm['bias'], iwarp,
@@ -344,15 +371,15 @@ def write_outputs(z, prm, options):
                 fname = fname.format(**format_dict)
                 if options.verbose > 0:
                     print('bias.wrp     ->', fname)
-                io.savef(torch.movedim(bias, 0, -1), fname, like=ref_native,
+                io.savef(utils.movedim(bias, 0, -1), fname, like=ref_native,
                          affine=mni_affine, dtype='float32')
             else:
-                for c, (bias1, ref1) in enumerate(zip(bias, options.input)):
-                    format_dict1 = get_format_dict(ref1, options.output)
-                    fname = fname.format(**format_dict1)
+                fnames = channel_fnames(fname, options.input, options.output)
+                for c, (bias1, ref1, fname1) in enumerate(
+                        zip(bias, options.input, fnames)):
                     if options.verbose > 0:
-                        print(f'bias.wrp.{c+1}   ->', fname)
-                    io.savef(bias1, fname, like=ref1, affine=mni_affine,
+                        print(f'bias.wrp.{c+1}   ->', fname1)
+                    io.savef(bias1, fname1, like=ref1, affine=mni_affine,
                              dtype='float32')
 
         if options.nobias_wrp or options.all_wrp:
@@ -363,15 +390,15 @@ def write_outputs(z, prm, options):
                 fname = fname.format(**format_dict)
                 if options.verbose > 0:
                     print('nobias.wrp   ->', fname)
-                io.savef(torch.movedim(nobias, 0, -1), fname, like=ref_native,
+                io.savef(utils.movedim(nobias, 0, -1), fname, like=ref_native,
                          affine=mni_affine)
             else:
-                for c, (nobias1, ref1) in enumerate(zip(bias, options.input)):
-                    format_dict1 = get_format_dict(ref1, options.output)
-                    fname = fname.format(**format_dict1)
+                fnames = channel_fnames(fname, options.input, options.output)
+                for c, (nobias1, ref1, fname1) in enumerate(
+                        zip(nobias, options.input, fnames)):
                     if options.verbose > 0:
-                        print(f'nobias.wrp.{c+1} ->', fname)
-                    io.savef(nobias1, fname, like=ref1, affine=mni_affine)
+                        print(f'nobias.wrp.{c+1} ->', fname1)
+                    io.savef(nobias1, fname1, like=ref1, affine=mni_affine)
             del nobias
 
         del bias

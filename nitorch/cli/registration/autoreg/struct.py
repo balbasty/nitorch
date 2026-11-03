@@ -129,6 +129,7 @@ class MatchingLoss(Base):
 
 class NoLoss(MatchingLoss):
     """Additional image to warp -- not involved in the loss"""
+    name: str = 'other'
     fixed: FixedImageFile = None    # There may be no fixed image
 
 
@@ -139,8 +140,26 @@ class DiceLoss(MatchingLoss):
     weights: bool or list = False   # Weight per label
 
     def call(self, x, y):
-        fn = nn.DiceLoss(one_hot_map=self.labels, weighted=self.weights)
-        loss = fn(x[None], y[None])
+        """Soft Dice loss between (K, *spatial) probability maps.
+
+        Hard label maps have been converted to one-hot maps (one channel
+        per label in `labels`) when the data was loaded.
+        """
+        x = x.reshape([len(x), -1])
+        y = y.reshape([len(y), -1])
+        inter = (x * y).sum(-1)
+        union = x.sum(-1) + y.sum(-1)
+        dice = 2 * inter / union.clamp_min(1e-5)
+        weights = self.weights
+        if weights is True:
+            # weight each class by its size in the reference
+            weights = y.sum(-1)
+        elif weights is False or weights is None:
+            weights = torch.ones_like(dice)
+        else:
+            weights = make_vector(weights, len(dice),
+                                  dtype=dice.dtype, device=dice.device)
+        loss = 1 - (dice * weights).sum() / weights.sum().clamp_min(1e-5)
         if self.factor != 1:
             loss = loss * self.factor
         return loss
@@ -353,6 +372,25 @@ class NonLinear(Transformation):
 class FFD(NonLinear):
     name = 'ffd'
     grid: list or int = 10          # Number of nodes in the FFD grid
+
+    def free(self):
+        """Free the next batch/ladder of parameters
+
+        The grid of nodes (`dat`) keeps its size across pyramid levels;
+        only the dense field (`shape`, `affine`) is upsampled.
+        """
+        if not self.freeable():
+            return
+        print('Free nonlin')
+        if hasattr(self, 'optdat'):
+            *self.pyramid, pre_level = self.pyramid
+            factor = 2 ** (pre_level - self.pyramid[-1])
+            self.affine, self.shape = spatial.affine_resize(
+                self.affine, self.shape, factor)
+            self.shape = list(self.shape)
+            self.dat = self.dat.detach()
+        self.optdat = torch.nn.Parameter(self.dat, requires_grad=True)
+        self.dat = self.optdat
 
 
 class Diffeo(NonLinear):
@@ -646,7 +684,7 @@ class AutoReg(Base):
         def read_info1(image, loss):
             """Read info from one image"""
             image.files = [info(fname) for fname in image.files]
-            image.channels = sum(sum(file.subchannels) for file in image.files)
+            image.channels = sum(len(file.subchannels) for file in image.files)
             if not allsame(file.shape for file in image.files):
                 raise RuntimeError('All files should have the same (spatial) '
                                    'shape for multi-file inputs.')

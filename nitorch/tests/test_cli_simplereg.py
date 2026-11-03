@@ -181,3 +181,33 @@ def test_simplereg_smoke(tmp_path):
     assert (tmp_path / 'mov.moved.nii.gz').exists()
     warp = nib.load(str(tmp_path / 'warp.nii.gz'))
     assert warp.shape[:3] == (12, 12, 12) and warp.shape[-1] == 3
+
+
+def test_simplereg_fixed_image_outputs_disabled():
+    # #171: only the moving image's outputs are exposed (-x/-r)
+    opt = _register_options()
+    assert opt.loss[0].fix.output is False
+    assert opt.loss[0].fix.resliced is False
+    assert opt.loss[0].mov.output == '{dir}/{base}.moved{ext}'
+    # preprocessing options given to the fixed image are kept
+    opt = _register_options('--bound', 'zero', '--order', '3')
+    assert opt.loss[0].fix.output is False
+    assert opt.loss[0].fix.bound == 'zero'
+    assert opt.loss[0].fix.order == 3
+
+
+def test_simplereg_smoke_writes_no_fixed_moved(tmp_path):
+    import os
+    import numpy as np
+    nib = pytest.importorskip('nibabel')
+    rng = np.random.RandomState(0)
+    for name in ('mov', 'fix'):
+        nib.save(nib.Nifti1Image(rng.rand(12, 12, 12).astype('float32'),
+                                 np.eye(4)),
+                 str(tmp_path / f'{name}.nii.gz'))
+    cli(['simplereg', '-m', str(tmp_path / 'mov.nii.gz'),
+         '-f', str(tmp_path / 'fix.nii.gz'), '-n', '1', '-p', '0',
+         '--no-nonlin', '-a', str(tmp_path / 'xfm.lta'), '-x', 'false',
+         '-r', str(tmp_path / 'res.nii.gz')])
+    assert sorted(os.listdir(tmp_path)) == ['fix.nii.gz', 'mov.nii.gz',
+                                            'res.nii.gz', 'xfm.lta']

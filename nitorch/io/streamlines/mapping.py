@@ -194,7 +194,9 @@ class MappedStreamlines(MappedFile):
         """
         raise NotImplementedError
 
-    savef = save
+    def savef(self, *args, **kwargs):
+        """Alias for `save` (dispatches to subclass overrides)."""
+        return self.save(*args, **kwargs)
 
     @classmethod
     def save_new(cls, streamlines, file_like, like=None, **meta):
@@ -232,4 +234,4 @@ class MappedStreamlines(MappedFile):
             Additional metadata to set before writing.
 
         """
-        raise NotImplementedError
+        return cls.save_new(streamlines, file_like, like, **meta)

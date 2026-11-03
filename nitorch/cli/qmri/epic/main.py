@@ -1,8 +1,8 @@
 from nitorch.cli.cli import commands
 from .parser import parser, help, ParseError
-from nitorch.tools.denoising.epic import epic
+from nitorch.tools.denoising.epic import epic, map_files
 from nitorch import io, spatial
-from nitorch.core import py
+from nitorch.core import py, utils
 import torch
 import sys
 import os
@@ -22,15 +22,17 @@ def cli(args=None):
     except ParseError as e:
         print(help)
         print(f'[ERROR] {str(e)}', file=sys.stderr)
-    # except Exception as e:
-    #     print(f'[ERROR] {str(e)}', file=sys.stderr)
+        return 1
+    except Exception as e:
+        print(f'[ERROR] {str(e)}', file=sys.stderr)
+        return 1
 
 
 commands['epic'] = cli
 
 
 def _cli(args):
-    """Command-line interface for `topup` without exception handling"""
+    """Command-line interface for `epic` without exception handling"""
     args = args or sys.argv[1:]
 
     options = parser.parse(args)
@@ -64,7 +66,34 @@ def get_device(device):
     return device
 
 
+def check_outputs(input, output):
+    """Validate the number of output files before doing any heavy work.
+
+    Accepted cases:
+    - 1 output (a single 4D file, one file per echo if it contains `{n}`,
+      or one file per input if it contains `{base}`);
+    - one output per input;
+    - one output per echo.
+
+    Returns the output list (expanded to one per input if needed) and
+    the number of echoes in each input.
+    """
+    nechoes = [map_files(inp).shape[0] for inp in input]
+    ninp, ne, nout = len(input), sum(nechoes), len(output)
+    if nout == 1:
+        if '{base}' in output[0] and ninp > 1:
+            output = [output[0]] * ninp
+    elif nout not in (ninp, ne):
+        raise ParseError(
+            f'Expected 1 output, or one per input ({ninp}), or one per '
+            f'echo ({ne}); got {nout}.')
+    return output, nechoes
+
+
 def main(options):
+
+    input, output = options.echoes, options.output
+    output, nechoes = check_outputs(input, output)
 
     # find readout direction
     f = io.map(options.echoes[0])
@@ -92,19 +121,8 @@ def main(options):
                device=get_device(options.gpu))
 
     # save volumes
-    input, output = options.echoes, options.output
-    if len(output) != len(input):
-        if len(output) == 1:
-            if '{base}' in output[0]:
-                output = [output[0]] * len(input)
-        elif len(output) != len(fit):
-            raise ValueError(f'There should be either one output file, '
-                             f'or as many output files as input files, '
-                             f'or as many output files as echoes. Got '
-                             f'{len(output)} output files, {len(input)} '
-                             f'input files, and {len(fit)} echoes.')
     if len(output) == 1:
-        dir, base, ext = py.fileparts(input[0])
+        dir, base, ext = _fileparts(input[0])
         output = output[0]
         if '{n}' in output:
             for n, echo in enumerate(fit):
@@ -112,20 +130,28 @@ def main(options):
                 io.savef(echo, out, like=input[0])
         else:
             output = output.format(dir=dir, sep=os.sep, base=base, ext=ext)
-            io.savef(torch.movedim(fit, 0, -1), output, like=input[0])
+            io.savef(utils.movedim(fit, 0, -1), output, like=input[0])
     elif len(output) == len(input):
-        for i, (inp, out) in enumerate(zip(input, output)):
-            dir, base, ext = py.fileparts(inp)
+        for i, (inp, out, ne) in enumerate(zip(input, output, nechoes)):
+            dir, base, ext = _fileparts(inp)
             out = out.format(dir=dir, sep=os.sep, base=base, ext=ext, n=i)
-            ne = [*io.map(inp).shape, 1][3]
-            io.savef(fit[:ne].movedim(0, -1), out, like=inp)
+            io.savef(utils.movedim(fit[:ne], 0, -1), out, like=inp)
             fit = fit[ne:]
-    else:
-        assert len(output) == len(fit)
-        dir, base, ext = py.fileparts(input[0])
+    else:  # one output per echo (checked by `check_outputs`)
+        dir, base, ext = _fileparts(input[0])
         for n, (echo, out) in enumerate(zip(fit, output)):
             out = out.format(dir=dir, sep=os.sep, base=base, ext=ext, n=n)
             io.savef(echo, out, like=input[0])
+
+
+def _fileparts(fname):
+    """`py.fileparts`, but with `dir='.'` when there is no directory part
+    (so that `{dir}{sep}{base}` does not end up at the filesystem root)."""
+    dir, base, ext = py.fileparts(fname)
+    return dir or os.curdir, base, ext
+
+
+_opposite = dict(r='l', l='r', a='p', p='a', s='i', i='s')
 
 
 def get_readout(readout, affine, shape, verbose):
@@ -133,20 +159,24 @@ def get_readout(readout, affine, shape, verbose):
     Convert the provided readout dir from semantic (R/A/S) to index (0/1/2)
         or
     Guess the readout direction as the one with largest number of voxels
+
+    Returns a non-negative index into the (3D) spatial dimensions.
     """
-    dim = len(shape)
+    shape = list(shape)[:3]   # drop echo/channel dimensions
     layout = spatial.affine_to_layout(affine)
     layout = spatial.volume_layout_to_name(layout).lower()
     if readout is None:
         readout = py.argmax(shape)
     else:
-        readout = readout.lower()
+        direction = readout.lower()
+        readout = None
         for i, l in enumerate(layout):
-            if l in readout:
+            if l in direction or _opposite[l] in direction:
                 readout = i
                 break
+        if readout is None:
+            raise ParseError(f'Could not match readout direction '
+                             f'"{direction}" with layout {layout.upper()}')
     if verbose:
         print(f'Layout: {layout.upper()} | readout direction: {layout[readout].upper()}')
-    if readout > 0:
-        readout = readout - dim
     return readout

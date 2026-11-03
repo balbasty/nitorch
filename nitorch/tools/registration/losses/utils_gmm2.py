@@ -40,12 +40,15 @@ def sumspatial(x: Tensor, ndim: int) -> Tensor:
 def _masked_quantile(x, q, dim, mask):
     """Quantiles over the last `dim` axes, using only voxels where mask > 0.
     Returns a (*batch, *ones, K) tensor."""
-    batch = torch.broadcast_shapes(x.shape[:-dim], mask.shape[:-dim])
+    batch = utils.expanded_shape(x.shape[:-dim], mask.shape[:-dim])
     spatial = x.shape[-dim:]
     x = x.expand([*batch, *spatial]).reshape([-1, py.prod(spatial)])
     mask = mask.expand([*batch, *spatial]).reshape([-1, py.prod(spatial)])
-    out = torch.stack([torch.quantile(x1[m1 > 0], q)
-                       for x1, m1 in zip(x, mask)])
+    if hasattr(torch, 'quantile'):  # torch >= 1.7
+        out = torch.stack([torch.quantile(x1[m1 > 0], q)
+                           for x1, m1 in zip(x, mask)])
+    else:
+        out = utils.quantile(x, q, dim=-1, mask=mask)
     return out.reshape([*batch, *([1] * dim), len(q)])
 
 
@@ -178,7 +181,7 @@ def softmax_lse_(lz, dim: int, out: Optional[Tensor] = None
     z : softmax(lz, dim)
     lse : logsumexp(lz, dim, keepdim=True)
     """
-    mx = lz.amax(dim, keepdim=True)
+    mx = lz.max(dim, keepdim=True)[0]  # == amax (torch >= 1.7)
     if out is None:
         z = lz.sub_(mx).exp_()
     else:
@@ -733,7 +736,7 @@ def fit_lgmm2(x, y, bins=3, max_iter=20, dim=None,
     lmask = None
     if mask is not None:
         mask = mask.to(moments.dtype)
-        mask = mask.expand(torch.broadcast_shapes(
+        mask = mask.expand(utils.expanded_shape(
             mask.shape, x.shape, y.shape)).unsqueeze(-dim-1)
         lmask = LocalMask(fwd, bwd, mask)
     gmmfit = em_loop_local(fwd, bwd, moments, max_iter, z=z, theta=theta,
