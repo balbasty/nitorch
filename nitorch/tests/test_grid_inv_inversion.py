@@ -1,7 +1,7 @@
 """`inversion` option of nonlinear warps (#171).
 
 `spatial.grid_inv(method='newton')` refines the push inverse with
-safeguarded Newton steps. The `inversion` option ('default', 'push',
+regularised Gauss-Newton steps. The `inversion` option ('default', 'push',
 'newton') of `spatial.shoot`, of the registration models (smalldef,
 svf, shoot) and of `register @nonlin --inversion` computes one side of
 the warp by inverting the other. The default must be unchanged, bit for
@@ -234,6 +234,14 @@ def test_grid_inv_push_is_unchanged(type, batch):
 def test_grid_inv_invalid_method():
     with pytest.raises(ValueError):
         spatial.grid_inv(make_vel((8, 8), 1.), type='disp', method='fixed')
+    with pytest.raises(ValueError):
+        spatial.grid_inv(make_vel((8, 8), 1.), type='disp', method='newton',
+                         newton_optim='lbfgs')
+
+
+def _residual(u, w):
+    """|phi o psi - id|: the equation that the Gauss-Newton steps solve"""
+    return compose(u, w).square().sum(-1).sqrt()
 
 
 @pytest.mark.parametrize('warp', ['swirl', 'radial'])
@@ -245,17 +253,90 @@ def test_grid_inv_newton_improves(warp, dtype, shape):
     w0 = spatial.grid_inv(u, type='disp')
     w = spatial.grid_inv(u, type='disp', method='newton')
     assert w.dtype == dtype and w.shape == u.shape
-    # residual |phi o psi - id| (the equation solved, linear interpolation)
-    res0 = compose(u, w0).square().sum(-1).sqrt()
-    res = compose(u, w).square().sum(-1).sqrt()
+    res0, res = _residual(u, w0), _residual(u, w)
     assert res0.max() > 0.5                      # the test is meaningful
-    assert res.max() < 0.05 * res0.max()
-    # never worse than push, voxel-wise
-    assert (res <= res0 + 1e-5).all()
-    # closer to the exact inverse
+    # the equation solved improves on push, on the mean (the steps are
+    # coupled: there is no voxel-wise guarantee) ...
+    assert res.mean() < 0.15 * res0.mean()
+    assert res.max() < 0.25 * res0.max()
+    # ... and the result is closer to the exact inverse
     err0, err = norms(w0 - ref), norms(w - ref)
-    assert err.max() < 0.5 * err0.max()
     assert err.mean() < 0.7 * err0.mean()
+    assert err.max() < err0.max()
+
+
+@pytest.mark.parametrize('shape', [(32, 32), (16, 16, 16)])
+def test_grid_inv_newton_converges(shape):
+    # the penalty is on the step: the iteration converges to the exact
+    # (discrete) inverse where the problem is well posed
+    u, ref = radial(shape)
+    u = u.float()
+    w = spatial.grid_inv(u, type='disp', method='newton', newton_iter=20,
+                         newton_factor=0.1)
+    assert _residual(u, w).max() < 1e-2
+    # more steps, or a weaker step penalty, solve the equation better
+    res = {}
+    for kw in (dict(newton_iter=1), dict(), dict(newton_iter=5),
+               dict(newton_factor=0.1), dict(newton_factor=10)):
+        w = spatial.grid_inv(u, type='disp', method='newton', **kw)
+        res[tuple(kw.items())] = _residual(u, w).mean()
+    assert res[(('newton_iter', 1),)] > res[()] > res[(('newton_iter', 5),)]
+    assert res[(('newton_factor', 10),)] > res[()] \
+        > res[(('newton_factor', 0.1),)]
+
+
+@pytest.mark.parametrize('optim', ['fmg+cg', 'fmg+relax', 'cg', 'relax'])
+def test_grid_inv_newton_optim(optim):
+    shape = (32, 32)
+    u, _ = swirl(shape)
+    u = u.float()
+    w0 = spatial.grid_inv(u, type='disp')
+    w = spatial.grid_inv(u, type='disp', method='newton')
+    wo = spatial.grid_inv(u, type='disp', method='newton',
+                          newton_optim=optim)
+    if optim == 'fmg+cg':
+        assert torch.equal(wo, w)                # 'fmg' = 'fmg+cg'
+    assert _residual(u, wo).mean() < 0.2 * _residual(u, w0).mean()
+    # same steps, up to the accuracy of the solver
+    assert (wo - w).square().sum(-1).sqrt().mean() < 1e-2
+
+
+def test_grid_inv_newton_regularisation():
+    # the steps are regularised as the push step (here with `bending`),
+    # scaled by `newton_factor`
+    from nitorch.spatial import _grid_inv
+    from nitorch.spatial._solvers import solve_grid_fmg
+    shape = (24, 24)
+    u, _ = swirl(shape)
+    u = u.float()
+    prm = dict(membrane=0.01, bending=0.1)
+    w = spatial.grid_inv(u, type='disp', method='newton', newton_factor=2,
+                         **prm)
+    # reference: push, then the same steps written out
+    id = spatial.identity_grid(shape)
+    wr = spatial.grid_inv(u, type='disp', **prm)
+    jac = spatial.grid_jacobian(u, type='disp')
+    for _ in range(3):
+        r = compose(u, wr)
+        j = spatial.grid_pull(jac.reshape([*shape, 4]).movedim(-1, 0),
+                              id + wr, bound='dft', extrapolate=True,
+                              interpolation=1)
+        j = j.movedim(0, -1).reshape([*shape, 2, 2])
+        jtj = j.transpose(-1, -2).matmul(j)
+        hess = torch.stack([jtj[..., 0, 0], jtj[..., 1, 1], jtj[..., 0, 1]],
+                           -1)
+        grad = j.transpose(-1, -2).matmul(r[..., None])[..., 0]
+        wr = wr - solve_grid_fmg(hess, grad, membrane=0.02, bending=0.2)
+    assert torch.allclose(w, wr, atol=1e-4)
+    # Gauss-Newton terms
+    j = torch.randn([5, 3, 3], dtype=torch.float64)
+    r = torch.randn([5, 3], dtype=torch.float64)
+    hess, grad = _grid_inv._gauss_newton_terms(j, r)
+    jtj = j.transpose(-1, -2).matmul(j)
+    assert torch.allclose(hess, torch.stack(
+        [jtj[:, 0, 0], jtj[:, 1, 1], jtj[:, 2, 2],
+         jtj[:, 0, 1], jtj[:, 0, 2], jtj[:, 1, 2]], -1))
+    assert torch.allclose(grad, linalg.matvec(j.transpose(-1, -2), r))
 
 
 @pytest.mark.parametrize('bound', ['dft', 'dct2', 'zero'])
@@ -266,26 +347,34 @@ def test_grid_inv_newton_batched_and_bounds(bound):
     w0 = spatial.grid_inv(disp, type='disp', bound=bound)
     assert w.shape == disp.shape
     assert torch.isfinite(w).all()
-    # (with 'zero', the push inverse itself is not exactly batch-invariant:
-    # its multigrid solve differs by ~1e-2 between batched and single)
-    atol = 1e-3 if bound != 'zero' else 0.2
+    # (the solvers treat a batch as one system, so their inexact solves
+    # are not exactly batch-invariant. With 'zero', which is poorly
+    # conditioned at the border, they differ by ~1e-2 for push and by up
+    # to ~1 voxel at the border after the Gauss-Newton steps)
+    def close(x, y):
+        if bound != 'zero':
+            return torch.allclose(x, y, atol=1e-3)
+        d = (x - y).abs()
+        return d.mean() < 3e-2 and d[..., 3:-3, 3:-3, :].max() < 0.25
     for b in range(3):
         wb = spatial.grid_inv(disp[b], type='disp', bound=bound,
                               method='newton')
-        assert torch.allclose(w[b], wb, atol=atol)
+        assert close(w[b], wb)
     # transformation grids are supported too
     id = spatial.identity_grid(shape)
     g = spatial.grid_inv(disp + id, bound=bound, method='newton')
-    assert torch.allclose(g, w + id, atol=atol)
+    assert close(g, w + id)
     # (with dft) the residual decreases
     if bound == 'dft':
-        res0 = compose(disp[0], w0[0]).square().sum(-1).sqrt()
-        res = compose(disp[0], w[0]).square().sum(-1).sqrt()
-        assert (res <= res0 + 1e-5).all()
+        for b in range(3):
+            assert (_residual(disp[b], w[b]).mean()
+                    < 0.5 * _residual(disp[b], w0[b]).mean())
 
 
 def test_grid_inv_newton_folded():
-    # a folding displacement: the safeguards keep the result finite
+    # a folding displacement: where J is singular, the regularisation
+    # fills in the step; the result stays finite and the residual
+    # decreases on the mean (not in every voxel: here, its max increases)
     shape = (32, 32)
     u, _ = swirl(shape, turns=1.)
     u = u.float()
@@ -293,9 +382,8 @@ def test_grid_inv_newton_folded():
     w0 = spatial.grid_inv(u, type='disp')
     w = spatial.grid_inv(u, type='disp', method='newton')
     assert torch.isfinite(w).all()
-    res0 = compose(u, w0).square().sum(-1).sqrt()
-    res = compose(u, w).square().sum(-1).sqrt()
-    assert (res <= res0 + 1e-5).all()
+    res0, res = _residual(u, w0), _residual(u, w)
+    assert res.mean() < 0.8 * res0.mean()
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason='requires CUDA')
@@ -515,10 +603,12 @@ def test_model_inversion_improves_consistency(warp, model):
            for inv in ('default', 'push', 'newton')}
     new, push, ref = err['newton'], err['push'], err['default']
 
-    # newton: (nearly) exact on the equation it solves
+    # newton: much better on the equation it solves (on the mean; the
+    # Gauss-Newton steps are regularised with the model's penalty, so
+    # they are not exact in a few steps)
     assert ref['solved'][0] > 0.05                  # the test is meaningful
-    assert new['solved'][0] < 0.1 * ref['solved'][0]
-    assert new['solved'][1] < 0.1 * ref['solved'][1]
+    assert new['solved'][1] < 0.3 * ref['solved'][1]
+    assert new['solved'][0] < ref['solved'][0]
     # newton is no worse than push
     for key in ('solved', 'solved3'):
         assert new[key][0] <= push[key][0] and new[key][1] <= push[key][1]
@@ -526,14 +616,15 @@ def test_model_inversion_improves_consistency(warp, model):
 
     if model in ('smalldef', 'shoot'):
         # ... and more consistent in both orders than the default
-        for key in ('solved3', 'other3'):
-            assert new[key][0] < 0.6 * ref[key][0]
-            assert new[key][1] < 0.6 * ref[key][1]
+        for key, ratio in (('solved3', 0.6), ('other3', 0.8)):
+            assert new[key][0] < ratio * ref[key][0]
+            assert new[key][1] < ratio * ref[key][1]
     else:
         # svf: the default integrates exp(-v) as accurately as exp(v), so
-        # the other order is about as consistent as by default
-        assert new["other3"][0] < 2 * ref["other3"][0]
-        assert new['other3'][1] < 1.5 * ref['other3'][1]
+        # it stays the more consistent in the other order (up to ~3x on
+        # the max); inversion only buys consistency on the solved order
+        assert new["other3"][0] < 4 * ref["other3"][0]
+        assert new['other3'][1] < 3 * ref['other3'][1]
     if model == 'shoot':
         # shoot: push is already much better than the composed forward
         for key in ('solved', 'solved3', 'other3'):
