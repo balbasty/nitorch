@@ -143,7 +143,7 @@ is a pure membrane energy, which allows large but smooth deformations.
 | `-v`, `--verbose`     | `[LEVEL]`    | Verbosity, passed to the pairwise registrations. `0` is quiet. With no value, `1`.        | `1`     |
 | `--cpu`               | `[THREADS]`  | Run on the CPU, optionally with this number of threads.                                  | CPU     |
 | `--gpu`               | `[ID]`       | Run on a GPU (the one with this index, if given).                                        | CPU     |
-| `-h`, `--help`        | `[LEVEL]`    | Print the built-in help.                                                                 |         |
+| `-h`, `--help`        |              | Print the built-in help.                                                                 |         |
 
 See [Hardware](../../conventions.md#hardware) for general notes on devices.
 
