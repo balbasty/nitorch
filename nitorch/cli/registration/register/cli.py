@@ -105,6 +105,11 @@ def check_options(options):
         if opt:
             _check_template(opt.output, f'@{group} -o/--output',
                             dir='', name='')
+            optim = getattr(opt, 'optim', None)
+            if optim:
+                _check_template(getattr(optim, 'output', None),
+                                f'@{group} @@optim -o/--output',
+                                dir='', name='')
     if options.nonlin and options.nonlin.hessian is not True:
         _check_template(options.nonlin.hessian, '@nonlin -h/--hessian',
                         dir='', name='')
@@ -332,6 +337,10 @@ def _main(options):
                 with open(fname, 'w') as f:
                     prm = dict(nonlin.penalty)
                     prm['factor'] = nonlin.factor / py.prod(nonlin.shape)
+                    # integration parameters actually used, so that
+                    # `reslice` exponentiates the velocity the same way
+                    prm['steps'] = nonlin.steps
+                    prm['fast'] = getattr(nonlin, 'fast', True)
                     json.dump(prm, f)
             if options.verbose:
                 print('Nonlin ->', fname)

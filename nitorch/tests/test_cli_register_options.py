@@ -10,7 +10,7 @@ nib = pytest.importorskip('nibabel')
 
 from nitorch.core.cli import ParseError
 from nitorch.cli.registration.register.parser import (
-    parser, default_moved, default_resliced
+    parser, default_moved, default_resliced, default_momentum
 )
 from nitorch.cli.registration.register.cli import (
     build_losses, check_options, cli, _cli
@@ -175,3 +175,72 @@ def test_weight_auto(images, name, args, expected):
 def test_weight_rejects_garbage():
     with pytest.raises(ParseError):
         parser.parse(['@loss', 'mse', '-w', 'banana'] + IMAGES)
+
+
+# ----------------------------------------------------------------------
+#   6. @@optim nes|ogm -o: bare / true -> default path, false -> none
+# ----------------------------------------------------------------------
+
+@pytest.mark.parametrize('group', ['@affine', '@nonlin'])
+@pytest.mark.parametrize('name', ['nes', 'ogm'])
+@pytest.mark.parametrize('args, expected', [
+    ([], False),
+    (['-o'], default_momentum),
+    (['-o', 'true'], default_momentum),
+    (['-o', 'yes'], default_momentum),
+    (['-o', 'false'], False),
+    (['-o', 'mom.nii.gz'], 'mom.nii.gz'),
+])
+def test_optim_momentum_output(group, name, args, expected):
+    options = parser.parse(['@loss', 'mse'] + IMAGES +
+                           [group, '@@optim', name] + args)
+    opt = getattr(options, group[1:]).optim
+    assert opt.output == expected
+    check_options(options)
+
+
+def test_optim_momentum_output_bad_template_rejected():
+    options = parser.parse(['@loss', 'mse'] + IMAGES +
+                           ['@nonlin', '@@optim', 'nes', '-o', '{nope}.nii'])
+    with pytest.raises(ParseError, match='optim'):
+        check_options(options)
+
+
+# ----------------------------------------------------------------------
+#   7. shooting `steps` saved in the JSON sidecar and used by reslice
+# ----------------------------------------------------------------------
+
+def test_shoot_steps_saved_and_used_by_reslice(tmp_path, monkeypatch):
+    import json
+    from nitorch import spatial
+    from nitorch.cli.registration.reslice import main as reslice_main
+    from nitorch.cli.registration.reslice import struct as reslice_struct
+    rng = np.random.default_rng(0)
+    fix = write(str(tmp_path / 'fix.nii.gz'), rng.random([12, 12, 12]))
+    mov = write(str(tmp_path / 'mov.nii.gz'), rng.random([12, 12, 12]))
+    vel = str(tmp_path / 'vel.nii.gz')
+    _cli(['@loss', 'mse', '@@fix', fix, '-o', 'false', '@@mov', mov,
+          '-o', 'false', '@nonlin', 'shoot', '-s', '3', '-o', vel,
+          '@@optim', 'gd', '-n', '1', '@optim', '-n', '1',
+          '@pyramid', '-l', '0'])
+    with open(tmp_path / 'vel.json') as f:
+        prm = json.load(f)
+    assert prm['steps'] == 3
+    assert prm['fast'] is True
+
+    captured = {}
+    shoot = spatial.shoot
+
+    def spy(*args, **kwargs):
+        captured.update(kwargs)
+        return shoot(*args, **kwargs)
+
+    monkeypatch.setattr(spatial, 'shoot', spy)
+    trf = reslice_struct.Velocity()
+    trf.file = vel
+    trf.json = str(tmp_path / 'vel.json')
+    trf.inv = False
+    trf.square = False
+    reslice_main.exponentiate_transforms([trf])
+    assert captured['steps'] == 3
+    assert captured['fast'] is True
