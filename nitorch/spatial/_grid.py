@@ -830,7 +830,7 @@ def resize_grid(grid, factor=None, shape=None, type='grid',
     kwargs.setdefault('bound', 'dct2')
     kwargs.setdefault('extrapolate', True)
     ndim = grid.shape[-1]
-    *spatial, _ = grid.shape[-ndim-1:-1]
+    spatial = grid.shape[-ndim-1:-1]
     batch = grid.shape[:-ndim-1]
     if len(batch) == 0:
         grid = grid[None]
@@ -839,6 +839,13 @@ def resize_grid(grid, factor=None, shape=None, type='grid',
     if affine is not None:
         affine = affine.expand([*batch, *affine.shape[-2:]])
         affine = affine.reshape([-1, *affine.shape[-2:]])
+    is_grid = type[0].lower() == 'g'
+    if is_grid:
+        # Resize transformation grids as displacement fields, so that
+        # boundary conditions / extrapolation (e.g. dct2) act on the
+        # displacement only and do not reflect absolute coordinates.
+        grid = grid - identity_grid(spatial, dtype=grid.dtype,
+                                    device=grid.device)
     grid = utils.last2channel(grid)
     outputs = resize(grid, factor, shape, affine, *args, **kwargs)
     if affine is not None:
@@ -850,16 +857,19 @@ def resize_grid(grid, factor=None, shape=None, type='grid',
     # rescale each component
     # scales and shifts map resized coordinates to original coordinates:
     #   original = scale * resized + shift
-    # here we want to transform original coordinates into resized ones:
-    #   resized = (original - shift) / scale
+    # here we want to transform original displacements into resized ones:
+    #   resized = original / scale
     grids = []
-    for d, (scl, shft) in enumerate(zip(scales, shifts)):
+    for d, scl in enumerate(scales):
         grid1 = utils.slice_tensor(grid, d, dim=-1)
-        if type[0].lower() == 'g':
-            grid1 = grid1 - shft
         grid1 = grid1 / scl
         grids.append(grid1)
     grid = torch.stack(grids, -1)
+    if is_grid:
+        # the identity in the original space maps to the identity
+        # in the resized space: (scale * resized + shift - shift) / scale
+        grid = grid + identity_grid(grid.shape[-ndim-1:-1], dtype=grid.dtype,
+                                    device=grid.device)
 
     grid = grid.reshape([*batch, *grid.shape[-ndim-1:]])
 

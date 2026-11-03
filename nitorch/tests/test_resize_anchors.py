@@ -136,3 +136,42 @@ def test_grid_edges_explicit_bound_respected():
     out = spatial.resize_grid(d, 2, anchor='e', type='displacement',
                               bound='zero', extrapolate=False)
     assert out.abs().min() == 0
+
+
+def _smooth_disp(shape):
+    """Smooth (affine-free) displacement, in voxels."""
+    x = spatial.identity_grid(shape, dtype=torch.double)
+    d = torch.stack([0.3 * torch.sin(x[..., 1] / 3),
+                     0.2 * torch.cos(x[..., 0] / 4)], -1)
+    return d
+
+
+@pytest.mark.parametrize('anchor', ['centers', 'edges', 'first', 'last'])
+@pytest.mark.parametrize('f', [2, 0.5])
+def test_identity_grid_all_anchors(anchor, f):
+    """No reflection / zero border on identity transformation grids."""
+    idt = spatial.identity_grid([10, 12], dtype=torch.double)[None]
+    out = spatial.resize_grid(idt, f, anchor=anchor, type='grid')
+    exp = spatial.identity_grid(out.shape[1:-1], dtype=torch.double)[None]
+    assert torch.allclose(out, exp, atol=1e-6)
+
+
+@pytest.mark.parametrize('anchor', ['centers', 'edges', 'first', 'last'])
+def test_identity_plus_disp_grid(anchor):
+    """grid = identity + disp resizes to identity + resized disp."""
+    shape = [10, 12]
+    disp = _smooth_disp(shape)[None]
+    idt = spatial.identity_grid(shape, dtype=torch.double)[None]
+    out_g = spatial.resize_grid(idt + disp, 2, anchor=anchor, type='grid')
+    out_d = spatial.resize_grid(disp, 2, anchor=anchor, type='displacement')
+    exp = spatial.identity_grid(out_g.shape[1:-1], dtype=torch.double)[None]
+    assert torch.allclose(out_g, exp + out_d, atol=1e-6)
+    # and the resized displacement matches the analytic one (up to
+    # interpolation error) everywhere, borders included
+    _, (scales, shifts) = spatial.resize(
+        disp.movedim(-1, 1), 2, anchor=anchor, _return_trf=True)
+    y = spatial.identity_grid(out_d.shape[1:-1], dtype=torch.double)
+    x = torch.stack([y[..., i] * scales[i] + shifts[i] for i in range(2)], -1)
+    ref = torch.stack([0.3 * torch.sin(x[..., 1] / 3) / scales[0],
+                       0.2 * torch.cos(x[..., 0] / 4) / scales[1]], -1)
+    assert torch.allclose(out_d[0], ref, atol=5e-2)
