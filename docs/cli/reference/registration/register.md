@@ -242,8 +242,7 @@ Some practical guidance:
   this means one joint histogram per pair of channels, not one over all
   pairs.
 
-Two further names are accepted but remain experimental: `ent` (joint
-entropy) and `extra`. `extra` is not a loss at all: an
+One further name, `extra`, is accepted but is not a loss at all: an
 `@loss extra` group contributes nothing to the objective, but its moving
 image is warped with the final transformation and written out like any
 other. It still requires a `@@fix` and `@@mov`, the former being used to
