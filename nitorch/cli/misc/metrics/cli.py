@@ -8,7 +8,7 @@ from nitorch.cli.cli import commands
 from nitorch.core.cli import ParseError
 from nitorch.spatial import smooth, voxel_size
 from nitorch import io
-from .parser import parser, help, label_metrics, image_metrics
+from .parser import parser, help, label_metrics, image_metrics, metric_aliases
 import sys
 import json
 import math
@@ -54,6 +54,13 @@ def _cli(args):
     # expand metric groups (and drop the group names themselves)
     metrics = []
     for metric in options.metrics:
+        if metric in metric_aliases:
+            new = metric_aliases[metric]
+            warnings.warn(f"metrics: '{metric}' is deprecated, use '{new}' "
+                          f"(results are stored under '{new}'). "
+                          f"'{metric}' will be removed in a future version.",
+                          FutureWarning)
+            metric = new
         if metric == 'labels':
             group = label_metrics[1:]
         elif metric == 'images':
@@ -63,10 +70,10 @@ def _cli(args):
         metrics += [m for m in group if m not in metrics]
     lab_metrics = [m for m in metrics if m in label_metrics]
     img_metrics = [m for m in metrics if m in image_metrics]
-    if 'weighted' in options.average and img_metrics:
+    if 'weighted' in options.average and metrics and not lab_metrics:
         # weights are reference label volumes: undefined for image channels
-        raise ParseError(f'-s weighted only applies to label metrics, '
-                         f'not to image metrics {img_metrics}')
+        warnings.warn(f'-s weighted only applies to label metrics and has '
+                      f'no effect on image metrics {img_metrics}')
 
     # dynamic range (SSIM/PSNR)
     rng = options.range
@@ -350,8 +357,8 @@ def mrse(pred, ref, average=()):
     return results
 
 
-def mad(pred, ref, average=()):
-    """Median absolute error = median(|pred - ref|)"""
+def medae(pred, ref, average=()):
+    """Median absolute error (MedAE) = median(|pred - ref|)"""
     results = {}
     for c in range(len(ref)):
         pred1 = pred[c]

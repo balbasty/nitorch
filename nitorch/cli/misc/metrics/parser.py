@@ -43,7 +43,8 @@ metrics for images
     mse         Mean Squared Error
     rmse        Root Mean Squared Error
     mrse        Mean Root Squared Error
-    mad         Median Absolute Error           = median(|pred - ref|)
+    medae       Median Absolute Error (MedAE)   = median(|pred - ref|)
+                ('mad' is a deprecated alias of 'medae')
     psnr        Peak Signal-to-Noise Ratio      = 10 * log10(range**2 / MSE)
     ssim        Structural Similarity Index Measure
     images      All of the above
@@ -59,8 +60,10 @@ ssim options:
 
 label_metrics = ['labels', 'dice', 'jaccard', 'accuracy', 'ppv', 'npv', 'fdr',
                  'tpr', 'fpr', 'fnr', 'tnr', 'plr', 'nlr', 'hausdorff', 'hausdorff95']
-image_metrics = ['images', 'mse', 'rmse', 'mrse', 'mad', 'psnr', 'ssim']
-metrics = label_metrics + image_metrics
+image_metrics = ['images', 'mse', 'rmse', 'mrse', 'medae', 'psnr', 'ssim']
+# deprecated aliases: old name -> new name
+metric_aliases = {'mad': 'medae'}
+metrics = label_metrics + image_metrics + list(metric_aliases)
 
 # Fit command
 parser = cli.CommandParser('metrics', help=help)

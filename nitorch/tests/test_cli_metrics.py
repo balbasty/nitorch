@@ -126,8 +126,8 @@ def test_append(tmp_path, images):
     assert set(res['mse']) == {'0', 'macro'}
     assert txt.count('"0"') == 2
     # without --append, the file is overwritten
-    res = run(['-p', fp, '-r', fr, '-m', 'mad', '-o', out])
-    assert set(res) == {'mad'}
+    res = run(['-p', fp, '-r', fr, '-m', 'medae', '-o', out])
+    assert set(res) == {'medae'}
 
 
 def test_rmse_micro(tmp_path, images):
@@ -272,26 +272,52 @@ def test_weighted_hausdorff(tmp_path):
     assert res['weighted'] != pytest.approx(res['macro'])
 
 
-def test_weighted_image_metrics_error(tmp_path, images):
-    from nitorch.cli.misc.metrics.cli import cli
+def test_weighted_image_metrics_warns(tmp_path, images):
+    import warnings
     fp, fr, pred, ref = images
     out = str(tmp_path / 'o.json')
-    with pytest.raises(mcli.ParseError, match='weighted'):
-        metrics(['-p', fp, '-r', fr, '-m', 'mse', '-s', 'weighted',
-                 '-o', out])
-    assert cli(['-p', fp, '-r', fr, '-m', 'images', '-s', 'weighted',
-                '-o', out]) == 1
-    assert not os.path.exists(out)
-    # label metrics still accept it
-    run(['-p', fp, '-r', fr, '-m', 'dice', '-s', 'weighted', '-o', out])
+    # only image metrics: no error, but a warning; usual averaging kept
+    for m in (['mse'], ['images']):
+        with pytest.warns(UserWarning, match='weighted'):
+            res = run(['-p', fp, '-r', fr, '-m', *m,
+                       '-s', 'macro', 'weighted', '-o', out])
+        assert all('weighted' not in v for v in res.values())
+        assert 'macro' in res['mse']
+    # mixed label + image metrics: no warning; dice weighted, mse unaffected
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter('always')
+        res = run(['-p', fp, '-r', fr, '-m', 'dice', 'mse',
+                   '-s', 'weighted', '-o', out])
+    assert not [x for x in w if 'weighted' in str(x.message)]
+    assert 'weighted' in res['dice']
+    assert set(res['mse']) == {'0'}
+    assert res['mse']['0'] == pytest.approx(((pred - ref) ** 2).mean(),
+                                            rel=1e-5)
 
 
-def test_mad_wording():
+def test_medae_wording():
     assert 'Median Absolute Deviation' not in mparser.help
     assert 'median absolute error' in mparser.help.lower()
-    doc = (mcli.mad.__doc__ or '').lower()
+    assert 'medae' in mparser.image_metrics
+    assert 'mad' not in mparser.image_metrics
+    doc = (mcli.medae.__doc__ or '').lower()
     assert 'deviation' not in doc
     assert 'median absolute error' in doc
+
+
+def test_mad_deprecated_alias(tmp_path, images):
+    fp, fr, pred, ref = images
+    out = str(tmp_path / 'o.json')
+    with pytest.warns(FutureWarning, match="'mad' is deprecated, use 'medae'"):
+        res = run(['-p', fp, '-r', fr, '-m', 'mad', '-o', out])
+    assert set(res) == {'medae'}
+    # torch.median: lower of the two middle values
+    expected = torch.as_tensor(np.abs(pred - ref)).flatten().median().item()
+    assert res['medae']['0'] == pytest.approx(expected, rel=1e-5)
+    # 'mad' and 'medae' together are deduplicated
+    with pytest.warns(FutureWarning):
+        res = run(['-p', fp, '-r', fr, '-m', 'mad', 'medae', '-o', out])
+    assert set(res) == {'medae'}
 
 
 def test_multi_pair_keys(tmp_path, images):
