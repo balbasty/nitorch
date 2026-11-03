@@ -368,3 +368,29 @@ def test_sqz_weight(images, args, expected):
     options, loss = built_loss(images, 'sqz', *args)
     check_options(options)
     assert loss.lam == expected
+
+
+# ----------------------------------------------------------------------
+#   @nonlin -h/--hessian: same conversion as the other outputs
+# ----------------------------------------------------------------------
+
+@pytest.mark.parametrize('args, expected', [
+    ([], False), (['-h'], 'default'), (['-h', 'true'], 'default'),
+    (['-h', 'yes'], 'default'), (['-h', '1'], 'default'),
+    (['-h', 'false'], False), (['-h', 'no'], False), (['-h', '0'], False),
+    (['-h', 'hess.nii.gz'], 'hess.nii.gz'),
+    (['-h', '{dir}{sep}{name}_H.nii'], '{dir}{sep}{name}_H.nii'),
+])
+def test_nonlin_hessian_output(args, expected):
+    from nitorch.cli.registration.register.parser import default_hessian
+    options = parser.parse(['@loss', 'mse'] + IMAGES + ['@nonlin'] + args)
+    expected = default_hessian if expected == 'default' else expected
+    assert options.nonlin.hessian == expected
+    check_options(options)
+
+
+def test_nonlin_hessian_bad_template_rejected():
+    options = parser.parse(['@loss', 'mse'] + IMAGES +
+                           ['@nonlin', '-h', '{x}'])
+    with pytest.raises(ParseError, match='@nonlin -h/--hessian'):
+        check_options(options)

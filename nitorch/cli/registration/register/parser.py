@@ -731,9 +731,9 @@ nonlin.add_option('output', ('-o', '--output'), nargs='?',
                   action=cli.Actions.store_value(default_nonlin),
                   help='Path to the output transform (false: none)')
 nonlin.add_option('hessian', ('-h', '--hessian'), nargs='?',
-                  default=False, convert=bool_or_str,
+                  default=False, convert=path_or_bool(default_hessian),
                   action=cli.Actions.store_value(default_hessian),
-                  help='Path to the output hessian')
+                  help='Path to the output hessian (false: none)')
 nonlin.add_option('is2d', '-2d', default=False, nargs='?',
                   action=cli.Actions.store_value(2),
                   convert=number_or_str(int))

@@ -1,7 +1,7 @@
 from nitorch.cli.cli import commands
 from nitorch.core.cli import ParseError
 from .parser import (
-    parser, help, default_hessian, default_momentum, default_affine_momentum
+    parser, help, default_momentum, default_affine_momentum
 )
 from nitorch.tools.registration import objects
 from nitorch.tools.registration.pairwise_preproc import (
@@ -114,7 +114,7 @@ def check_options(options):
                 _check_template(getattr(optim, 'output', None),
                                 f'@{group} @@optim -o/--output',
                                 dir='', name='')
-    if options.nonlin and options.nonlin.hessian is not True:
+    if options.nonlin:
         _check_template(options.nonlin.hessian, '@nonlin -h/--hessian',
                         dir='', name='')
 
@@ -361,8 +361,6 @@ def _main(options):
 
         hessian = options.nonlin.hessian
         if hessian and getattr(nonlin, 'hess', None) is not None:
-            if hessian is True:
-                hessian = default_hessian
             fname = hessian.format(
                 dir=odir, sep=os.path.sep, name=options.nonlin.name)
             io.savef(nonlin.hess, fname, affine=nonlin.affine)

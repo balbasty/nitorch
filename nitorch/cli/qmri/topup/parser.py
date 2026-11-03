@@ -29,7 +29,7 @@ usage:
     -n, --max-iter                      Maximum number of iterations [50]
     -t, --tolerance                     Tolerance for early stopping [1e-4]
     --cpu, --gpu                        Device to use [cpu]
-    -h, --help [LEVEL]                  Display this help
+    -h, --help                          Display this help
     -v, --verbose [LVL]                 Level of verbosity [1=print], 2=plot
 
 usage: 
@@ -44,7 +44,7 @@ usage:
     -m, --modulation [{yes,no}]         Jacobian modulation [yes]
     -d, --diffeo [{yes,no}]             Field is diffeomorphic [no]
     --cpu, --gpu                        Device to use [cpu]
-    -h, --help [LEVEL]                  Display this help
+    -h, --help                          Display this help
     -v, --verbose [LVL]                 Level of verbosity [1=print], 2=plot
     
     
