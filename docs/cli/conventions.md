@@ -100,12 +100,17 @@ nitorch crop T1w.nii.gz --size 64 64 64  # the long spelling of the same option
 
 The following spellings are **not** understood:
 
-- `--size=64`: there is no `--tag=value` form; the tag would be rejected as
-  unknown.
+- `--size=64`: there is no `--tag=value` form; the whole word is rejected as
+  an unknown option.
 - `-s64`, or several short flags glued together (`-sc`): a tag is matched as
   a whole word.
 - Abbreviated long options (`--si` for `--size`): tags must be spelled out in
   full.
+
+A value that is not valid for its option, such as `foo` where a number or one
+of a fixed set of choices is expected, is an error that names the option and,
+when there is a fixed set, lists the choices. A missing value is reported
+separately, as "Not enough arguments for option ...".
 
 Short tags may have more than one letter (`-dt`, `-vx`, `-il`); these are
 still single-dash tags and must be typed as shown on the command's page.
@@ -121,12 +126,15 @@ value. This has three consequences.
 - **Negative numbers are values.** `-2.5`, `-10`, `-.5`, `-1e-3`, `-inf` and
   `-nan` can be written as is wherever a number is expected, for example
   `-c -12.4 6.4 3.2`.
-- **A file name that starts with a dash and a letter cannot be used directly.**
-  Prefix it with a directory to hide the dash, as in `./-odd-name.nii.gz`.
+- **Any other dash-prefixed argument must be a known option.** An argument
+  such as `--nope` is an error, not a file name: the command stops with
+  `Unknown option --nope`. This includes `--tag=value` forms and a bare `--`.
+  A file name that starts with a dash must therefore be written with a
+  directory in front of it, as in `./-odd-name.nii.gz`.
 - **`autoreg` is stricter.** It still treats any argument that starts with a
   dash as a tag, so negative numbers cannot be given to it as values.
 
-A lone `-` is a value.
+A lone `-` is a value, and so is a group tag such as `@loss`.
 
 ### Keywords among numbers
 
@@ -174,10 +182,24 @@ When a command cannot make sense of its arguments it prints its full help
 text, followed by a line of the form
 
 ```text
-[ERROR] Unknown tag --size=64
+[ERROR] Unknown option --size=64
 ```
 
-on standard error. Errors raised while the command works (a missing file, a
+on standard error. The other argument errors have the same form:
+
+```text
+[ERROR] Invalid value 'foo' for --affine; choose from {rigid, similitude, affine}
+[ERROR] Not enough arguments for option -s: expected at least 3 but got 2.
+```
+
+The first is raised when a value cannot be used (the list of choices is left
+out for options that are not a choice, such as a number that fails to parse);
+the second when values are missing, and it is followed by " Choose from {...}."
+if the option has a fixed set of choices. Asking for help with `-h` always
+works, even if the command line also contains unknown options. Commands with
+their own hand-written parsers (`vopt`, `autoreg`, `crop`, `pad`,
+`extract_patches`, `affopt`, `reslice` and `compose`) may word these errors
+differently. Errors raised while the command works (a missing file, a
 value of the wrong type) are reported in the same `[ERROR] ...` form, without
 a Python traceback. In both cases the command exits with status 1; see
 [Running commands](#running-commands).
