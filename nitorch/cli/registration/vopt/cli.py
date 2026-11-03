@@ -4,7 +4,7 @@ import os.path as op
 from nitorch.cli.cli import commands
 from nitorch.core.cli import ParseError
 from nitorch import io
-from nitorch.spatial import optimal_svf, voxel_size as get_voxel_size
+from nitorch.spatial import optimal_svf, svf_labels, voxel_size as get_voxel_size
 from nitorch.core.py import fileparts
 
 
@@ -196,7 +196,7 @@ def _cli(args):
 
     optimal = optimal_svf(inputs, weights=weights, **prm)
 
-    labels = list(set([label for pair in inputs for label in pair]))
+    labels = svf_labels(inputs)
     for i, label in enumerate(labels):
         ofname = output.format(label=label, sep=op.sep, dir=dir, ext=ext)
         io.savef(optimal[i], ofname, like=first_input)

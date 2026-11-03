@@ -201,7 +201,7 @@ def optinorm(inputs, output='norm', steps=all_steps, both=False,
                 weights = {(i, j): io.map(paths.pair_hessian(i, j))
                            for i, j in pairs}
             optimal = spatial.optimal_svf(svfs, weights=weights, **prm)
-            labels = list(set(label for pair in svfs for label in pair))
+            labels = spatial.svf_labels(svfs)
             for i in range(len(inputs)):
                 io.savef(optimal[labels.index(i)], paths.opt_svf(i, mode),
                          like=paths.pair_svf(*pairs[0]))
