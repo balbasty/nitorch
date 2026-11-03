@@ -204,3 +204,32 @@ class MappedAffine(MappedFile):
 
         """
         raise NotImplementedError
+
+    def savef(self, file_like=None, **meta):
+        """Write the transform to disk.
+
+        The matrix was already converted to the format's convention
+        by `set_fdata` (or stored raw by `set_data`), so this is the
+        same as `save`.
+        """
+        return self.save(file_like, **meta)
+
+    @classmethod
+    def savef_new(cls, affine, file_like, like=None, **meta):
+        """Save a new world (RAS-to-RAS) affine to disk in the `cls` format.
+
+        Unlike `save_new`, which writes the raw matrix as-is, `affine`
+        is interpreted as a world-to-world matrix (the inverse of
+        `fdata`) and converted to the format's own convention.
+        If `affine` is a `MappedAffine`, its `fdata()` is used and it
+        is the default `like`.
+
+        This default implementation is for formats whose raw matrix is
+        already the matrix returned by `fdata`; formats that store
+        other types of matrices must override it.
+        """
+        if isinstance(affine, MappedAffine):
+            if like is None:
+                like = affine
+            affine = affine.fdata(numpy=True)
+        return cls.save_new(affine, file_like, like=like, **meta)

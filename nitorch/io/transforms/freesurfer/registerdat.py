@@ -7,7 +7,7 @@ from nitorch.io.transforms.mapping import MappedAffine
 from nitorch.io.mapping import AccessType
 from nitorch.io.loadsave import map as map_affine
 from nitorch.io.utils.volutils import cast
-from nitorch.io.utils.opener import Opener
+from nitorch.io.utils.opener import open
 from nitorch.core.optionals import numpy as np
 from ..readers import reader_classes
 from ..writers import writer_classes
@@ -29,7 +29,7 @@ class RegisterDatStruct(Structure):
     @classmethod
     def from_filename(cls, fname):
         """Build from path to LTA file"""
-        with Opener(fname) as f:
+        with open(fname, 'rt') as f:
             return cls.from_lines(f)
 
     @classmethod
@@ -88,7 +88,7 @@ class RegisterDatStruct(Structure):
 
     def to_filename(self, fname):
         """Write to file"""
-        with Opener(fname, 'w') as f:
+        with open(fname, 'wt') as f:
             return self.to_file_like(f)
 
     def to(self, thing):
@@ -254,7 +254,8 @@ class RegisterDat(MappedAffine):
         struct.affine = affine
         known_keys = dict(subject=str, resolution=float,
                           thickness=float, intensity=float)
-        metadata = like.metadata(known_keys.keys())
+        metadata = (like.metadata(known_keys.keys())
+                    if like is not None else dict())
         metadata.update(meta)
         for key, value in metadata.items():
             if key in known_keys:

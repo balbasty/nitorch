@@ -134,7 +134,8 @@ def orient(inp, affine=None, layout=None, voxel_size=None, center=None,
         transform = spatial.affine_rmdiv(affine, aff0)
         output_transform = output_transform.format(
             dir=dir or '.', base=base, sep=os.path.sep, layout=layout)
-        io.transforms.savef(transform.cpu(), output_transform, type=2)
+        # raw matrix written as-is (labelled physical-to-physical)
+        io.transforms.save(transform.cpu(), output_transform, type=2)
 
     if is_file:
         return output

@@ -525,7 +525,7 @@ class LinearTransformArray(MappedAffine):
                 sup, *sub = key.split('.')
                 if sup in known_superkeys and sub and sub[0] in known_subkeys:
                     sub = sub[0]
-                    meta[key] = getattr(getattr(self._struct, sup), sub)
+                    meta[key] = getattr(getattr(self._struct, sup), sub, None)
                 else:
                     meta[key] = None
         return meta
@@ -593,16 +593,28 @@ class LinearTransformArray(MappedAffine):
                              voxelsize=tupleof(float), xras=tupleof(float),
                              yras=tupleof(float), zras=tupleof(float),
                              cras=tupleof(float))
+        # accept both nested (`src={'volume': ...}`) and flat
+        # (`'src.volume': ...`, as returned by `metadata()`) keys
+        nested = dict()
         for key, value in meta.items():
-            if key in tuple(known_keys.keys()):
-                conv = known_keys[key]
-                setattr(struct, key, conv(value))
+            sup, *sub = key.split('.')
+            if sup in known_superkeys and len(sub) == 1:
+                nested.setdefault(sup, dict())[sub[0]] = value
             elif key in known_superkeys and isinstance(value, dict):
-                sup = getattr(struct, key)
-                for subkey, subval in value.items():
-                    if subkey in known_subkeys:
-                        conv = known_subkeys[subkey]
-                        setattr(sup, subkey, conv(subval))
+                nested.setdefault(key, dict()).update(value)
+            elif key in tuple(known_keys.keys()):
+                if value is not None:
+                    setattr(struct, key, known_keys[key](value))
+        for key, value in nested.items():
+            value = {k: v for k, v in value.items()
+                     if k in known_subkeys and v is not None}
+            if not value:
+                continue
+            if getattr(struct, key) is None:
+                setattr(struct, key, struct.VolumeInfo())
+            sup = getattr(struct, key)
+            for subkey, subval in value.items():
+                setattr(sup, subkey, known_subkeys[subkey](subval))
 
     def set_metadata(self, dict_like=None, **meta):
         """Set additional metadata
@@ -651,11 +663,9 @@ class LinearTransformArray(MappedAffine):
         return self
 
     @classmethod
-    def save_new(cls, affine, file_like, like=None, *args, **meta):
-        if isinstance(affine, MappedAffine):
-            if like is None:
-                like = affine
-            affine = affine.data(numpy=True)
+    def _new_struct(cls, affine, like=None, **meta):
+        """Build a new LTAStruct holding the raw `affine`, with metadata
+        copied from `like` and overridden by `meta`."""
         if torch.is_tensor(affine):
             affine = affine.detach().cpu()
         affine = np.asanyarray(affine)
@@ -668,11 +678,51 @@ class LinearTransformArray(MappedAffine):
 
         struct = LTAStruct()
         struct.affine = affine
+        struct.nxforms = affine.shape[0]
         metadata = like.metadata() if like is not None else dict()
         nested_update(metadata, meta)
         cls._set_metadata(struct, **metadata)
+        return struct
+
+    @classmethod
+    def save_new(cls, affine, file_like, like=None, *args, **meta):
+        """Save a new LTA. `affine` is written as-is (raw matrix)."""
+        if isinstance(affine, MappedAffine):
+            if like is None:
+                like = affine
+            affine = affine.data(numpy=True)
+        struct = cls._new_struct(affine, like, **meta)
         struct.to(file_like)
 
+    @classmethod
+    def savef_new(cls, affine, file_like, like=None, *args, **meta):
+        """Save a new LTA from a world (RAS-to-RAS) matrix.
+
+        The LTA type is taken from `meta` or `like` (default: RAS).
+        If it is not RAS, the matrix is converted from RAS to that type
+        using the source and destination volume information, which
+        must then be available.
+        """
+        if isinstance(affine, MappedAffine):
+            if like is None:
+                like = affine
+            affine = affine.fdata(numpy=True)
+        struct = cls._new_struct(affine, like, **meta)
+        lta = cls(struct, mode='r+')
+        afftype = lta.type()[0]
+        if afftype != 'ras':
+            fields = ('volume', 'voxelsize', 'xras', 'yras', 'zras', 'cras')
+            for name in ('src', 'dst'):
+                info = getattr(struct, name)
+                if info is None or any(getattr(info, f) is None
+                                       for f in fields):
+                    raise ValueError(
+                        f'Cannot convert a RAS-to-RAS matrix to an LTA of '
+                        f'type {afftype}-to-{afftype}: missing {name} volume '
+                        f'information (provide it through `like` or the '
+                        f'`{name}` metadata).')
+            lta.set_fdata(struct.affine)
+        struct.to(file_like)
 
 reader_classes.append(LinearTransformArray)
 writer_classes.append(LinearTransformArray)
