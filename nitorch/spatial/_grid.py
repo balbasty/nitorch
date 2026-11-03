@@ -10,7 +10,7 @@ from nitorch._C.grid import (
     BoundType, InterpolationType,
     SplineCoeff, SplineCoeffND
 )
-from ._affine import affine_resize, affine_lmdiv
+from ._affine import affine_resize, affine_lmdiv, _resize_shape_single
 from ._finite_differences import diff
 
 
@@ -657,9 +657,12 @@ def resize(image, factor=None, shape=None, affine=None, anchor='c',
           zoom factor (and eventually truncated), and two anchor points
           are used to determine the voxel size.
         * In cases 'f' and 'l', a single anchor point is used so that
-          the voxel size is exactly divided by the zoom factor.
-          This case with an integer factor corresponds to subslicing
-          the volume (e.g., `vol[::f, ::f, ::f]`).
+          the voxel size is exactly divided by the zoom factor, and
+          (unless `shape` is provided) the output shape is
+          `floor((N-1)*f) + 1`, so that the last (resp. first) output
+          voxel stays inside the input field of view.
+          With a factor `1/k` (k integer), this case corresponds to
+          subslicing the volume (e.g., `vol[::k, ::k, ::k]`).
         * A list of anchors (one per dimension) can also be provided.
     dim : int, optional
         Number of spatial dimensions.
@@ -695,7 +698,8 @@ def resize(image, factor=None, shape=None, affine=None, anchor='c',
     return_trf = kwargs.pop('_return_trf', False)  # hidden option
 
     # compute output shape
-    outshape = [o or max(1, int(i*f)) for i, o, f in zip(inshape, outshape, factor)]
+    outshape = [o or (_resize_shape_single(i, f, a) if f else None)
+                for i, o, f, a in zip(inshape, outshape, factor, anchor)]
     if any(not s for s in outshape):
         raise ValueError('Either factor or shape must be set in '
                          'all dimensions')
@@ -795,14 +799,22 @@ def resize_grid(grid, factor=None, shape=None, type='grid',
           zoom factor (and eventually truncated), and two anchor points
           are used to determine the voxel size.
         * In cases 'f' and 'l', a single anchor point is used so that
-          the voxel size is exactly divided by the zoom factor.
-          This case with an integer factor corresponds to subslicing
-          the volume (e.g., `vol[::f, ::f, ::f]`).
+          the voxel size is exactly divided by the zoom factor, and
+          (unless `shape` is provided) the output shape is
+          `floor((N-1)*f) + 1`, so that the last (resp. first) output
+          voxel stays inside the input field of view.
+          With a factor `1/k` (k integer), this case corresponds to
+          subslicing the volume (e.g., `vol[::k, ::k, ::k]`).
         * A list of anchors (one per dimension) can also be provided.
     **kwargs
         Parameters of `grid_pull`.
-        Note that here, `prefilter=True` by default, whereas in
-        `grid_pull`, `prefilter=False` by default.
+        Note that here, `prefilter=True`, `bound='dct2'` and
+        `extrapolate=True` by default, whereas in `grid_pull`,
+        `prefilter=False`, `bound='zero'` and `extrapolate=False` by
+        default. This matters for samples that fall outside of the
+        input field of view (e.g., up to half a voxel with
+        `anchor='edges'` when upsampling), which would otherwise be
+        zeroed.
 
     Returns
     -------
@@ -815,6 +827,8 @@ def resize_grid(grid, factor=None, shape=None, type='grid',
     # resize grid
     kwargs['_return_trf'] = True
     kwargs.setdefault('prefilter', True)
+    kwargs.setdefault('bound', 'dct2')
+    kwargs.setdefault('extrapolate', True)
     ndim = grid.shape[-1]
     *spatial, _ = grid.shape[-ndim-1:-1]
     batch = grid.shape[:-ndim-1]
