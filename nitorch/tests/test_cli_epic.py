@@ -73,7 +73,8 @@ def _run_main(monkeypatch, tmp_path, args):
     monkeypatch.setattr(epic_main, 'epic', fake_epic)
     monkeypatch.setattr(epic_main.io, 'savef',
                         lambda dat, fname, **kw: saved.append(fname))
-    epic_main._cli(['x.nii', '-q', *args])
+    # single echo: reverse-echo synthesis is impossible, disable it
+    epic_main._cli(['x.nii', '-q', '-x', *args])
     return captured, saved
 
 
@@ -162,7 +163,8 @@ def _run_outputs(monkeypatch, tmp_path, inputs, outputs, called=None):
     monkeypatch.setattr(epic_main.io, 'savef',
                         lambda dat, fname, **kw: saved.append(
                             (fname, tuple(dat.shape))))
-    epic_main._cli([*names, '-q', '-o', *outputs])
+    # few echoes: disable reverse-echo synthesis (tested separately)
+    epic_main._cli([*names, '-q', '-x', '-o', *outputs])
     return called, saved
 
 
@@ -215,3 +217,146 @@ def test_accepted_output_counts(monkeypatch, tmp_path,
     called, saved = _run_outputs(monkeypatch, tmp_path, inputs, outputs)
     assert called
     assert saved == expected
+
+
+# ----------------------------------------------------------------------
+#   reverse-echo synthesis needs >= 2 echoes per polarity
+# ----------------------------------------------------------------------
+
+def _run_synth(monkeypatch, tmp_path, inputs, args=()):
+    monkeypatch.chdir(tmp_path)
+    names = []
+    for i, ne in enumerate(inputs):
+        shape = (4, 5, 6) if ne == 1 else (4, 5, 6, ne)
+        names.append(f'in{i}.nii')
+        io.savef(torch.rand(shape) + 1, names[-1], affine=torch.eye(4))
+    called = []
+
+    def fake_epic(echoes, **kwargs):
+        called.append(kwargs)
+        return torch.zeros(sum(inputs), 4, 5, 6)
+
+    monkeypatch.setattr(epic_main, 'epic', fake_epic)
+    monkeypatch.setattr(epic_main.io, 'savef', lambda *a, **k: None)
+    epic_main._cli([*names, '-q', *args])
+    return called
+
+
+@pytest.mark.parametrize('inputs,args', [
+    ([1, 1], []),           # two 3D inputs (one echo per polarity)
+    ([1, 1], ['-e']),       # extrapolation also needs two echoes
+    ([3], []),              # only one echo of the second polarity
+])
+def test_synth_too_few_echoes_is_parse_error(monkeypatch, tmp_path,
+                                             inputs, args):
+    with pytest.raises(ParseError) as e:
+        _run_synth(monkeypatch, tmp_path, inputs, args)
+    msg = str(e.value)
+    assert 'at least 2 echoes per polarity' in msg
+    assert f'got {sum(inputs)}' in msg
+    assert '-x/--no-synth' in msg
+
+
+@pytest.mark.parametrize('inputs,args', [
+    ([1, 1], ['-x']),
+    ([1, 1], ['-r', 'in0.nii', 'in1.nii']),
+    ([2, 2], []),
+])
+def test_synth_enough_echoes_or_no_synth(monkeypatch, tmp_path, inputs, args):
+    assert _run_synth(monkeypatch, tmp_path, inputs, args)
+
+
+def test_synth_too_few_echoes_cli_message(monkeypatch, tmp_path, capsys):
+    monkeypatch.chdir(tmp_path)
+    io.savef(torch.rand(4, 5, 6), 'a.nii', affine=torch.eye(4))
+    io.savef(torch.rand(4, 5, 6), 'b.nii', affine=torch.eye(4))
+    assert epic_main.cli(['a.nii', 'b.nii', '-q']) == 1
+    assert 'at least 2 echoes per polarity' in capsys.readouterr().err
+
+
+@pytest.mark.parametrize('ne', [1, 2, 3])
+def test_tools_synth_too_few_echoes_is_value_error(ne):
+    x = torch.rand(ne, 4, 5, 6) + 1
+    for slicewise in (False, 2):
+        with pytest.raises(ValueError, match='at least 2 echoes per'):
+            epic(x, max_iter=(1, 1), verbose=0, device='cpu',
+                 slicewise=slicewise)
+
+
+def test_tools_synthesize_single_echo_is_value_error():
+    from nitorch.tools.denoising.epic import synthesize_neg, synthesize_pos
+    x = [torch.rand(4, 5)]
+    with pytest.raises(ValueError):
+        synthesize_neg(x)
+    with pytest.raises(ValueError):
+        synthesize_pos(x)
+
+
+def test_tools_reversed_fit_has_forward_echoes_only():
+    # with acquired reversed echoes, the fit only holds the N forward
+    # echoes, so `-r` files must not be counted among the outputs
+    x = torch.rand(2, 4, 5, 6) + 1
+    fit = epic(x, reverse_echoes=x.flip(0), max_iter=(1, 1),
+               verbose=0, device='cpu')
+    assert fit.shape == x.shape
+
+
+# ----------------------------------------------------------------------
+#   map_files
+# ----------------------------------------------------------------------
+
+@pytest.mark.parametrize('shape', [(4, 5, 6, 1, 3), (4, 5, 6, 3, 1),
+                                   (4, 5, 6, 3), (4, 5, 6)])
+def test_map_files_shapes(tmp_path, shape):
+    from nitorch.tools.denoising.epic import map_files
+    fname = str(tmp_path / 'x.nii')
+    io.savef(torch.rand(shape), fname, affine=torch.eye(4))
+    ne = 1 if len(shape) == 3 else max(shape[3:])
+    assert tuple(map_files(fname).shape) == (ne, 4, 5, 6)
+
+
+# ----------------------------------------------------------------------
+#   reversed echo count
+# ----------------------------------------------------------------------
+
+@pytest.mark.parametrize('inputs,rev', [([1, 1], ['in0.nii']),
+                                        ([2, 2], ['in0.nii'])])
+def test_reversed_count_mismatch_is_parse_error(monkeypatch, tmp_path,
+                                                inputs, rev):
+    with pytest.raises(ParseError) as e:
+        _run_synth(monkeypatch, tmp_path, inputs, ['-r', *rev])
+    msg = str(e.value)
+    assert f'as forward echoes ({sum(inputs)})' in msg
+    assert f'got {inputs[0]}' in msg
+
+
+def test_tools_reversed_count_mismatch_is_value_error():
+    x = torch.rand(4, 4, 5, 6) + 1
+    with pytest.raises(ValueError, match='same shape'):
+        epic(x, reverse_echoes=x[:2], max_iter=(1, 1), verbose=0,
+             device='cpu')
+
+
+# ----------------------------------------------------------------------
+#   no-synth Hessian (must not use uninitialised memory)
+# ----------------------------------------------------------------------
+
+def test_noreverse_hessian_is_initialised(monkeypatch):
+    from nitorch.tools.denoising import epic as epic_mod
+    g = torch.Generator().manual_seed(0)
+    x = torch.rand(3, 6, 7, 8, generator=g) + 1
+    vs = torch.randn(6, 7, 8, generator=g) * 0.5
+    opt = dict(lam=1, sigma=1, max_iter=(2, 4), tol=0, verbose=0)
+    empty_like = torch.empty_like
+    outs = []
+    # make "uninitialised" memory deterministic garbage: the result must
+    # not depend on it
+    for value in (float('nan'), 1e6, -3.):
+        monkeypatch.setattr(
+            torch, 'empty_like',
+            lambda *a, v=value, **k: empty_like(*a, **k).fill_(v))
+        outs.append(epic_mod.run_epic_noreverse(x, vs, **opt))
+    monkeypatch.setattr(torch, 'empty_like', empty_like)
+    for out in outs:
+        assert torch.isfinite(out).all()
+        assert torch.allclose(out, outs[0])

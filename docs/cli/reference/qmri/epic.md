@@ -25,7 +25,7 @@ $$
 
 where $\Delta B_0$ is the field map in Hz and $\mathrm{BW}$ is the readout bandwidth per pixel in Hz/pixel. `epic` implements the method of Varadarajan et al. (2020). It recovers one undistorted, denoised image per echo by minimising a data-fidelity term and an edge-preserving smoothness term. Each acquired echo is explained as a shifted version of the unknown image: shifted by $+\Delta x$ for the echoes with the polarity of the first echo, and by $-\Delta x$ for the others. A total-variation penalty is applied to the unknown echoes, and solved by iteratively reweighted least squares.
 
-What makes the method robust to errors in the field map is that it also uses *reversed-polarity* echoes, that is, images in which every echo is distorted in the opposite sense. If you did not acquire them, they are synthesised from the acquired echoes. The reversed-polarity version of an echo has the polarity of its two neighbours, and if the signal decays exponentially and the echo spacing is constant, it can be approximated by the geometric mean $\sqrt{S_{e-1}S_{e+1}}$ of those neighbours. This is where the exponential-decay assumption enters. It requires at least four echoes. The first and last echoes have only one neighbour, so their reversed counterpart has to be extrapolated from the two nearest echoes of opposite polarity, as $S_a^2/S_b$ where $a$ is the nearest. This extrapolation is noisier, so it is only used with `-e`. By default, the first and last echoes are matched to the acquired data only.
+What makes the method robust to errors in the field map is that it also uses *reversed-polarity* echoes, that is, images in which every echo is distorted in the opposite sense. If you did not acquire them, they are synthesised from the acquired echoes. The reversed-polarity version of an echo has the polarity of its two neighbours, and if the signal decays exponentially and the echo spacing is constant, it can be approximated by the geometric mean $\sqrt{S_{e-1}S_{e+1}}$ of those neighbours. This is where the exponential-decay assumption enters. It requires at least two echoes of each polarity, that is, four echoes in total; with fewer, the command stops before any computation. If you have fewer echoes, either disable the synthesis with `-x` or give acquired reversed echoes with `-r`. The first and last echoes have only one neighbour, so their reversed counterpart has to be extrapolated from the two nearest echoes of opposite polarity, as $S_a^2/S_b$ where $a$ is the nearest. This extrapolation is noisier, so its result is only used in the fit with `-e`. By default, the first and last echoes are matched to the acquired data only. Since the extrapolation is always carried out, `-e` does not lower the minimum number of echoes.
 
 ### Inputs
 
@@ -38,7 +38,7 @@ The field map `-f` is a 3D volume, either in Hz or already a voxel shift map. Th
 
 `-p -` declares that the first echo has the negative polarity, which flips the sign of the field map; use it if your field map was computed for the opposite readout polarity. The field map is optional: without `-f`, no geometric model is applied and the command only denoises the echoes.
 
-Reversed-polarity echoes acquired for real are passed with `-r`, in the same order and with the same number of echoes as the main series. They replace the synthesised echoes, and the first and last echoes are then used as any other.
+Reversed-polarity echoes acquired for real are passed with `-r`, in the same order. There must be as many reversed echoes as acquired echoes, otherwise the command stops with `Expected as many reversed echoes (-r) as forward echoes (N); got M.` They replace the synthesised echoes, and the first and last echoes are then used as any other.
 
 ### Readout direction
 
@@ -46,7 +46,7 @@ The readout direction is set with `-d` using anatomical axis letters, for exampl
 
 ### Output files
 
-Outputs are written as floating-point images that copy the format, orientation matrix and header of the input file they derive from (the first input file when one output holds several files). The `-o` option takes one or several path templates. In a template, `{dir}`, `{sep}`, `{base}` and `{ext}` are replaced by the directory, path separator, base name (without extension) and extension of the input file, and `{n}` by the zero-based index of the echo (or, when there is one output per input, of the input file). Echoes are counted over all input files, a 4D file contributing all of its volumes.
+Outputs are written as floating-point images that copy the format, orientation matrix and header of the input file they derive from (the first input file when one output holds several files). The `-o` option takes one or several path templates. In a template, `{dir}`, `{sep}`, `{base}` and `{ext}` are replaced by the directory, path separator, base name (without extension) and extension of the input file, and `{n}` by the zero-based index of the echo (or, when there is one output per input, of the input file). Echoes are counted over all input files, a 4D file contributing all of its volumes. Only the forward echoes are counted: the reversed echoes given with `-r` are not written, and do not count towards the number of outputs.
 
 The number of outputs is checked before anything is computed. The first matching row below applies.
 
@@ -65,7 +65,7 @@ The default template is `{dir}{sep}{base}_epic{ext}`, so with a single 4D input 
 
 | Name      | Description |
 | --------- | ----------- |
-| `ECHOES`  | One or more files with the acquired bipolar echoes (3D, or 4D with echoes along the fourth dimension), in acquisition order. At least four echoes are needed to synthesise reversed-polarity echoes. |
+| `ECHOES`  | One or more files with the acquired bipolar echoes (3D, or 4D with echoes along the fourth dimension), in acquisition order. Synthesising reversed-polarity echoes (the default) needs at least four echoes, two of each polarity. With fewer, use `-x` or `-r`. |
 
 ## Options
 
@@ -74,7 +74,7 @@ The default template is `{dir}{sep}{base}_epic{ext}`, so with a single 4D input 
 | Option                | Value            | Description | Default |
 | --------------------- | ---------------- | ----------- | ------- |
 | `-f`, `--fieldmap`    | `FILE`           | B0 field map, in Hz, or voxel shift map along the readout direction. | none (denoising only) |
-| `-r`, `--reversed`    | `ECHOES...`      | Echoes acquired with reversed-polarity readout. | synthesised |
+| `-r`, `--reversed`    | `ECHOES...`      | Echoes acquired with reversed-polarity readout. There must be as many as acquired echoes. | synthesised |
 | `-d`, `--direction`   | `DIR`            | Readout direction: one of `r`, `l`, `a`, `p`, `i`, `s`, `rl`, `lr`, `ap`, `pa`, `is`, `si`. | voxel axis with the most voxels |
 | `-p`, `--polarity`    | `{+,-}`          | Readout polarity of the first echo. `-` flips the sign of the field map. | `+` |
 | `-b`, `--bandwidth`   | `BW`             | Readout bandwidth in Hz/pixel. The field map is divided by it. | `1` |
@@ -84,7 +84,7 @@ The default template is `{dir}{sep}{base}_epic{ext}`, so with a single 4D input 
 | Option                  | Value            | Description | Default |
 | ----------------------- | ---------------- | ----------- | ------- |
 | `-x`, `--no-synth`      |                  | Do not synthesise reversed-polarity echoes. Only the acquired echoes are used, and with no field map and no reversed echoes to constrain them, the edge-preserving penalty does all the regularisation. Ignored if `-r` is given. | synthesise |
-| `-e`, `--extrapolate`   | `[BOOL]`         | Also synthesise the first and last reversed echoes by extrapolation, so that they are used in the fit. Alone, the flag means `yes`. Only relevant when echoes are synthesised. | `no` |
+| `-e`, `--extrapolate`   | `[BOOL]`         | Also synthesise the first and last reversed echoes by extrapolation, so that they are used in the fit. Alone, the flag means `yes`. Only relevant when echoes are synthesised. It does not change the minimum of four echoes. | `no` |
 | `--penalty`             | `VAL`            | Weight of the total-variation penalty. It is divided by the typical tissue intensity of each echo, so that it does not depend on the scaling of the data. Larger values give smoother echoes. | `100` |
 
 ### Optimisation
