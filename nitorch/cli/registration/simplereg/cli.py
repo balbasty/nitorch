@@ -93,7 +93,9 @@ def build_register_args(options):
     if options.discretize:
         preproc += ['-d', str(options.discretize)]
 
-    args += ['@@fix', options.fixed] + preproc
+    # simplereg only exposes the moving image's outputs (-x/-r): disable
+    # the fixed image's `.moved` output, which `register` writes by default
+    args += ['@@fix', options.fixed] + preproc + ['-o', 'false']
     args += ['@@mov', options.moving] + preproc
     if options.init:
         args += ['-a', options.init]

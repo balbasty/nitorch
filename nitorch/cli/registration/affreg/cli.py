@@ -52,7 +52,9 @@ def _cli(args):
         args += ['-p'] + [str(p) for p in options.kernel]
     if options.symmetric:
         args += ['--symmetric']
-    args += ['@@fix', options.fixed]
+    # affreg only exposes the moving image's outputs (-x/-r): disable the
+    # fixed image's `.moved` output, which `register` writes by default
+    args += ['@@fix', options.fixed, '-o', 'false']
     args += ['@@mov', options.moving]
     if options.init:
         args += ['-a', options.init]
