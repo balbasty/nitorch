@@ -9,7 +9,7 @@ BASE = ['@loss', 'mse', '@@fix', 'fix.nii', '@@mov', 'mov.nii', '@nonlin', 'svf'
     ([], False),                                # not written by default
     (['-h'], default_hessian),                  # default path
     (['-h', 'out/hess.nii.gz'], 'out/hess.nii.gz'),
-    (['-h', 'true'], True),                     # mapped to default path by cli
+    (['-h', 'true'], default_hessian),          # same as bare -h
     (['-h', 'false'], False),
 ])
 def test_register_nonlin_hessian_option(args, expected):
