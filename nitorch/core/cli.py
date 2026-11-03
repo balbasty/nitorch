@@ -164,11 +164,14 @@ class Validations:
         Returns
         -------
         validate : callable(any) -> bool
-            A validation that checks that the input is a valid choice
+            A validation that checks that the input is a valid choice.
+            The valid choices are exposed in its `choices` attribute,
+            so that parse errors can list them.
 
         """
         def validate(value):
             return value in choices
+        validate.choices = choices
         return validate
 
 
@@ -357,6 +360,17 @@ class Option:
 
     __str__ = __repr__
 
+    def _invalid_value(self, arg):
+        """ParseError for a value that is present but rejected"""
+        # name the option by its long tag (or its name if positional)
+        tags = [tag for tag in self.tags if tag.startswith('--')] or self.tags
+        label = tags[0] if tags else self.name
+        msg = f'Invalid value {arg!r} for {label}'
+        choices = getattr(self.validation, 'choices', None)
+        if choices is not None:
+            msg += '; choose from {' + ', '.join(map(str, choices)) + '}'
+        return ParseError(msg)
+
     def parse(self, args, stops=tuple()):
         """
 
@@ -377,13 +391,18 @@ class Option:
                 next_arg = args[0]
                 if next_arg not in stops:
                     try:
-                        next_arg = self.convert(next_arg)
-                        if self.validation(next_arg):
-                            args.pop(0)
-                            values.append(next_arg)
-                            continue
+                        value = self.convert(next_arg)
+                        valid = self.validation(value)
                     except Exception:
-                        pass
+                        valid = False
+                    if valid:
+                        args.pop(0)
+                        values.append(value)
+                        continue
+                    if isvalue(next_arg, '-@'):
+                        # a value is present (not an option or group
+                        # tag), but it is not accepted
+                        raise self._invalid_value(next_arg)
             raise ParseError(f'Not enough arguments for option '
                              f'{self.name}: expected at least {mn} '
                              f'but got {nargs_count}.')
@@ -779,7 +798,8 @@ class GroupList(ListWithTags):
 class CommandParser:
     """Main entry-point"""
 
-    def __init__(self, name=None, help=None, title=None, add_help=True):
+    def __init__(self, name=None, help=None, title=None, add_help=True,
+                 allow_unknown_options=False):
         """
 
         Parameters
@@ -788,10 +808,16 @@ class CommandParser:
         help : str, The global help string of the command
         title : str, A title for the command [UNUSED]
         add_help : bool, Whether to automatically add a `-h, --help` option.
+        allow_unknown_options : bool, default=False
+            By default, any dash-prefixed argument that is not a number
+            (see `istag`) and is not a tag of this parser (or of one
+            of its groups) raises `ParseError('Unknown option ...')`.
+            If True, such arguments are parsed as values (legacy behavior).
         """
         self.name = name
         self.help = help
         self.title = title
+        self.allow_unknown_options = allow_unknown_options
         self.positionals = PositionalList()
         self.options = OptionList()
         self.groups = GroupList()
@@ -818,10 +844,36 @@ class CommandParser:
                 return opt_help.parse(args[i+1:], stops=stops)
         return None
 
+    def _iter_all_tags(self):
+        """Tags of all options and groups, at any depth"""
+        seen = set()
+
+        def walk(node):
+            if id(node) in seen:
+                return
+            seen.add(id(node))
+            yield from node.options.iter_tags()
+            for options in getattr(node, 'suboptions', {}).values():
+                yield from options.iter_tags()
+            for group in node.groups:
+                yield from group.tags
+                yield from walk(group)
+
+        return walk(self)
+
+    def _check_unknown_options(self, args):
+        if getattr(self, 'allow_unknown_options', False):
+            return
+        known = set(self._iter_all_tags())
+        for arg in args:
+            if istag(arg) and arg not in known:
+                raise ParseError(f'Unknown option {arg}')
+
     def parse(self, args):
         help_opt = self._check_help_arg(args)
         if help_opt is not None:
             return Parsed(help=help_opt)
+        self._check_unknown_options(args)
 
         nargs = len(args)
         alltags = list(self.options.tags) + list(self.groups.tags)
