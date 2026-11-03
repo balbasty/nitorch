@@ -513,28 +513,28 @@ A nonlinear registration returns a transformation in both directions, but only o
 | --------- | ----------- |
 | `default` | The behaviour of previous versions, unchanged for every model. |
 | `push`    | A push-based inverse. The displacement is splatted onto the grid, and the holes it leaves are filled by a membrane-regularised least-squares solve. Robust, and cheap. |
-| `newton`  | `push`, followed by up to three safeguarded Newton steps that solve $\text{fwd}\circ\text{inv} = \text{id}$ at each voxel. A backtracking line search guards each step, and a fixed-point update takes over where the Jacobian is nearly singular. It is never worse than `push` on the equation it solves, but it is the slowest. |
+| `newton`  | Starts from the `push` inverse and refines it with 5 regularised Gauss-Newton steps. Each step solves one linear system over the whole field, $(J^\top J + \lambda L)\,\delta = -J^\top r$, where $r = \text{fwd}\circ\text{inv} - \text{id}$ is the residual of the round trip, $J$ is the Jacobian of that composition, and $L$ is the membrane regulariser used by `push`, with the same weight. The penalty applies to the step $\delta$ rather than to the solution, so successive steps converge towards the exact inverse. The system is solved with the same multigrid solver as `push`. There is no per-voxel safeguard: `newton` improves on `push` on average, and stays robust where the warp folds, but it is not guaranteed to beat it at every voxel. It is the slowest method. |
 
 What you gain depends on the model.
 
 | Model      | Inverted side | Effect |
 | ---------- | ------------- | ------ |
-| `shoot`    | forward       | The inverse $\varphi$ is integrated directly and is the more accurate of the two, so inverting it gives a much better forward warp than the default. `newton` brings the largest gain on steep warps (on a 90° swirl, the round-trip error drops from about 2 voxels to about 0.1), and `push` lies in between. |
-| `smalldef` | inverse       | The default is already a push-based inverse, so `push` is the same as `default`. `newton` improves on it (for a 5-fold radial expansion, from 2.1 to 0.2-0.4 voxels). |
-| `svf`      | inverse       | The default, $\exp(-v)$, is already about as accurate as it gets. `push` is worse and `newton` roughly equal, so inversion brings little here. |
+| `shoot`    | forward       | The inverse $\varphi$ is integrated directly and is the more accurate of the two, so inverting it gives a much better forward warp than the default. `newton` brings the largest gain on steep warps: on a 90° swirl, the maximum round-trip error drops from about 1.5-2.1 voxels to 0.3 or less, and on a strongly folding swirl (one full turn) it stays below about 1 voxel where `push` reaches about 23. `push` lies in between on smooth warps. |
+| `smalldef` | inverse       | The default is already a push-based inverse, so `push` is the same as `default`. `newton` improves on it, but less than for `shoot`, because the step penalty here is the model's registration penalty (for a 5-fold radial expansion, the mean inverse error is about 0.15 voxel). |
+| `svf`      | inverse       | The default, $\exp(-v)$, is already about as accurate as it gets. `push` is worse and `newton` brings no meaningful gain, so inversion has little to offer here. |
 
 The cost relative to `default`, for a 3D image of 64³ voxels, is:
 
 | Model      | `push`  | `newton` |
 | ---------- | ------- | -------- |
-| `shoot`    | 3 times | 3.5 times |
-| `svf`      | 5 times | 6.5 times |
-| `smalldef` | about 1 time | about 1 time |
+| `shoot`    | about 2.5 times | about 13 times |
+| `svf`      | about 5 times | about 30 times |
+| `smalldef` | about 1 time | about 7 times |
 
-These figures concern the nonlinear update alone. A full registration spends most of its time elsewhere, so the overall slowdown is smaller.
+All accuracy and cost figures are approximate, and were measured on 3D benchmarks of 64³ voxels on a CPU. They concern the nonlinear update alone. A full registration spends most of its time elsewhere, so the overall slowdown is smaller.
 
 !!! tip "When to use it"
-    Use `--inversion newton` with `shoot` when the deformations are steep and an accurate, inverse-consistent forward warp matters, for example when you will pull images back and forth with `reslice`. For small deformations, or if you only use one direction, the default is accurate enough. For `svf`, there is rarely a reason to change it. A plain fixed-point iteration was also tried, and rejected: it diverges where the local expansion exceeds 2 or the rotation exceeds 60°.
+    Use `--inversion newton` with `shoot` when the deformations are steep and an accurate, inverse-consistent forward warp matters, for example when you will pull images back and forth with `reslice`. For small deformations, or if you only use one direction, the default is accurate enough. For `svf`, there is rarely a reason to change it.
 
 ## Optimisation
 

@@ -93,7 +93,7 @@ The file is a volume with three components (the shifts along the three axes) in 
 
 By default the three components are in **voxels** of the field's own grid. With `-u mm`, they are millimetres in world space and are converted by the orientation matrix of the field. The unit option is written right after the file name of the field, for example `-d disp.nii.gz -u mm`.
 
-The inverse (`-id`) of a displacement field has no closed form. The field is resampled to the voxel size of the output grid and inverted numerically by a regularised least-squares scheme, so the inverse is approximate, in particular where the field folds. If the displacement was written by `register @nonlin smalldef --inversion newton` and its `.json` sidecar is next to it, the inverse is refined by Newton steps, as `register` did.
+The inverse (`-id`) of a displacement field has no closed form. The field is resampled to the voxel size of the output grid and inverted numerically by a regularised least-squares scheme, so the inverse is approximate, in particular where the field folds. If the displacement was written by `register @nonlin smalldef --inversion newton` and its `.json` sidecar is next to it, the inverse is refined by regularised Gauss-Newton steps, as `register` did.
 
 #### Velocity fields
 
