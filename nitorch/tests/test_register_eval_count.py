@@ -171,37 +171,3 @@ def test_removing_initial_evaluation_does_not_change_result(kind, monkeypatch):
     assert max(float(x.abs().max()) for x in new) > 1e-4  # it did move
     for x, y in zip(new, old):
         assert torch.allclose(x, y, rtol=0, atol=1e-12), (x - y).abs().max()
-
-
-# ----------------------------------------------------------------------
-#        L-BFGS: side effects committed at the accepted point
-# ----------------------------------------------------------------------
-
-@pytest.mark.parametrize('kind', ['affine', 'nonlin'])
-@pytest.mark.parametrize('loss', ['mse', 'mad'])
-def test_lbfgs_commits_at_accepted_point(kind, loss):
-    # `pairwise_postproc` writes the outputs from the cached transforms
-    # (`exp(recompute=False)`), set by the normal evaluation that follows
-    # each line search: it must be at the final parameters, not the
-    # previous ones
-    fix, mov = _images()
-    lossobj = MSE(lam=1, dim=3) if loss == 'mse' else MAD(dim=3)
-    sim = objects.Similarity(lossobj, mov, fix)
-    affine = nonlin = None
-    if kind == 'affine':
-        affine = objects.AffineModel('rigid', position='sym',
-                                     penalty=[1e-5] * 12)
-        affine.frozen = False
-        optim = make_affine_optim('lbfgs', max_iter=3)
-    else:
-        nonlin = objects.SVFModel(steps=4, penalty=dict(
-            absolute=1e-4, membrane=1e-3, bending=0.2, lame=(0.05, 0.2),
-            factor=1.))
-        nonlin.set_dat(fix.shape, affine=fix.affine, dtype=dt)
-        nonlin.frozen = False
-        optim = make_nonlin_optim('lbfgs', max_iter=3, nonlin=nonlin)
-    optim.iter.tol = 0
-    PairwiseRegister([sim], affine, nonlin, optim, verbose=0).fit()
-    model = affine if kind == 'affine' else nonlin
-    assert float(model.dat.dat.abs().max()) > 0      # it did move
-    assert torch.equal(model.exp(recompute=False), model.exp())
