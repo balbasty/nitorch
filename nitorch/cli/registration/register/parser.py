@@ -1,4 +1,5 @@
 from nitorch.core import cli
+from nitorch.core.cli import _n_to_minmax
 
 
 help1 = r"""[nitorch] register
@@ -302,6 +303,8 @@ def number_or_str(type=float):
 
 
 default_hessian = '{dir}{sep}{name}_hessian.nii.gz'
+default_affine = '{dir}{sep}{name}.lta'
+default_nonlin = '{dir}{sep}{name}.nii.gz'
 default_moved = '{dir}{sep}{base}.moved{ext}'
 default_resliced = '{dir}{sep}{base}.resliced{ext}'
 default_momentum = '{dir}{sep}momentum.nii.gz'
@@ -406,7 +409,51 @@ loss_choices = cli.Positional('name', nargs='?', default='mi',
                               validation=cli.Validations.choice(loss_choices),
                               convert=lambda x: loss_aliases.get(x, x),
                               help='Name of the image loss')
-loss = cli.NamedGroup('loss', loss_choices, '@loss', n='+',
+class _LossGroup(cli.NamedGroup):
+    """`@loss` group that reports a stray value (e.g. `lcc -s 2`, where
+    `-s` is `--symmetric` and takes no value) by naming the loss and
+    the option that preceded it, instead of failing later with a
+    generic "No @@fix ... (Last unknown argument was 2)"."""
+
+    def parse(self, args, stops=tuple()):
+        all_stops = list(stops) + list(self.options.tags)
+        for option in self.suboptions.values():
+            all_stops += option.tags
+        all_stops += self.groups.tags
+        results = cli.Parsed()
+        results.name = self.switch.parse(args, all_stops)
+        results.merge(self.positionals.parse(args, all_stops))
+        options = self.options + self.suboptions.get(results.name, [])
+        before = list(args)
+        results.merge(options.parse(args, all_stops))
+        if args and args[0] not in all_stops and not args[0].startswith('@'):
+            self._stray(results.name, options, before, args)
+        results.merge(self.groups.parse(args, all_stops))
+        return results
+
+    def _stray(self, name, options, before, args):
+        nconsumed = len(before) - len(args)
+        msg = f'{self.tags[0]} {name}: unexpected value {args[0]!r}'
+        prev = before[nconsumed - 1] if nconsumed else None
+        prev_opt = [o for o in options if prev in o.tags]
+        if prev_opt:
+            prev_opt = prev_opt[0]
+            msg += f" after {'/'.join(prev_opt.tags)}"
+            if _n_to_minmax(prev_opt.nargs)[1] == 0:
+                msg += ' (which takes no value)'
+            if prev.startswith('-') and not prev.startswith('--'):
+                # suggest long-only options starting with the same
+                # letter (their short tag was taken, e.g. `--stride`)
+                similar = [o.tags[0] for o in options
+                           if o is not prev_opt
+                           and all(t.startswith('--') for t in o.tags)
+                           and o.tags[0].startswith('--' + prev[1:])]
+                if similar:
+                    msg += f"; did you mean {' or '.join(similar)}?"
+        raise cli.ParseError(msg)
+
+
+loss = _LossGroup('loss', loss_choices, '@loss', n='+',
                       help='A loss between two images')
 loss.add_positional('factor', nargs='*', default=[1.], convert=float,
                     help='Weight it this component in the global loss')
@@ -458,7 +505,12 @@ loss.add_suboption('lcc', kernel_option)
 loss.add_suboption('mse', weight_option)
 loss.add_suboption('mad', weight_option)
 loss.add_suboption('tuk', weight_option)
-loss.add_suboption('sqz', weight_option)
+# SqueezedProdLoss has no automatic weighting: keep 'auto' as a marker
+# so that `check_options` can reject it with a clear message
+loss.add_suboption('sqz', 'weight', ('-w', '--weight'), nargs='1',
+                   default=None,
+                   convert=lambda x: 'auto' if x.lower() == 'auto' else float(x),
+                   help='Weight of the loss (no automatic weighting)')
 loss.add_suboption('mad', joint_option)
 loss.add_suboption('tuk', joint_option)
 loss.add_suboption('dice', 'weight', ('-w', '--weight'), nargs='*', default=False,
@@ -629,9 +681,11 @@ for _grp, _flags in (('translation', ('-t', '--translation-penalty')),
 affine.add_option('position', ('-p', '--position'), default='sym', nargs=1,
                   validation=cli.Validations.choice(['sym', 'mov', 'fix']),
                   help='Position of the affine transform in the model')
-affine.add_option('output', ('-o', '--output'), nargs=1,
-                  default='{dir}{sep}{name}.lta',
-                  help='Path to the output transform')
+affine.add_option('output', ('-o', '--output'), nargs='?',
+                  default=default_affine,
+                  convert=path_or_bool(default_affine),
+                  action=cli.Actions.store_value(default_affine),
+                  help='Path to the output transform (false: none)')
 affine.add_option('init', ('-i', '--input', '--init'), nargs=1,
                   help='Path to the input transform')
 affine.add_option('progressive', ('-g', '--progressive'), default=False,
@@ -671,9 +725,11 @@ nonlin.add_option('fov', ('-f', '--fov'), nargs='1*',
                   help='Name of inputs used to compute mean space')
 nonlin.add_option('init', ('-i', '--input', '--init'), nargs=1,
                   help='Path to the input transform')
-nonlin.add_option('output', ('-o', '--output'), nargs=1,
-                  default='{dir}{sep}{name}.nii.gz',
-                  help='Path to the output transform')
+nonlin.add_option('output', ('-o', '--output'), nargs='?',
+                  default=default_nonlin,
+                  convert=path_or_bool(default_nonlin),
+                  action=cli.Actions.store_value(default_nonlin),
+                  help='Path to the output transform (false: none)')
 nonlin.add_option('hessian', ('-h', '--hessian'), nargs='?',
                   default=False, convert=bool_or_str,
                   action=cli.Actions.store_value(default_hessian),

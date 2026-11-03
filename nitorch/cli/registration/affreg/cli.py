@@ -67,8 +67,8 @@ def _cli(args):
         else:
             options.optimizer = 'gn'
     if options.output is False:
-        # `-o false`: an empty path disables writing the transform
-        args += ['-o', '']
+        # `-o false`: register does not write the transform
+        args += ['-o', 'false']
     elif options.output is not True:
         args += ['-o', str(options.output)]
     args += ['@@optim', options.optimizer,

@@ -46,6 +46,17 @@ def _cli(args):
     return cli_register(build_register_args(options))
 
 
+_bound_aliases = {'nearest': 'replicate', 'border': 'replicate'}
+
+
+def _path_token(value):
+    """Output option -> register token: True/False -> 'true'/'false'
+    (register's default path / no output), else the path itself."""
+    if value is True or value is False:
+        return str(value).lower()
+    return str(value)
+
+
 def build_register_args(options):
     """Translate parsed `simplereg` options into `nitorch register` arguments.
 
@@ -85,7 +96,8 @@ def build_register_args(options):
     if options.pad is not None:
         preproc += ['-z'] + [str(x) for x in options.pad]
     if options.bound is not None:
-        preproc += ['-b', options.bound]
+        # nitorch.core.bounds' canonical name for nearest/border
+        preproc += ['-b', _bound_aliases.get(options.bound, options.bound)]
     if options.order is not None:
         preproc += ['-n', str(options.order)]
     if options.rescale is not None:
@@ -103,7 +115,7 @@ def build_register_args(options):
     # --- affine -------------------------------------------------------
     if do_affine:
         args += ['@affine', options.affine]
-        args += ['-o', str(options.output_affine)]
+        args += ['-o', _path_token(options.output_affine)]
         optimizer = options.optimizer
         if not optimizer:
             # Powell for nmi (as nitorch affreg), else register's default
@@ -118,7 +130,7 @@ def build_register_args(options):
         args += ['@nonlin', options.nonlin]
         if options.penalty is not None:
             args += [str(options.penalty)]
-        args += ['-o', str(options.output_warp)]
+        args += ['-o', _path_token(options.output_warp)]
         for key, flag in (('absolute', '-a'), ('membrane', '-m'),
                           ('bending', '-b')):
             if getattr(options, key) is not None:

@@ -96,6 +96,10 @@ def check_options(options):
                          f'@affine/@nonlin for in-plane transforms.')
     filekeys = dict(dir='', base='', ext='')
     for loss in options.loss:
+        if loss.name == 'sqz' and getattr(loss, 'weight', None) == 'auto':
+            raise ParseError('@loss sqz -w/--weight: `auto` is not '
+                             'supported (the squeezed product has no '
+                             'automatic weighting); give a number.')
         for side in ('fix', 'mov'):
             opt = getattr(loss, side)
             _check_template(opt.output, f'@@{side} -o/--output', **filekeys)

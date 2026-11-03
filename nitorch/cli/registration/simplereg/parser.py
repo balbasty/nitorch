@@ -23,7 +23,7 @@ Input options:
 Preprocessing options (applied to both images):
         --fwhm VAL [UNIT]           Smooth images before using them. Unit can be {vox,mm} [0 vox]
         --pad VAL [UNIT]            Pad images before using them. Unit can be {vox,mm} [0 vox]
-        --bound BND                 Boundary condition {dct2,dct1,dst2,dst1,dft,zero,nearest} [dct2]
+        --bound BND                 Boundary condition {dct2,dct1,dst2,dst1,dft,zero,nearest,replicate} [dct2]
         --order N                   Interpolation order {0..7} [1]
         --rescale [MN] MX           Rescale images so that their MN/MX percentiles match (0, 1) [0 95]
                                     (--rescale 0: no rescaling)
@@ -135,7 +135,8 @@ parser.add_option('init', ('-i', '--init'), nargs=1, help='Initial affine')
 
 # Preprocessing options, applied to both images.
 # None = not forwarded, i.e., nitorch register's default is used.
-bounds = ['dct2', 'dct1', 'dst2', 'dst1', 'dft', 'zero', 'nearest']
+bounds = ['dct2', 'dct1', 'dst2', 'dst1', 'dft', 'zero', 'nearest',
+          'replicate']
 parser.add_option('fwhm', '--fwhm', nargs='+', default=None,
                   convert=number_or_str(float))
 parser.add_option('pad', '--pad', nargs='+', default=None,
