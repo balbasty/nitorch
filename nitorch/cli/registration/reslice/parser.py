@@ -3,7 +3,7 @@ import json
 from . import struct
 from nitorch.core import cli
 from nitorch.core.pyutils import file_mod
-from ..helpers import find_shoot_json
+from ..helpers import find_shoot_json, pop_velocity_values
 
 help = r"""[nitorch] Reslice volumes
 
@@ -18,9 +18,15 @@ usage:
     -d, --displacement      Dense or free-form displacement field
         -n, --order             Order of the encoding splines (1)
         -u, --unit              Unit/Space of the displacement (mm or [vox])
-    -v, --velocity          Diffeomorphic velocity field
-                            [and JSON file of shooting parameters]
+    -v, --velocity          Diffeomorphic velocity field [JSON] [T0 T1]
+                            [JSON]: file of shooting parameters (default:
+                            <vel>.json, if written by `nitorch register`).
                             If no JSON file, assume stationary velocity.
+                            [T0 T1]: integrate the velocity from time T0
+                            to time T1 (default: 0 1), i.e., reslice an
+                            image at time T0 along the path to time T1
+                            (time 0: moving image, time 1: fixed image).
+                            Bounds outside [0, 1] extrapolate the path.
 
     Each of these transforms can be inverted by prepending 'i' in the
     short form or appending '-inverse' in the long form:
@@ -32,6 +38,9 @@ usage:
     square of the transform to apply (i.e., its square root will be applied):
     -l2, --linear-square            Square of a linear transform
     -v2, --velocity-square          Square of a diffeomorphic velocity field
+
+    For velocities, these are shorthands for time bounds:
+    -v2 VEL  = -v VEL 0 0.5,   -iv VEL = -v VEL 1 0,   -iv2 VEL = -v VEL 0.5 0
 
     Other tags are:
     -t, --target            Defines the target space.
@@ -61,6 +70,9 @@ usage:
         nireslice mov.nii -il affine.lta -v velocity.nii -t fix.nii
     - reslicing fix to mov:
         nireslice fix.nii -iv velocity.nii -l affine.lta -t mov.nii
+    - reslicing mov and fix to the midpoint of the (nonlinear) path:
+        nireslice mov.nii -il affine.lta -v velocity.nii 0 0.5 -t fix.nii
+        nireslice fix.nii -v velocity.nii 1 0.5 -t fix.nii
 """
 
 lin = ('-l', '--linear')
@@ -117,10 +129,12 @@ def parse_transform(args, options):
     cli.check_next_isvalue(args, tag)
     opt.file, *args = args
     if isinstance(opt, struct.Velocity):
-        if cli.next_isvalue(args):
-            opt.json, *args = args
-        else:
+        # optional JSON file of shooting parameters and time bounds
+        opt.json, bounds, args = pop_velocity_values(args, tag)
+        if not opt.json:
             opt.json = find_shoot_json(opt.file)
+        if bounds:
+            opt.t0, opt.t1 = bounds
 
     while cli.next_istag(args):
         tag, *args = args

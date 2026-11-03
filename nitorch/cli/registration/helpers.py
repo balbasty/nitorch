@@ -1,5 +1,6 @@
 import os
 import json
+import math
 import torch
 from nitorch.spatial import grid_pull, identity_grid, resize_grid
 from nitorch.core.utils import movedim
@@ -240,13 +241,126 @@ def find_shoot_json(fname):
     return None
 
 
-def exponentiate_velocity(vel, affine, json=None, square=False, inv=False):
+def velocity_time_bounds(t0=0, t1=1, square=False, inv=False):
+    """Time bounds of the map applied by `-v VEL [JSON] [T0 T1]`
+
+    The shorthands are particular bounds:
+    `-v2` (`square`) halves the bounds (`-v2 vel` = `-v vel 0 0.5`) and
+    `-iv` (`inv`) swaps them (`-iv vel` = `-v vel 1 0`).
+
+    Parameters
+    ----------
+    t0, t1 : float
+        Time bounds given on the command line.
+    square : bool
+        The velocity encodes the square of the transform to apply.
+    inv : bool
+        Apply the inverse transform.
+
+    Returns
+    -------
+    t0, t1 : float
+        Effective time bounds.
+    """
+    if square:
+        t0, t1 = t0 * 0.5, t1 * 0.5
+    if inv:
+        t0, t1 = t1, t0
+    return t0, t1
+
+
+def pop_velocity_values(args, tag, rest=None):
+    """Pop the optional values `[JSON] [T0 T1]` of a velocity option
+
+    Values that parse as numbers are time bounds; any other value is
+    the JSON file of shooting parameters (which must come first).
+    There must be zero or two time bounds. Once `args` is exhausted
+    (the option is the last one before `--`), values are taken from
+    `rest` (the arguments after `--`), even if they are dash-prefixed.
+
+    Parameters
+    ----------
+    args : list[str]
+        Arguments that follow the velocity file. Not modified.
+    tag : str
+        Name of the option (for error messages).
+    rest : list[str], optional
+        Arguments after `--`. Modified in-place.
+
+    Returns
+    -------
+    json : str or None
+        JSON file of shooting parameters (None if not provided).
+    bounds : (float, float) or None
+        Time bounds (None if not provided).
+    args : list[str]
+        Remaining arguments.
+    """
+    from nitorch.core import cli
+    args = list(args)
+
+    def peek():
+        if args:
+            return args[0] if cli.isvalue(args[0]) else None
+        if rest:
+            return rest[0]
+        return None
+
+    def pop():
+        return args.pop(0) if args else rest.pop(0)
+
+    fjson = None
+    val = peek()
+    if val is not None and not cli._isnumber(val):
+        fjson = pop()
+
+    bounds = []
+    while len(bounds) < 2:
+        val = peek()
+        if val is None or not cli._isnumber(val):
+            break
+        bounds.append(float(pop()))
+    if len(bounds) == 1:
+        raise cli.ParseError(f'{tag} expects zero or two time bounds '
+                             f'(T0 T1), but got one: {bounds[0]:g}')
+    if not all(map(math.isfinite, bounds)):
+        raise cli.ParseError(f'{tag}: time bounds must be finite, '
+                             f'got {bounds}')
+    return fjson, (tuple(bounds) or None), args
+
+
+def exponentiate_velocity(vel, affine, json=None, square=False, inv=False,
+                          t0=0, t1=1):
     """Exponentiate a velocity field into a voxel displacement field
+
+    The returned transform carries the path of the velocity from time
+    `t0` to time `t1` (`-v VEL [JSON] [T0 T1]`). Let `phi_t` be the
+    transform that `-v` applies when the velocity is scaled by `t`
+    (`phi_1` = `-v vel`, `phi_0.5` = `-v2 vel`), such that
+    `mov o phi_t` is the moving image `mov` at time `t` along the
+    path (`mov o phi_1` matches the fixed image). Then, the transform
+    returned is (as a sampling map, used like `phi_t`)
+
+        x -> inv(phi_t0)(phi_t1(x)),
+
+    such that `(mov o phi_t0) o result = mov o phi_t1`: an image at
+    time `t0` is resliced to time `t1`. Chaining `t0 -> t1` and then
+    `t1 -> t2` (in this order on the reslice command line) is the
+    transform `t0 -> t2`.
+
+    - Stationary velocity: the transform is exactly `exp((t1-t0)*vel)`.
+    - Geodesic shooting: `phi_t` is the shooting of `t*vel` over unit
+      time (geodesics can be rescaled in time). If `t0 == 0`, this is
+      `shoot(t1*vel)`; if `t1 == 0`, the inverse of `shoot(t0*vel)`;
+      else, both are composed (the accuracy of the composition is
+      bounded by that of the inverse returned by `spatial.shoot`).
+
+    Bounds outside of [0, 1] extrapolate along the path.
 
     Parameters
     ----------
     vel : (*spatial, dim) tensor
-        Velocity field, in voxels. Modified in-place if `square`.
+        Velocity field, in voxels. Not modified.
     affine : (dim+1, dim+1) tensor
         Orientation matrix of the velocity field.
     json : str, optional
@@ -255,9 +369,11 @@ def exponentiate_velocity(vel, affine, json=None, square=False, inv=False):
         it is treated as a stationary velocity field (`spatial.exp`).
     square : bool
         The velocity encodes the square of the transform to apply:
-        halve it before exponentiation.
+        halve the time bounds (`-v2`).
     inv : bool
-        Return the inverse transform.
+        Return the inverse transform: swap the time bounds (`-iv`).
+    t0, t1 : float, default=(0, 1)
+        Time bounds.
 
     Returns
     -------
@@ -265,19 +381,40 @@ def exponentiate_velocity(vel, affine, json=None, square=False, inv=False):
         Displacement field, in voxels.
     """
     from nitorch import spatial
-    if square:
-        vel.mul_(0.5)
+    t0, t1 = velocity_time_bounds(t0, t1, square=square, inv=inv)
+
+    def scaled(t):
+        # (no multiplication if t == 1: bitwise identical to `-v`/`-iv`)
+        return vel if t == 1 else vel * t
+
+    if t0 == t1:
+        return torch.zeros_like(vel)
     if json:
         prm = load_shoot_parameters(json)
         prm['voxel_size'] = spatial.voxel_size(affine)
-        if inv:
-            # the inverse does not depend on how the forward is computed
-            prm.pop('forward_method', None)
-            prm.pop('fixedpoint_iter', None)
-        disp = spatial.shoot(vel[None], displacement=True,
-                             return_inverse=inv, **prm)
-        if inv:
-            disp = disp[-1]
+
+        def shoot(t, inverse=False):
+            kw = prm
+            if inverse:
+                # the inverse does not depend on how the forward is computed
+                kw = {key: val for key, val in prm.items()
+                      if key not in ('forward_method', 'fixedpoint_iter')}
+            out = spatial.shoot(scaled(t)[None], displacement=True,
+                                return_inverse=inverse, **kw)
+            return (out[-1] if inverse else out)[0]  # drop batch dimension
+
+        if t0 == 0:
+            return shoot(t1)
+        if t1 == 0:
+            return shoot(t0, inverse=True)
+        # x -> inv(phi_t0)(phi_t1(x))
+        disp = shoot(t1)
+        idisp = shoot(t0, inverse=True)
+        return disp + pull_grid(idisp, disp + identity_grid(
+            disp.shape[:-1], dtype=disp.dtype, device=disp.device))
     else:
-        disp = spatial.exp(vel[None], displacement=True, inverse=inv)
-    return disp[0]  # drop batch dimension
+        # exp(-t0 v) o exp(t1 v) = exp((t1 - t0) v)
+        t = t1 - t0
+        disp = spatial.exp(scaled(abs(t))[None], displacement=True,
+                           inverse=t < 0)
+        return disp[0]  # drop batch dimension

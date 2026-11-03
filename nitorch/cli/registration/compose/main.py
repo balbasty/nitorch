@@ -135,9 +135,10 @@ def write_data(options):
             trf.shape = trf.shape[:3]
             trf.dat = helpers.exponentiate_velocity(
                 trf.dat, trf.affine, json=trf.json,
-                square=trf.square, inv=trf.inv)
+                square=trf.square, inv=trf.inv, t0=trf.t0, t1=trf.t1)
             trf.inv = False
             trf.square = False
+            trf.t0, trf.t1 = 0, 1
             trf.order = 1
         elif isinstance(trf, Displacement):
             f = io.volumes.map(trf.file)

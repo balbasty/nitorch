@@ -41,7 +41,7 @@ Optimization options:
         --line-search VAL           Number of line search iterations [wolfe]
     
 Other options:
-    -h, --help [LEVEL]              Display this help
+    -h, --help                      Display this help
     -v, --verbose [LVL]             Level of verbosity [1=print], 2=print more, 3=plot
     --cpu [THREADS], --gpu          Device to use [cpu]
 
@@ -142,7 +142,7 @@ parser.add_option('max_iter', ('-n', '--max-iter'), nargs=1, default=50, convert
 parser.add_option('tolerance', ('-t', '--tolerance'), nargs=1, default=1e-5, convert=float)
 parser.add_option('search', '--line-search', nargs=1, default='wolfe', convert=number_or_str(int))
 # Other options:
-#     -h, --help [LEVEL]              Display this help
+#     -h, --help                      Display this help
 #     -v, --verbose [LVL]             Level of verbosity [1=print], 2=print more, 3=plot
 #     --cpu [THREADS], --gpu          Device to use [cpu]
 parser.add_option('verbose', ('-v', '--verbose'),

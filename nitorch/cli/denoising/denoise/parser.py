@@ -15,7 +15,7 @@ usage:
     -n, --max-iter [10, 32]         Max number of IRLS and CG/RELAX iterations
     -t, --tolerance [1e-4]          Tolerance of IRLS and CG/RELAX iterations
     -x, --optim [cg]                Optimizer {cg, relax}
-    -h, --help [LEVEL]              Display this help
+    -h, --help                      Display this help
     -v, --verbose [LVL]             Level of verbosity [1=print], 2=print more, 3=plot
     --cpu [THREADS], --gpu          Device to use [cpu]
 

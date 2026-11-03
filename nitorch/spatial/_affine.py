@@ -1709,6 +1709,27 @@ def affine_rmdiv(a, b):
     return affine_matmul(a, affine_inv(b))
 
 
+def _resize_shape_single(inshp, factor, anchor):
+    """Output size of a resized dimension (when the shape is not given).
+
+    * 'c' / 'e' : `floor(N * f)`
+    * 'f' / 'l' : `floor((N - 1) * f) + 1`, so that the last (resp. first)
+      output voxel stays inside the input field of view.
+
+    `N * f` (resp. `(N - 1) * f`) is rounded to the nearest integer when
+    it is within 1e-6 of it, to guard against floating point error.
+    """
+    def _floor(x):
+        if abs(x - round(x)) < 1e-6:
+            return int(round(x))
+        return int(math.floor(x))
+
+    anchor = anchor[0].lower()
+    if anchor in ('f', 'l'):
+        return max(1, _floor((inshp - 1) * factor) + 1)
+    return max(1, _floor(inshp * factor))
+
+
 def affine_resize(affine, shape, factor, anchor='c', shape_out=None):
     """Update an affine matrix according to a resizing of the lattice.
 
@@ -1724,8 +1745,10 @@ def affine_resize(affine, shape, factor, anchor='c', shape_out=None):
     factor (and eventually truncated), and two anchor points are used
     to determine the voxel size (neurite's behavior corresponds to 'c').
     In cases 'f' and 'l', a single anchor point is used so that the voxel
-    size is exactly divided by the zoom factor. This case with an integer
-    factor corresponds to subslicing the volume (e.g., vol[::f, ::f, ::f]).
+    size is exactly divided by the zoom factor, and the output shape is
+    `floor((N-1)*f) + 1`, so that the last (resp. first) output voxel
+    stays inside the input field of view. This case with factor `1/k`
+    (k integer) corresponds to subslicing the volume (e.g., vol[::k]).
 
     Parameters
     ----------
@@ -1739,6 +1762,10 @@ def affine_resize(affine, shape, factor, anchor='c', shape_out=None):
         * < 1 : smaller image <-> larger voxels
     anchor : {'centers', 'edges', 'first', 'last'} or list, default='centers'
         Anchor points.
+    shape_out : (ndim,) sequence[int], optional
+        Output shape. By default, `floor(N*f)` for 'centers'/'edges'
+        and `floor((N-1)*f) + 1` for 'first'/'last' (same rule as
+        `resize`).
 
     Returns
     -------
@@ -1758,7 +1785,8 @@ def affine_resize(affine, shape, factor, anchor='c', shape_out=None):
 
     # compute output shape
     if shape_out is None:
-        shape_out = [max(1, int(round(s * f))) for s, f in zip(shape, factor)]
+        shape_out = [_resize_shape_single(s, f, a)
+                     for s, f, a in zip(shape, factor, anchor)]
 
     # compute shift and scale in each dimension
     shifts = []

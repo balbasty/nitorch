@@ -18,6 +18,9 @@ def denoise(image=None, lam=1, sigma=1, max_iter=64, sub_iter=32, optim='cg',
     max_iter : int, default=64, Number of RLS iterations
     sub_iter : int, default=32, Number of relaxation/cg iterations
     optim : {'cg', 'relax', 'fmg+cg', 'fmg+relax'}, default='cg'
+        Linear solver used for every reweighted least-squares
+        iteration, starting with the first one.
+        A learning rate can be appended (e.g. `('cg', 0.5)`).
     plot : bool, default=False
     jtv : bool, default=True, Joint TV across channels ($\ell_{1,2}$)
     dim : int, default=image.dim()-1
@@ -78,8 +81,7 @@ def denoise(image=None, lam=1, sigma=1, max_iter=64, sub_iter=32, optim='cg',
         g += spatial.regulariser(denoised, dim=dim, weights=weights, **prm)
 
         # solve least square problem
-        optim0 = 'cg' if n_iter < 10 else optim  # it seems it helps
-        g = solve(h, g, weights, optim0)
+        g = solve(h, g, weights, optim)
         if lr != 1:
             g.mul_(lr)
         denoised -= g

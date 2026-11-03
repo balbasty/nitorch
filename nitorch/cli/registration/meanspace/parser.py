@@ -19,7 +19,7 @@ Output options:
     -l, --layout LAYOUT             Voxel layout (RAS, LPS, ...) [majority]
 
 Other options:
-    -h, --help [LEVEL]              Display this help
+    -h, --help                      Display this help
     --cpu [THREADS], --gpu          Device to use [cpu]
 
 """
