@@ -32,8 +32,9 @@ class Displacement(Transform):
 
 
 class Velocity(Transform):
-    json: str = None
-    pass
+    json: str = None                # Shooting parameters (JSON sidecar)
+    t0: float = 0                   # Integrate the velocity from time t0...
+    t1: float = 1                   # ...to time t1
 
 
 class Reslicer(Structure):
