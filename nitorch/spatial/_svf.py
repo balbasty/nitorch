@@ -186,6 +186,26 @@ def _jhj(jac, hess):
     return out
 
 
+def _disp_jacobian(disp, bound='dft', out=None):
+    """Jacobian of the transformation `Id + disp` (central differences).
+
+    Same as `grid_jacobian(disp, bound=bound, type='disp')`. With circular
+    boundaries, it is computed axis by axis into `out` (allocated if not
+    provided), which avoids the temporaries of the generic path.
+    """
+    if bound not in ('dft', 'circular', 'wrap'):
+        return grid_jacobian(disp, bound=bound, type='disp')
+    dim = disp.shape[-1]
+    if out is None:
+        out = disp.new_empty([*disp.shape, dim])
+    for d in range(dim):
+        axis = d - dim - 1
+        torch.sub(disp.roll(-1, axis), disp.roll(1, axis), out=out[..., d])
+        out[..., d].mul_(0.5)
+    torch.diagonal(out, 0, -1, -2).add_(1)
+    return out
+
+
 def exp_backward(vel, *gradhess, inverse=False, steps=8,
                  interpolation='linear', bound='dft', rotate_grad=False):
     """Backward pass of SVF exponentiation.
@@ -259,33 +279,39 @@ def exp_backward(vel, *gradhess, inverse=False, steps=8,
         del jac
 
     vel /= (-1 if not inverse else 1) * (2**steps)
-    jac = grid_jacobian(vel, bound=bound, type='disp')
+    jacbuf = _disp_jacobian(vel, bound)
+    jac = jacbuf
 
     # rotate gradient a bit so that when steps == 0, we get the same
     # gradients as the smalldef case
     ijac = 2 * torch.eye(dim, dtype=jac.dtype, device=jac.device) - jac
-    ijac = ijac.transpose(-1, -2).inverse()
-    grad = linalg.matvec(ijac, grad)
+    grad = linalg.small_solve(ijac.transpose(-1, -2), grad)
     del ijac
 
-    for _ in range(steps):
-        det = jac.det()
+    for step in range(steps):
+        if step:
+            # Jacobian of the squared displacement, by finite differences
+            # (rather than composing the Jacobians, which requires pulling
+            # all D*D components: same quantity, cheaper)
+            jac = _disp_jacobian(vel, bound, out=jacbuf)
+        det = linalg.small_det(jac)
         jac = jac.transpose(-1, -2)
+        grid = id + vel
         grad0 = grad
-        grad = _pull_vel(grad, id + vel, **opt)  # \
-        grad = linalg.matvec(jac, grad)          # | push forward
+        grad = _pull_vel(grad, grid, **opt)      # \
+        grad = linalg.small_matvec(jac, grad)          # | push forward
         grad *= det[..., None]                   # /
         grad += grad0                            # add all scales (SVF)
         if hess is not None:
             hess0 = hess
-            hess = _pull_vel(hess, id + vel, **opt)
+            hess = _pull_vel(hess, grid, **opt)
             hess = _jhj(jac, hess)
             hess *= det[..., None]
             hess += hess0
+        del jac, det
         # squaring
-        jac = jac.transpose(-1, -2)
-        jac = _composition_jac(jac, vel, type='disp', identity=id, **opt)
-        vel += _pull_vel(vel, id + vel, **opt)
+        vel += _pull_vel(vel, grid, **opt)
+        del grid
 
     if inverse:
         grad.neg_()
