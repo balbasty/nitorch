@@ -2,6 +2,7 @@
 
 from ._grid import grid_pull, grid_push, identity_grid, grid_jacobian
 from nitorch.core import utils, py, linalg
+from nitorch.core.jit_policy import maybe_jit
 import torch
 
 
@@ -98,7 +99,7 @@ def exp_forward(vel, inverse=False, steps=8, interpolation='linear',
     return (vel, jac) if jacobian else vel
 
 
-@torch.jit.script
+@maybe_jit
 def _jhj1(jac, hess):
     # type: (Tensor, Tensor) -> Tensor
     # jac should be ordered as (D, B, *spatial)
@@ -106,7 +107,7 @@ def _jhj1(jac, hess):
     return jac[0, 0] * jac[0, 0] * hess[0]
 
 
-@torch.jit.script
+@maybe_jit
 def _jhj2(jac, hess):
     # type: (Tensor, Tensor) -> Tensor
     # jac should be ordered as (D, B, *spatial)
@@ -125,7 +126,7 @@ def _jhj2(jac, hess):
     return out
 
 
-@torch.jit.script
+@maybe_jit
 def _jhj3(jac, hess):
     # type: (Tensor, Tensor) -> Tensor
     # jac should be ordered as (D, B, *spatial)

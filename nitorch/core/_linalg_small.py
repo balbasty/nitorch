@@ -5,17 +5,110 @@ matrices are stored in full, as `(..., D, D)` tensors, and are typically
 one per voxel (Jacobians, Greens kernels, ...). For millions of tiny
 matrices, closed forms made of elementwise operations are much faster
 than batched LU / matmul. Larger matrices fall back to `torch`.
+
+The D = 2 and D = 3 kernels are TorchScript compatible and fused when
+possible (`jit_policy.maybe_jit`). The decorated kernels only call the
+undecorated `_*_impl` functions (no nesting); the public functions are
+plain Python dispatchers.
 """
 import torch
+from torch import Tensor
+from .jit_policy import maybe_jit
 
 __all__ = ['small_det', 'small_adj', 'small_inv', 'small_solve',
            'small_matvec']
 
 
-def _entries(mat):
-    dim = mat.shape[-1]
-    return [[mat[..., i, j] for j in range(dim)] for i in range(dim)]
+# ----------------------------------------------------------------------
+#   kernels (TorchScript compatible; not decorated)
+# ----------------------------------------------------------------------
 
+def _det2_impl(a: Tensor) -> Tensor:
+    return a[..., 0, 0] * a[..., 1, 1] - a[..., 0, 1] * a[..., 1, 0]
+
+
+def _det3_impl(a: Tensor) -> Tensor:
+    return (a[..., 0, 0] * (a[..., 1, 1] * a[..., 2, 2] - a[..., 1, 2] * a[..., 2, 1]) +
+            a[..., 0, 1] * (a[..., 1, 2] * a[..., 2, 0] - a[..., 1, 0] * a[..., 2, 2]) +
+            a[..., 0, 2] * (a[..., 1, 0] * a[..., 2, 1] - a[..., 1, 1] * a[..., 2, 0]))
+
+
+def _adj2_impl(a: Tensor) -> Tensor:
+    adj = torch.empty_like(a)
+    adj[..., 0, 0] = a[..., 1, 1]
+    adj[..., 1, 1] = a[..., 0, 0]
+    adj[..., 0, 1] = -a[..., 0, 1]
+    adj[..., 1, 0] = -a[..., 1, 0]
+    return adj
+
+
+def _adj3_impl(a: Tensor) -> Tensor:
+    adj = torch.empty_like(a)
+    adj[..., 0, 0] = a[..., 1, 1] * a[..., 2, 2] - a[..., 1, 2] * a[..., 2, 1]
+    adj[..., 1, 1] = a[..., 0, 0] * a[..., 2, 2] - a[..., 0, 2] * a[..., 2, 0]
+    adj[..., 2, 2] = a[..., 0, 0] * a[..., 1, 1] - a[..., 0, 1] * a[..., 1, 0]
+    adj[..., 0, 1] = a[..., 0, 2] * a[..., 2, 1] - a[..., 0, 1] * a[..., 2, 2]
+    adj[..., 0, 2] = a[..., 0, 1] * a[..., 1, 2] - a[..., 0, 2] * a[..., 1, 1]
+    adj[..., 1, 0] = a[..., 1, 2] * a[..., 2, 0] - a[..., 1, 0] * a[..., 2, 2]
+    adj[..., 1, 2] = a[..., 1, 0] * a[..., 0, 2] - a[..., 1, 2] * a[..., 0, 0]
+    adj[..., 2, 0] = a[..., 2, 1] * a[..., 1, 0] - a[..., 2, 0] * a[..., 1, 1]
+    adj[..., 2, 1] = a[..., 2, 0] * a[..., 0, 1] - a[..., 2, 1] * a[..., 0, 0]
+    return adj
+
+
+def _inv2_impl(a: Tensor) -> Tensor:
+    return _adj2_impl(a) / _det2_impl(a)[..., None, None]
+
+
+def _inv3_impl(a: Tensor) -> Tensor:
+    return _adj3_impl(a) / _det3_impl(a)[..., None, None]
+
+
+def _solve2_impl(a: Tensor, v: Tensor) -> Tensor:
+    det = _det2_impl(a)
+    x0 = a[..., 1, 1] * v[..., 0] - a[..., 0, 1] * v[..., 1]
+    x1 = a[..., 0, 0] * v[..., 1] - a[..., 1, 0] * v[..., 0]
+    return torch.stack([x0, x1], -1) / det[..., None]
+
+
+def _solve3_impl(a: Tensor, v: Tensor) -> Tensor:
+    # Cramer's rule: x_i = sum_j cof[j, i] v_j / det, with the cofactors
+    # computed on the fly (the inverse is never formed)
+    det = _det3_impl(a)
+    out = []
+    for i in range(3):
+        i1 = (i + 1) % 3
+        i2 = (i + 2) % 3
+        x = (a[..., 1, i1] * a[..., 2, i2] - a[..., 1, i2] * a[..., 2, i1]) * v[..., 0]
+        x = x + (a[..., 2, i1] * a[..., 0, i2] - a[..., 2, i2] * a[..., 0, i1]) * v[..., 1]
+        x = x + (a[..., 0, i1] * a[..., 1, i2] - a[..., 0, i2] * a[..., 1, i1]) * v[..., 2]
+        out.append(x / det)
+    return torch.stack(out, -1)
+
+
+def _matvec2_impl(m: Tensor, v: Tensor) -> Tensor:
+    return torch.stack([m[..., 0, 0] * v[..., 0] + m[..., 0, 1] * v[..., 1],
+                        m[..., 1, 0] * v[..., 0] + m[..., 1, 1] * v[..., 1]], -1)
+
+
+def _matvec3_impl(m: Tensor, v: Tensor) -> Tensor:
+    out = []
+    for i in range(3):
+        out.append(m[..., i, 0] * v[..., 0] + m[..., i, 1] * v[..., 1] +
+                   m[..., i, 2] * v[..., 2])
+    return torch.stack(out, -1)
+
+
+_det = {2: maybe_jit(_det2_impl), 3: maybe_jit(_det3_impl)}
+_adj = {2: maybe_jit(_adj2_impl), 3: maybe_jit(_adj3_impl)}
+_inv = {2: maybe_jit(_inv2_impl), 3: maybe_jit(_inv3_impl)}
+_solve = {2: maybe_jit(_solve2_impl), 3: maybe_jit(_solve3_impl)}
+_matvec = {2: maybe_jit(_matvec2_impl), 3: maybe_jit(_matvec3_impl)}
+
+
+# ----------------------------------------------------------------------
+#   public API
+# ----------------------------------------------------------------------
 
 def small_det(mat):
     """Determinant of a field of small matrices.
@@ -29,16 +122,11 @@ def small_det(mat):
     det : (...) tensor
     """
     dim = mat.shape[-1]
-    if dim > 3:
-        return torch.det(mat)
-    a = _entries(mat)
     if dim == 1:
-        return a[0][0].clone()
-    if dim == 2:
-        return a[0][0] * a[1][1] - a[0][1] * a[1][0]
-    return (a[0][0] * (a[1][1] * a[2][2] - a[1][2] * a[2][1]) +
-            a[0][1] * (a[1][2] * a[2][0] - a[1][0] * a[2][2]) +
-            a[0][2] * (a[1][0] * a[2][1] - a[1][1] * a[2][0]))
+        return mat[..., 0, 0].clone()
+    if dim in _det:
+        return _det[dim](mat)
+    return torch.det(mat)
 
 
 def small_adj(mat):
@@ -54,28 +142,11 @@ def small_adj(mat):
     adj : (..., D, D) tensor
     """
     dim = mat.shape[-1]
-    if dim > 3:
-        return torch.det(mat)[..., None, None] * torch.inverse(mat)
-    a = _entries(mat)
-    adj = torch.empty_like(mat)
     if dim == 1:
-        adj[..., 0, 0] = 1
-    elif dim == 2:
-        adj[..., 0, 0] = a[1][1]
-        adj[..., 1, 1] = a[0][0]
-        adj[..., 0, 1] = -a[0][1]
-        adj[..., 1, 0] = -a[1][0]
-    else:
-        adj[..., 0, 0] = a[1][1] * a[2][2] - a[1][2] * a[2][1]
-        adj[..., 1, 1] = a[0][0] * a[2][2] - a[0][2] * a[2][0]
-        adj[..., 2, 2] = a[0][0] * a[1][1] - a[0][1] * a[1][0]
-        adj[..., 0, 1] = a[0][2] * a[2][1] - a[0][1] * a[2][2]
-        adj[..., 0, 2] = a[0][1] * a[1][2] - a[0][2] * a[1][1]
-        adj[..., 1, 0] = a[1][2] * a[2][0] - a[1][0] * a[2][2]
-        adj[..., 1, 2] = a[1][0] * a[0][2] - a[1][2] * a[0][0]
-        adj[..., 2, 0] = a[2][1] * a[1][0] - a[2][0] * a[1][1]
-        adj[..., 2, 1] = a[2][0] * a[0][1] - a[2][1] * a[0][0]
-    return adj
+        return torch.ones_like(mat)
+    if dim in _adj:
+        return _adj[dim](mat)
+    return torch.det(mat)[..., None, None] * torch.inverse(mat)
 
 
 def small_inv(mat):
@@ -89,9 +160,12 @@ def small_inv(mat):
     -------
     inv : (..., D, D) tensor
     """
-    if mat.shape[-1] > 3:
-        return torch.inverse(mat)
-    return small_adj(mat).div_(small_det(mat)[..., None, None])
+    dim = mat.shape[-1]
+    if dim == 1:
+        return mat.reciprocal()
+    if dim in _inv:
+        return _inv[dim](mat)
+    return torch.inverse(mat)
 
 
 def small_solve(mat, vec):
@@ -111,31 +185,13 @@ def small_solve(mat, vec):
     x : (..., D) tensor
     """
     dim = vec.shape[-1]
-    if dim > 3:
-        return torch.linalg.solve(mat, vec) if hasattr(torch, 'linalg') \
-            else torch.inverse(mat).matmul(vec[..., None])[..., 0]
-    a = _entries(mat)
     if dim == 1:
-        return vec / a[0][0][..., None]
-    det = small_det(mat)
-    if dim == 2:
-        x0 = a[1][1] * vec[..., 0] - a[0][1] * vec[..., 1]
-        x1 = a[0][0] * vec[..., 1] - a[1][0] * vec[..., 0]
-        return torch.stack([x0, x1], -1).div_(det[..., None])
-
-    def cof(i, j):
-        # cofactor (i, j)
-        return (a[(i+1) % 3][(j+1) % 3] * a[(i+2) % 3][(j+2) % 3] -
-                a[(i+1) % 3][(j+2) % 3] * a[(i+2) % 3][(j+1) % 3])
-
-    out = []
-    for i in range(3):
-        # x_i = sum_j adj[i, j] vec_j = sum_j cof[j, i] vec_j
-        xi = cof(0, i).mul_(vec[..., 0])
-        xi.addcmul_(cof(1, i), vec[..., 1])
-        xi.addcmul_(cof(2, i), vec[..., 2])
-        out.append(xi.div_(det))
-    return torch.stack(out, -1)
+        return vec / mat[..., 0, 0][..., None]
+    if dim in _solve:
+        return _solve[dim](mat, vec)
+    if hasattr(torch, 'linalg') and hasattr(torch.linalg, 'solve'):
+        return torch.linalg.solve(mat, vec)
+    return torch.inverse(mat).matmul(vec[..., None])[..., 0]
 
 
 def small_matvec(mat, vec):
@@ -154,12 +210,8 @@ def small_matvec(mat, vec):
     mv : (..., D) tensor
     """
     dim = vec.shape[-1]
-    if dim > 3:
-        return torch.matmul(mat, vec[..., None])[..., 0]
-    rows = []
-    for i in range(dim):
-        row = mat[..., i, 0] * vec[..., 0]
-        for j in range(1, dim):
-            row = row.addcmul(mat[..., i, j], vec[..., j])
-        rows.append(row)
-    return torch.stack(rows, -1)
+    if dim == 1:
+        return mat[..., 0, 0][..., None] * vec
+    if dim in _matvec:
+        return _matvec[dim](mat, vec)
+    return torch.matmul(mat, vec[..., None])[..., 0]
