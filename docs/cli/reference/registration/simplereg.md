@@ -92,7 +92,7 @@ be combined.
   next to it), a displacement field for `smalldef`. Use `-w`
   (`--output-warp`) to choose another path. Not written with `--nonlin none`.
 - **The moved moving image**, `{base}.moved{ext}`, in the directory of the
-  moving image: the image carried halfway to the fixed one (*minimal
+  moving image: the image carried into the space of the fixed one (*minimal
   reslicing*; see [Outputs of `register`](register.md#outputs)). It is
   written by default. `-x` changes its path, and `-x false` suppresses it.
   The fixed image is never rewritten.

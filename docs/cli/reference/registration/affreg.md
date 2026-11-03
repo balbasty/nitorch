@@ -48,8 +48,9 @@ for you:
   parameters) with `-a`. There is no initialisation by progressive
   freeing of parameters, and no prior on the parameters.
 - The affine is in the **symmetric** position: it is parameterised by its
-  square root, and half of it is applied to the header of each `.moved`
-  image. The matrix written to disk is the full transformation, which maps
+  square root. The `.moved` image still receives the full affine in its
+  header, which carries it into the space of the fixed image. The matrix
+  written to disk is the full transformation, which maps
   fixed world coordinates to moving world coordinates, in RAS convention. See
   [Position of the affine](register.md#position-of-the-affine).
 - The default loss is **normalised mutual information** (Studholme's
@@ -73,8 +74,9 @@ Three kinds of files can be written:
   `{dir}/{name}.lta`: `rigid.lta` or `affine.lta`, in the directory of the
   fixed image. Use `-o` to choose another path, or `-o false` to skip it.
 - **The moved moving image**, `{base}.moved{ext}`, in the directory of the
-  moving image. With the symmetric affine, the moving image is brought
-  halfway to the fixed image by changing only its orientation matrix. It is
+  moving image. The moving image is carried into the space of the fixed
+  image by changing only its orientation matrix, so that it overlaps the
+  fixed image without any interpolation. It is
   written by default. `-x` changes its path, and `-x false` suppresses it.
   The fixed image is never rewritten.
 - **The resliced moving image**, `-r PATH`, which is the moving image
