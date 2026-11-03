@@ -50,7 +50,7 @@ Reslicing options:
                                     input range [clip]
 
 Other options:
-    -h, --help [LEVEL]              Display this help
+    -h, --help                      Display this help
     -v, --verbose [LVL]             Level of verbosity [1]
     --cpu [THREADS], --gpu [ID]     Device to use [cpu]
 

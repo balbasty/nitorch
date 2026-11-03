@@ -8,7 +8,7 @@ from nitorch.cli.cli import commands
 from nitorch.core.cli import ParseError
 from nitorch.spatial import smooth, voxel_size
 from nitorch import io
-from .parser import parser, help, label_metrics, image_metrics
+from .parser import parser, help, label_metrics, image_metrics, metric_aliases
 import sys
 import json
 import math
@@ -38,7 +38,8 @@ commands['metrics'] = cli
 
 def _cli(args):
     """Command-line interface for `metrics` without exception handling"""
-    args = args or sys.argv[1:]
+    # copy: the parser consumes its input list
+    args = list(sys.argv[1:] if args is None else args)
 
     options = parser(args)
     if options.help:
@@ -53,6 +54,13 @@ def _cli(args):
     # expand metric groups (and drop the group names themselves)
     metrics = []
     for metric in options.metrics:
+        if metric in metric_aliases:
+            new = metric_aliases[metric]
+            warnings.warn(f"metrics: '{metric}' is deprecated, use '{new}' "
+                          f"(results are stored under '{new}'). "
+                          f"'{metric}' will be removed in a future version.",
+                          FutureWarning)
+            metric = new
         if metric == 'labels':
             group = label_metrics[1:]
         elif metric == 'images':
@@ -62,6 +70,10 @@ def _cli(args):
         metrics += [m for m in group if m not in metrics]
     lab_metrics = [m for m in metrics if m in label_metrics]
     img_metrics = [m for m in metrics if m in image_metrics]
+    if 'weighted' in options.average and metrics and not lab_metrics:
+        # weights are reference label volumes: undefined for image channels
+        warnings.warn(f'-s weighted only applies to label metrics and has '
+                      f'no effect on image metrics {img_metrics}')
 
     # dynamic range (SSIM/PSNR)
     rng = options.range
@@ -113,6 +125,16 @@ def _cli(args):
                 kwargs['data_range'] = rng
             results[metric] = globals()[metric](pred, ref, options.average,
                                                 **kwargs)
+
+        # several pairs: key per-pair results by the prediction's base name
+        # (rather than its index) so that --append keeps pairs apart
+        bases = [fileparts(f)[1] for f in options.pred]
+        if len(bases) > 1 and len(set(bases)) == len(bases) \
+                and len(pred) == len(bases):
+            for metric in img_metrics:
+                results[metric] = {
+                    (bases[k] if isinstance(k, int) else k): v
+                    for k, v in results[metric].items()}
 
     # JSON keys are always strings: convert now so that merging with an
     # existing file does not create duplicate keys (1 vs "1")
@@ -335,7 +357,8 @@ def mrse(pred, ref, average=()):
     return results
 
 
-def mad(pred, ref, average=()):
+def medae(pred, ref, average=()):
+    """Median absolute error (MedAE) = median(|pred - ref|)"""
     results = {}
     for c in range(len(ref)):
         pred1 = pred[c]
@@ -537,6 +560,12 @@ def hausdorff(pred, ref, average=None, exclude=(0,), percentile: float = 1):
         results['micro'] = acc
     if 'macro' in average:
         results['macro'] = sum(results0.values()) / len(results0)
+    if 'weighted' in average:
+        # weights = reference label volumes (as for overlap metrics)
+        vol = {label: (ref == label).sum().cpu() for label in labels}
+        results['weighted'] = (sum(results0[label] * vol[label]
+                                   for label in labels)
+                               / sum(vol.values()))
 
     for label in results.keys():
         if hasattr(results[label], 'item'):
