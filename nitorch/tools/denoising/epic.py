@@ -50,6 +50,8 @@ def epic(echoes, reverse_echoes=True, fieldmap=None, extrapolate=False,
     reverse_echoes = map_files(reverse_echoes)
     fieldmap = map_files(fieldmap, nobatch=True)
     ndim = len(echoes.shape) - 1
+    if reverse_echoes is True or reverse_echoes is None:
+        check_synth(len(echoes))
 
     # estimate noise variance + scale regularization
     noise, tissue = 1, []
@@ -230,6 +232,7 @@ def run_epic(echoes, reverse_echoes=None, voxshift=None, extrapolate=True,
     # synthesize echoes
     synth = not torch.is_tensor(reverse_echoes)
     if synth:
+        check_synth(ne)
         neg = synthesize_neg(echoes[0::2])
         pos = synthesize_pos(echoes[1::2])
         reverse_echoes = torch.stack([x for y in zip(pos, neg) for x in y])
@@ -455,7 +458,7 @@ def map_files(files, nobatch=False, keep_open=False):
         return files
     if isinstance(files, str):
         files = io.volumes.map(files, keep_open=keep_open)
-        if files.dim == 5 and files.shape[3] == 1 and files.dim == 5:
+        if files.dim == 5 and files.shape[3] == 1:
             # channel along the 5th dimension (C), drop 4th (T) dimension
             files = files[:, :, :, 0, :]
         elif files.dim == 5 and files.shape[4] == 1:
@@ -590,8 +593,21 @@ def extrapolate_previous_echo(x1, x2):
     return extrapolate_next_echo(x2, x1)
 
 
+def check_synth(nb_echoes):
+    """Raise a ValueError if there are too few echoes to synthesize
+    reversed-polarity echoes (at least two of each polarity are needed)."""
+    if nb_echoes < 4:
+        raise ValueError(
+            f'Reverse-echo synthesis needs at least 2 echoes per polarity '
+            f'(4 echoes in total); got {nb_echoes}. Provide acquired '
+            f'reversed echoes, more echoes, or disable synthesis.')
+
+
 def synthesize_neg(xpos):
     """Synthesize negative polarity echoes from positive polarity echoes"""
+    if len(xpos) < 2:
+        raise ValueError(f'Reverse-echo synthesis needs at least 2 echoes '
+                         f'per polarity; got {len(xpos)}.')
     xneg = []
     for i in range(len(xpos)-1):
         xneg.append(interpolate_echo(xpos[i], xpos[i+1]))
@@ -601,6 +617,9 @@ def synthesize_neg(xpos):
 
 def synthesize_pos(xneg):
     """Synthesize positive polarity echoes from negative polarity echoes"""
+    if len(xneg) < 2:
+        raise ValueError(f'Reverse-echo synthesis needs at least 2 echoes '
+                         f'per polarity; got {len(xneg)}.')
     xpos = [extrapolate_previous_echo(xneg[0], xneg[1])]
     for i in range(len(xneg)-1):
         xpos.append(interpolate_echo(xneg[i], xneg[i+1]))

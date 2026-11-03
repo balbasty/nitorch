@@ -104,6 +104,13 @@ def main(options):
         reversed_echoes = options.synth
     else:
         reversed_echoes = options.reversed
+    if reversed_echoes is True and sum(nechoes) < 4:
+        # synthesis interpolates/extrapolates from >= 2 echoes of each
+        # polarity (also for the first/last echoes, with or without -e)
+        raise ParseError(
+            f'Reverse-echo synthesis needs at least 2 echoes per polarity '
+            f'(4 echoes in total); got {sum(nechoes)}. Use -x/--no-synth, '
+            f'give acquired reversed echoes with -r, or give more echoes.')
 
     # do EPIC
     fit = epic(options.echoes,
