@@ -32,7 +32,7 @@ commands['epic'] = cli
 
 
 def _cli(args):
-    """Command-line interface for `topup` without exception handling"""
+    """Command-line interface for `epic` without exception handling"""
     args = args or sys.argv[1:]
 
     options = parser.parse(args)
@@ -106,7 +106,7 @@ def main(options):
                              f'{len(output)} output files, {len(input)} '
                              f'input files, and {len(fit)} echoes.')
     if len(output) == 1:
-        dir, base, ext = py.fileparts(input[0])
+        dir, base, ext = _fileparts(input[0])
         output = output[0]
         if '{n}' in output:
             for n, echo in enumerate(fit):
@@ -117,17 +117,27 @@ def main(options):
             io.savef(utils.movedim(fit, 0, -1), output, like=input[0])
     elif len(output) == len(input):
         for i, (inp, out) in enumerate(zip(input, output)):
-            dir, base, ext = py.fileparts(inp)
+            dir, base, ext = _fileparts(inp)
             out = out.format(dir=dir, sep=os.sep, base=base, ext=ext, n=i)
             ne = [*io.map(inp).shape, 1][3]
             io.savef(utils.movedim(fit[:ne], 0, -1), out, like=inp)
             fit = fit[ne:]
     else:
         assert len(output) == len(fit)
-        dir, base, ext = py.fileparts(input[0])
+        dir, base, ext = _fileparts(input[0])
         for n, (echo, out) in enumerate(zip(fit, output)):
             out = out.format(dir=dir, sep=os.sep, base=base, ext=ext, n=n)
             io.savef(echo, out, like=input[0])
+
+
+def _fileparts(fname):
+    """`py.fileparts`, but with `dir='.'` when there is no directory part
+    (so that `{dir}{sep}{base}` does not end up at the filesystem root)."""
+    dir, base, ext = py.fileparts(fname)
+    return dir or os.curdir, base, ext
+
+
+_opposite = dict(r='l', l='r', a='p', p='a', s='i', i='s')
 
 
 def get_readout(readout, affine, shape, verbose):
@@ -135,20 +145,24 @@ def get_readout(readout, affine, shape, verbose):
     Convert the provided readout dir from semantic (R/A/S) to index (0/1/2)
         or
     Guess the readout direction as the one with largest number of voxels
+
+    Returns a non-negative index into the (3D) spatial dimensions.
     """
-    dim = len(shape)
+    shape = list(shape)[:3]   # drop echo/channel dimensions
     layout = spatial.affine_to_layout(affine)
     layout = spatial.volume_layout_to_name(layout).lower()
     if readout is None:
         readout = py.argmax(shape)
     else:
-        readout = readout.lower()
+        direction = readout.lower()
+        readout = None
         for i, l in enumerate(layout):
-            if l in readout:
+            if l in direction or _opposite[l] in direction:
                 readout = i
                 break
+        if readout is None:
+            raise ParseError(f'Could not match readout direction '
+                             f'"{direction}" with layout {layout.upper()}')
     if verbose:
         print(f'Layout: {layout.upper()} | readout direction: {layout[readout].upper()}')
-    if readout > 0:
-        readout = readout - dim
     return readout

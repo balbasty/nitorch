@@ -29,7 +29,7 @@ def epic(echoes, reverse_echoes=True, fieldmap=None, extrapolate=False,
     extrapolate : bool, Extrapolate first/last echo when reverse_echoes is None
     bandwidth : float, Bandwidth of the input echoes, in Hz/pixel
     polarity : +1 or -1, Readout polarity of the first echo
-    readout : int, Index of the readout dimension
+    readout : int, Index of the readout (spatial) dimension
     slicewise : bool or int, Run the algorithm slicewise. If int, chunk size.
     lam : [list of] float, Regularization factor (per echo)
     max_iter : [pair of] int, Maximum number of RLS and CG iterations
@@ -62,7 +62,12 @@ def epic(echoes, reverse_echoes=True, fieldmap=None, extrapolate=False,
     lam = [l / mu for l, mu in zip(lam, tissue)]
 
     # ensure readout dimension is last
-    readout = readout - ndim if readout > 0 else readout
+    # (`readout` indexes spatial dimensions: convert to a negative index so
+    #  that it is valid for both the batched echoes and the fieldmap)
+    if not (-ndim <= readout < ndim):
+        raise ValueError(f'Readout dimension {readout} out of range for '
+                         f'{ndim}D volumes')
+    readout = readout - ndim if readout >= 0 else readout
     echoes = movedim(echoes, readout, -1)
     fieldmap = movedim(fieldmap, readout, -1)
     reverse_echoes = movedim(reverse_echoes, readout, -1)
@@ -440,7 +445,14 @@ def run_epic_noreverse(echoes, voxshift=None, lam=1, sigma=1,
 
 
 def map_files(files, nobatch=False, keep_open=False):
-    """Concat and map input files or tensors"""
+    """Concat and map input files or tensors
+
+    Files are mapped as `(N, *spatial)`. With `nobatch`, the leading
+    dimension of mapped files is dropped; tensors are expected to already
+    be `(*spatial)` in that case and are returned as is.
+    """
+    if nobatch and not isinstance(files, (str, list, tuple)):
+        return files
     if isinstance(files, str):
         files = io.volumes.map(files, keep_open=keep_open)
         if files.dim == 5 and files.shape[3] == 1 and files.dim == 5:
