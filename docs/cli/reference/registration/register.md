@@ -498,11 +498,23 @@ weights of the `--lame` option.
 | `-i`, `--input`, `--init`   | `FILE`              | Initial field, or a scalar image whose grid defines the lattice of a zero-initialised field.                                         | zeros on the mean space |
 | `-o`, `--output`            | `[PATH` &vert; `true` &vert; `false]` | Where to write the field. `{dir}` and `{name}` are available. With no value, `true`, `yes` or `1`, the default path is used; `false`, `no` or `0` writes nothing. | `{dir}/{name}.nii.gz` |
 | `-h`, `--hessian`           | `[PATH` &vert; `true` &vert; `false]` | Where to write the Hessian of the matching term at the solution (a map of local confidence), used to weight [`vopt`](vopt.md). `{dir}` and `{name}` are available. With no value, `true`, `yes` or `1`, the default path `{dir}/{name}_hessian.nii.gz` is used; `false`, `no` or `0` writes nothing. | not written |
+| `--fixedpoint`              | `[ITER]`            | `shoot` only. Compute the forward warp as the fixed-point inverse of the inverse warp, with `ITER` iterations (10 if the flag is given without a value). `0` keeps the default composition. See [below](#a-more-accurate-forward-warp-with-fixedpoint). | `0` (off)          |
 | `-2d`                       | `[AXIS]`            | Restrict the deformation to the plane normal to `AXIS`. Without a value, axis 2.                                                     | 3D                 |
 
 The default lattice has the mean voxel size of the images and covers all
 their fields of view, so a registration between a 1 mm and a 2 mm image
 produces a field at about 1.5 mm.
+
+#### A more accurate forward warp with `--fixedpoint`
+
+Geodesic shooting produces two warps: the inverse warp $\varphi$ and the forward warp $\psi$. By default, $\psi$ is built by first-order composition while the equations are integrated, and it is only a rough inverse of $\varphi$: after a displacement of 10 voxels, $\psi\circ\varphi$ is still about 0.37 voxels away from the identity (about 1.45 at 20 voxels). The inverse warp $\varphi$ is much more accurate.
+
+With `--fixedpoint`, $\psi$ is instead obtained by inverting $\varphi$ with a fixed-point iteration. The error of $\psi\circ\varphi$ falls to about 0.05 voxels at 10 voxels of displacement and 0.12 at 20, and that of $\varphi\circ\psi$ to about 0.01. $\varphi$ itself is unchanged.
+
+Each iteration costs one interpolation, about 4% of the shooting time, and no extra peak memory is needed. The default of 10 iterations therefore adds roughly 50% to the shooting time, which is about what it costs to return the inverse as well. Shooting is only one part of a full registration, so the overall slowdown is smaller.
+
+!!! tip "When to use it"
+    Use `--fixedpoint` when both directions of the transformation matter, for example when you will pull images back and forth with `reslice`, or when large deformations make the inverse consistency visible. If you only use one direction, or the deformations are small, the default is accurate enough.
 
 ## Optimisation
 
@@ -646,7 +658,7 @@ the fields `{dir}` (a directory), `{sep}` (the path separator), `{base}`
 | ----------------------------------- | ------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
 | `{dir}/{name}.lta`                  | `@affine` is used                     | The affine matrix, in RAS-to-RAS convention. For example `rigid.lta`, `affine.lta`. It maps fixed to moving world coordinates. Always the *full* transformation, whatever the position. |
 | `{dir}/{name}.nii.gz`               | `@nonlin` is used                     | The field, in voxels of its own lattice: a velocity for `svf` (`svf.nii.gz`) and `shoot`, a displacement for `smalldef`. |
-| `{dir}/{name}.json`                 | `@nonlin shoot` only                  | Regularisation (penalty and factor) and the number of integration `steps` and `fast` flag used during registration, needed to integrate the shooting equations the same way (`shoot.json`). Read by [`reslice`](../spatial/reslice.md#velocity-fields). |
+| `{dir}/{name}.json`                 | `@nonlin shoot` only                  | Regularisation (penalty and factor) and the number of integration `steps` and `fast` flag used during registration, needed to integrate the shooting equations the same way (`shoot.json`). With `--fixedpoint`, it also records the `forward_method` (`compose` or `fixedpoint`) and, when on, `fixedpoint_iter`. Read by [`reslice`](../spatial/reslice.md#velocity-fields). |
 | `{dir}/{name}_hessian.nii.gz`       | `@nonlin -h`                          | Hessian of the matching term.                                                                                      |
 | `{dir}/momentum.nii.gz`, `affine_momentum.json` | `@@optim nes`/`ogm` with `-o` | Final momentum of the optimiser.                                                                              |
 | `{dir}/{base}.moved{ext}`           | for each image, unless `-o false`     | The image carried to the registered space, with *minimal reslicing*.                                              |
