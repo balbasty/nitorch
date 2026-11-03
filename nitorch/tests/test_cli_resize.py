@@ -104,3 +104,15 @@ def test_resize_grid_disp_edges_no_zero_border(tmp_path, disp):
     assert np.allclose(dat[..., 0], 2.)
     assert np.allclose(dat[..., 1], -4.)
     assert np.allclose(dat[..., 2], 1.)
+
+
+def test_resize_image_edges_no_zero_border(tmp_path):
+    # images: -b (default dct2) is used for out-of-FOV samples
+    fname = str(tmp_path / 'ones.nii.gz')
+    nib.save(nib.Nifti1Image(np.ones([6, 6, 6], dtype='float32'),
+                             np.eye(4)), fname)
+    out = str(tmp_path / 'out.nii.gz')
+    resize([fname, '-f', '2', '-a', 'edges', '-o', out, '--cpu'])
+    dat = np.asarray(nib.load(out).dataobj).squeeze()
+    assert dat.shape == (12, 12, 12)
+    assert np.allclose(dat, 1., atol=1e-4)

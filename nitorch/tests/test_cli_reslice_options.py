@@ -165,3 +165,28 @@ def test_logit_implicit_identity(tmp_path, chunk):
     out = tmp_path / 'out.nii.gz'
     reslice([img, '-t', img, '--logit', 'implicit', *chunk, '-o', str(out)])
     np.testing.assert_allclose(load(out), p.squeeze(), atol=1e-4)
+
+
+# ----------------------------------------------------------------------
+# -vx / --voxel-size: output grid uses the 'first' anchor rule
+# floor((N-1)*f) + 1, so the last output voxel stays inside the FOV
+# ----------------------------------------------------------------------
+@pytest.mark.parametrize('use_target', [False, True])
+@pytest.mark.parametrize('vx,expected', [
+    ([1., 1.5, 2.], (15, 15, 15)),   # f = 2 -> (8-1)*2+1
+    ([4., 6., 8.], (4, 4, 4)),       # f = 1/2 -> floor(3.5)+1
+    ([6., 9., 12.], (3, 3, 3)),      # f = 1/3 -> floor(2.33)+1
+])
+def test_voxel_size_output_shape(tmp_path, use_target, vx, expected):
+    dat = np.random.RandomState(0).rand(8, 8, 8)
+    img = save(tmp_path / 'img.nii.gz', dat)
+    out = tmp_path / 'out.nii.gz'
+    args = [img] + (['-t', img] if use_target else [])
+    reslice(args + ['-vx', *map(str, vx), '-o', str(out)])
+    res = nib.load(str(out))
+    assert res.shape[:3] == expected
+    # first voxel preserved, last voxel inside the input FOV
+    assert np.allclose(res.affine[:3, 3], AFFINE[:3, 3])
+    last = res.affine[:3, :3] @ (np.array(expected) - 1)
+    in_last = AFFINE[:3, :3] @ (np.array([8, 8, 8]) - 1)
+    assert np.all(last <= in_last + 1e-5)

@@ -175,3 +175,25 @@ def test_identity_plus_disp_grid(anchor):
     ref = torch.stack([0.3 * torch.sin(x[..., 1] / 3) / scales[0],
                        0.2 * torch.cos(x[..., 0] / 4) / scales[1]], -1)
     assert torch.allclose(out_d[0], ref, atol=5e-2)
+
+
+@pytest.mark.parametrize('anchor', ['centers', 'edges'])
+def test_centers_edges_float_guard(anchor):
+    # 100 * 0.57 = 56.99999999999999 -> 57, not 56
+    out = spatial.resize(torch.randn(1, 1, 100), 0.57, anchor=anchor)
+    assert out.shape[-1] == 57
+    _, shape = spatial.affine_resize(torch.eye(2), [100], 0.57, anchor=anchor)
+    assert shape == (57,)
+
+
+@pytest.mark.parametrize('anchor', ['centers', 'edges', 'first', 'last'])
+@pytest.mark.parametrize('N', [1, 2, 7, 10, 101, 255])
+@pytest.mark.parametrize('f', [0.25, 1 / 3, 0.5, 0.57, 0.7, 1, 1.5, 2, 2.7])
+def test_affine_resize_agrees_with_resize(anchor, N, f):
+    """Same output shape and affine whether or not the shape is given."""
+    affine = torch.tensor([[1.5, -7.], [0., 1.]], dtype=torch.double)
+    out, oaff = spatial.resize(torch.randn(1, 1, N, dtype=torch.double), f,
+                               affine=affine, anchor=anchor)
+    aff2, shp2 = spatial.affine_resize(affine, [N], f, anchor=anchor)
+    assert shp2 == (out.shape[-1],)
+    assert torch.allclose(aff2, oaff)
