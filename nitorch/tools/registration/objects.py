@@ -1443,7 +1443,7 @@ class NonLinModel(TransformationModel):
             return obj
 
     def __init__(self, dat=None, factor=1, penalty=None,
-                 steps=8, kernel=None, **backend):
+                 steps=8, kernel=None, inversion='default', **backend):
         """
 
         Parameters
@@ -1459,9 +1459,25 @@ class NonLinModel(TransformationModel):
             Number of integration steps.
         kernel : tensor, optional
             Pre-computed Greens kernel.
+        inversion : {'default', 'push', 'newton'}, default='default'
+            How the transform that is not computed directly is
+            obtained, by numerical inversion (`spatial.grid_inv`) of
+            the one that is:
+
+            - smalldef: the inverse, from the displacement
+              ('default' and 'push' are the same push inverse);
+            - svf: the inverse, from the forward exponential
+              (default: exponential of the negated velocity);
+            - shoot: the forward, from the inverse, which geodesic
+              shooting integrates more accurately
+              (default: composition along the geodesic).
+
+            'newton' refines the push inverse with safeguarded Newton
+            steps: it is the most inverse-consistent, and the slowest.
         **backend
         """
         super().__init__()
+        self.inversion = spatial.check_inversion(inversion)
         self.factor = factor
         self.penalty = dict(penalty or regutils.defaults_velocity())
         if factor is not None:
@@ -1559,7 +1575,8 @@ class NonLinModel(TransformationModel):
 
     def downsample(self, factor=2, **kwargs):
         dat = self.dat.downsample(factor, **kwargs)
-        obj = type(self)(dat, self.factor, self.penalty, self.steps)
+        obj = type(self)(dat, self.factor, self.penalty, self.steps,
+                         inversion=self.inversion)
         if self.kernel is not None:
             obj.set_kernel()
         return obj
@@ -1573,7 +1590,8 @@ class NonLinModel(TransformationModel):
 
     def upsample(self, factor=2, **kwargs):
         dat = self.dat.upsample(factor, **kwargs)
-        obj = type(self)(dat, self.factor, self.penalty, self.steps)
+        obj = type(self)(dat, self.factor, self.penalty, self.steps,
+                         inversion=self.inversion)
         if self.kernel is not None:
             obj.set_kernel()
         return obj
@@ -1585,6 +1603,8 @@ class NonLinModel(TransformationModel):
         else:
             s += ['<uninitialized>']
         s += [f'{key}={value}' for key, value in self.penalty.items()]
+        if self.inversion != 'default':
+            s += [f'inversion={self.inversion}']
         return s
 
 
@@ -1592,51 +1612,6 @@ class ShootModel(NonLinModel):
     """Initial velocity exponentiated by geodesic shooting"""
 
     model = 'shoot'
-
-    def __init__(self, dat=None, factor=1, penalty=None, steps=8,
-                 kernel=None, fixedpoint=0, **backend):
-        """
-
-        Parameters
-        ----------
-        dat : Displacement or tensor or list[int], optional
-            Pre-allocated velocity or its shape
-        factor : float, default=1
-            Regularization factor
-        penalty : dict(absolute, membrane, bending, lame), optional
-            Regularization factor for each component.
-            Informed values are used by default.
-        steps : int, default=8
-            Number of integration steps.
-        kernel : tensor, optional
-            Pre-computed Greens kernel.
-        fixedpoint : int, default=0
-            If > 0, compute the forward transform as the fixed-point
-            inverse of the inverse transform, with this many iterations
-            (`spatial.shoot(forward_method='fixedpoint')`).
-            Else, compose it along the geodesic (`forward_method='compose'`).
-        **backend
-        """
-        self.fixedpoint = int(fixedpoint or 0)
-        super().__init__(dat, factor, penalty, steps, kernel, **backend)
-
-    @property
-    def shoot_options(self):
-        """Options of `spatial.shoot` that select the forward method"""
-        if self.fixedpoint:
-            return dict(forward_method='fixedpoint',
-                        fixedpoint_iter=self.fixedpoint)
-        return dict(forward_method='compose')
-
-    def downsample(self, factor=2, **kwargs):
-        obj = super().downsample(factor, **kwargs)
-        obj.fixedpoint = self.fixedpoint
-        return obj
-
-    def upsample(self, factor=2, **kwargs):
-        obj = super().upsample(factor, **kwargs)
-        obj.fixedpoint = self.fixedpoint
-        return obj
 
     def set_dat(self, dat, affine=None, **backend):
         super().set_dat(dat, affine, **backend)
@@ -1654,7 +1629,7 @@ class ShootModel(NonLinModel):
             grid = spatial.shoot(v, self.kernel, steps=self.steps,
                                  factor=factor / py.prod(self.shape),
                                  voxel_size=self.voxel_size, **penalty,
-                                 displacement=True, **self.shoot_options)
+                                 displacement=True, inversion=self.inversion)
         else:
             grid = self._cache
         if cache_result:
@@ -1677,6 +1652,7 @@ class ShootModel(NonLinModel):
         if recompute or self._icache is None:
             penalty = dict(self.penalty)
             factor = penalty.pop('factor')
+            # (the inverse is integrated directly, whatever `inversion`)
             _, grid = spatial.shoot(v, self.kernel, steps=self.steps,
                                     factor=factor / py.prod(self.shape),
                                     voxel_size=self.voxel_size, **penalty,
@@ -1707,7 +1683,7 @@ class ShootModel(NonLinModel):
                                         factor=factor / py.prod(self.shape),
                                         voxel_size=self.voxel_size, **penalty,
                                         return_inverse=True, displacement=True,
-                                        **self.shoot_options)
+                                        inversion=self.inversion)
         if cache_result:
             self._cache = grid
             self._icache = igrid
@@ -1797,6 +1773,14 @@ class SVFModel(NonLinModel):
 
     model = 'svf'
 
+    def _invert(self, grid, jacobian=False):
+        """Inverse displacement (and its Jacobian) by numerical
+        inversion of the forward displacement (`inversion` != 'default')"""
+        igrid = spatial.grid_inv(grid, type='disp', method=self.inversion)
+        if jacobian:
+            return igrid, spatial.grid_jacobian(igrid, type='displacement')
+        return igrid
+
     def exp(self, v=None, jacobian=False, add_identity=False,
             cache_result=False, recompute=True):
         """Exponentiate forward transform"""
@@ -1827,9 +1811,17 @@ class SVFModel(NonLinModel):
         if jacobian:
             recompute = True
         if recompute or self._icache is None:
-            igrid = spatial.exp_forward(v, steps=self.steps,
-                                        jacobian=jacobian, inverse=True,
-                                        displacement=True)
+            if self.inversion == 'default':
+                igrid = spatial.exp_forward(v, steps=self.steps,
+                                            jacobian=jacobian, inverse=True,
+                                            displacement=True)
+            else:
+                if recompute or self._cache is None:
+                    grid = spatial.exp_forward(v, steps=self.steps,
+                                               displacement=True)
+                else:
+                    grid = self._cache
+                igrid = self._invert(grid, jacobian)
         else:
             igrid = self._icache
         if cache_result:
@@ -1850,9 +1842,12 @@ class SVFModel(NonLinModel):
             grid, jac = spatial.exp_forward(v, steps=self.steps,
                                             jacobian=True,
                                             displacement=True)
-            igrid, ijac = spatial.exp_forward(v, steps=self.steps,
-                                              jacobian=True, inverse=True,
-                                              displacement=True)
+            if self.inversion == 'default':
+                igrid, ijac = spatial.exp_forward(v, steps=self.steps,
+                                                  jacobian=True, inverse=True,
+                                                  displacement=True)
+            else:
+                igrid, ijac = self._invert(grid, jacobian=True)
             if cache_result:
                 self._cache = grid
                 self._icache = igrid
@@ -1868,9 +1863,12 @@ class SVFModel(NonLinModel):
             else:
                 grid = self._cache
             if recompute or self._icache is None:
-                igrid = spatial.exp_forward(v, steps=self.steps,
-                                            jacobian=False, inverse=True,
-                                            displacement=True)
+                if self.inversion == 'default':
+                    igrid = spatial.exp_forward(v, steps=self.steps,
+                                                jacobian=False, inverse=True,
+                                                displacement=True)
+                else:
+                    igrid = self._invert(grid)
             else:
                 igrid = self._icache
             if cache_result:
@@ -1938,6 +1936,11 @@ class SmallDefModel(NonLinModel):
 
     model = 'smalldef'
 
+    @property
+    def _inv_options(self):
+        # the inverse is always a push inverse ('default' == 'push')
+        return dict(method='newton') if self.inversion == 'newton' else {}
+
     def exp(self, v=None, jacobian=False, add_identity=False,
             cache_result=False, recompute=True):
         """Exponentiate forward transform"""
@@ -1956,7 +1959,8 @@ class SmallDefModel(NonLinModel):
         if v is None:
             v = self.dat.dat
         if recompute or self._icache is None:
-            grid = spatial.grid_inv(v, type='disp', **self.penalty)
+            grid = spatial.grid_inv(v, type='disp', **self._inv_options,
+                                    **self.penalty)
         else:
             grid = self._icache
         if cache_result:
@@ -1974,7 +1978,8 @@ class SmallDefModel(NonLinModel):
             v = self.dat.dat
         grid = v
         if recompute or self._icache is None:
-            igrid = spatial.grid_inv(v, type='disp', **self.penalty)
+            igrid = spatial.grid_inv(v, type='disp', **self._inv_options,
+                                     **self.penalty)
         else:
             igrid = self._icache
         if cache_result:
@@ -2061,6 +2066,7 @@ class Nonlin2dModel(NonLinModel):
     factor = property(lambda self: self._model.factor)
     penalty = property(lambda self: self._model.penalty)
     steps = property(lambda self: self._model.steps)
+    inversion = property(lambda self: self._model.inversion)
     kernel = property(lambda self: self._model.kernel)
     dat = property(lambda self: self._model.dat)
     affine = property(lambda self: self._model.affine)
