@@ -282,48 +282,38 @@ def make_iteroptim_affine(optim, lr=None, ls=None, max_iter=None):
     return optim
 
 
-@torch.jit.script
-def _affine_grid_backward_g(grid, grad):
-    # type: (Tensor, Tensor) -> Tensor
-    dim = grid.shape[-1]
-    g = torch.empty([grad.shape[0], dim, dim+1], dtype=grad.dtype, device=grad.device)
-    for i in range(dim):
-        g[:, i, -1] = grad[:, :, i].sum(1)
-        for j in range(dim):
-            g[:, i, j] = (grad[:, :, i] * grid[:, :, j]).sum(1)
-    return g
+#: Number of voxels processed at once by `affine_grid_backward`.
+#: None: device-dependent default (see `_affine_grid_backward_chunk`).
+AFFINE_GRID_BACKWARD_CHUNK = None
 
 
-@torch.jit.script
-def _affine_grid_backward_gh(grid, grad, hess):
-    # type: (Tensor, Tensor, Tensor) -> Tuple[Tensor, Tensor]
-    dim = grid.shape[-1]
-    g = torch.zeros([grad.shape[0], dim, dim+1], dtype=grad.dtype, device=grad.device)
-    h = torch.zeros([hess.shape[0], dim, dim+1, dim, dim+1], dtype=grad.dtype, device=grad.device)
-    basecount = dim - 1
-    for i in range(dim):
-        basecount = basecount + i * (dim-i)
-        for j in range(dim+1):
-            if j == dim:
-                g[:, i, j] = (grad[:, :, i]).sum(1)
-            else:
-                g[:, i, j] = (grad[:, :, i] * grid[:, :, j]).sum(1)
-            for k in range(dim):
-                idx = k
-                if k < i:
-                    continue
-                elif k != i:
-                    idx = basecount + (k - i)
-                for l in range(dim+1):
-                    if l == dim and j == dim:
-                        h[:, i, j, k, l] = h[:, k, j, i, l] = hess[:, :, idx].sum(1)
-                    elif l == dim:
-                        h[:, i, j, k, l] = h[:, k, j, i, l] = (hess[:, :, idx] * grid[:, :, j]).sum(1)
-                    elif j == dim:
-                        h[:, i, j, k, l] = h[:, k, j, i, l] = (hess[:, :, idx] * grid[:, :, l]).sum(1)
-                    else:
-                        h[:, i, j, k, l] = h[:, k, j, i, l] = (hess[:, :, idx] * grid[:, :, j] * grid[:, :, l]).sum(1)
-    return g, h
+def _affine_grid_backward_chunk(device):
+    """Default number of voxels per chunk in `affine_grid_backward`.
+
+    - CPU: 2^18 was optimal with 1 to 4 threads on a 192^3 problem (2^14
+      chunks pay the per-chunk overhead, 2^20 and more were 1.5-2x slower,
+      likely because the chunk buffers no longer fit in cache). Each chunk
+      is split across threads, so we keep ~2^16 voxels per thread, up to
+      2^20 (not measured beyond 4 threads).
+    - CUDA: 2^20 (not measured). A million voxels is enough to fill a
+      GPU and keeps the chunk buffers to ~100 MB.
+    """
+    if AFFINE_GRID_BACKWARD_CHUNK:
+        return int(AFFINE_GRID_BACKWARD_CHUNK)
+    if torch.device(device).type == 'cuda':
+        return 2 ** 20
+    return min(max(2 ** 18, 2 ** 16 * torch.get_num_threads()), 2 ** 20)
+
+
+def _identity_chunk(shape, start, stop, **backend):
+    """Rows `start:stop` of the flattened identity grid of `shape`:
+    (stop - start, dim) tensor of voxel coordinates."""
+    idx = torch.arange(start, stop, device=backend.get('device'))
+    coords = []
+    for n in reversed(shape):
+        coords.append(idx % n)
+        idx = idx // n
+    return torch.stack(coords[::-1], -1).to(**backend)
 
 
 def affine_grid_backward(*grad_hess, grid=None):
@@ -339,7 +329,7 @@ def affine_grid_backward(*grad_hess, grid=None):
     hess : (..., *spatial, dim*(dim+1)//2) tensor, optional
         Hessian with respect to a dense displacement.
     grid : (*spatial, dim) tensor, optional
-        Pre-computed identity grid
+        Coordinates the affine is applied to (default: identity grid)
 
     Returns
     -------
@@ -348,6 +338,14 @@ def affine_grid_backward(*grad_hess, grid=None):
     hess : (..., dim, dim+1, dim, dim+1) tensor, optional
         Hessian with respect to an affine matrix
 
+    Notes
+    -----
+    With `X = [grid, 1]` (one row per voxel), the gradient is `grad^T X`
+    and each block of the Hessian is `(X * hess[:, ik])^T X`, for the
+    `dim*(dim+1)/2` unique components `ik` of the (symmetric) Hessian.
+    Voxels are processed by chunks (see `_affine_grid_backward_chunk`), and
+    the identity grid is built chunk by chunk, so that the extra memory
+    is a few chunk-sized buffers.
     """
     has_hess = len(grad_hess) > 1
     grad, *hess = grad_hess
@@ -355,21 +353,47 @@ def affine_grid_backward(*grad_hess, grid=None):
     del grad_hess
 
     dim = grad.shape[-1]
-    shape = grad.shape[-dim-1:-1]
+    shape = list(grad.shape[-dim-1:-1])
     batch = grad.shape[:-dim-1]
     nvox = py.prod(shape)
-    if grid is None:
-        grid = spatial.identity_grid(shape, **utils.backend(grad))
-    grid = grid.reshape([1, nvox, dim])
+    backend = utils.backend(grad)
     grad = grad.reshape([-1, nvox, dim])
+    if grid is not None:
+        grid = grid.reshape([nvox, dim]).to(**backend)
     if hess is not None:
         hess = hess.reshape([-1, nvox, dim*(dim+1)//2])
-        grad, hess = _affine_grid_backward_gh(grid, grad, hess)
-        hess = hess.reshape([*batch, dim, dim+1, dim, dim+1])
-    else:
-        grad = _affine_grid_backward_g(grid, grad)
-    grad = grad.reshape([*batch, dim, dim+1])
-    return (grad, hess) if has_hess else grad
+        # unique components of the symmetric Hessian, in storage order:
+        # diagonal first, then the upper triangle, row by row
+        pairs = [(i, i) for i in range(dim)]
+        pairs += [(i, k) for i in range(dim) for k in range(i+1, dim)]
+        hblocks = grad.new_zeros([hess.shape[0], len(pairs), dim+1, dim+1])
+
+    g = grad.new_zeros([grad.shape[0], dim, dim+1])
+    chunk = _affine_grid_backward_chunk(grad.device)
+    for start in range(0, nvox, chunk):
+        stop = min(start + chunk, nvox)
+        if grid is None:
+            x = _identity_chunk(shape, start, stop, **backend)
+        else:
+            x = grid[start:stop]
+        x = torch.cat([x, x.new_ones([len(x), 1])], -1)     # (n, dim+1)
+        # (B, dim, n) @ (n, dim+1)
+        g += grad[:, start:stop].transpose(-1, -2).matmul(x)
+        if hess is not None:
+            # (B, C, n, dim+1)^T @ (n, dim+1) -> (B, C, dim+1, dim+1)
+            hx = hess[:, start:stop].transpose(-1, -2).unsqueeze(-1) * x
+            hblocks += hx.transpose(-1, -2).matmul(x)
+            del hx
+
+    g = g.reshape([*batch, dim, dim+1])
+    if hess is None:
+        return (g, None) if has_hess else g
+    h = grad.new_empty([hblocks.shape[0], dim, dim+1, dim, dim+1])
+    for c, (i, k) in enumerate(pairs):
+        h[:, i, :, k, :] = hblocks[:, c]
+        h[:, k, :, i, :] = hblocks[:, c].transpose(-1, -2)
+    h = h.reshape([*batch, dim, dim+1, dim, dim+1])
+    return g, h
 
 
 def jg(jac, grad, dim=None):
