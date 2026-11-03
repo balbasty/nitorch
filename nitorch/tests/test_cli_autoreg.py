@@ -426,3 +426,19 @@ def test_autoreg_image_output_single_template():
 def test_autoreg_check_next_isvalue_removed():
     from nitorch.cli.registration.autoreg import parser
     assert not hasattr(parser, 'check_next_isvalue')
+
+
+@pytest.mark.parametrize('tag', ['-o', '-r'])
+def test_autoreg_image_output_single_literal_path_rejected(tag):
+    with pytest.raises(ParseError) as e:
+        parse(['-mse', '-fix', 'f.nii', '-mov', 'a.nii', 'b.nii',
+               tag, 'out.nii', '-rig'])
+    assert str(e.value) == (
+        f'{tag}: a single path for 2 input files would overwrite itself; '
+        f'use a template such as {{base}}.moved{{ext}}, one value per '
+        f'file, or true/false')
+    # a single literal path for a single file is fine
+    opt = parse(['-mse', '-fix', 'f.nii', '-mov', 'a.nii',
+                 tag, 'out.nii', '-rig'])
+    key = 'updated' if tag == '-o' else 'resliced'
+    assert getattr(opt.losses[0].moving, key) == ['out.nii']

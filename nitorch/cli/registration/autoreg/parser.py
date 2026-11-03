@@ -350,6 +350,14 @@ def check_output_count(opt, key, tag):
     if not isinstance(vals, list) or not nfiles or len(vals) == nfiles:
         return
     if len(vals) == 1:
+        val = vals[0]
+        if isinstance(val, str) and not any(
+                f in ('dir', 'base') for _, f, _, _
+                in string.Formatter().parse(val)):
+            raise ParseError(
+                f'{tag}: a single path for {nfiles} input files would '
+                f'overwrite itself; use a template such as '
+                f'{{base}}.moved{{ext}}, one value per file, or true/false')
         setattr(opt, key, vals * nfiles)
         return
     raise ParseError(f'{tag} expects 1 value per input file ({nfiles}), '
