@@ -1,6 +1,7 @@
 from nitorch.core import cli
 from nitorch.core.cli import ParseError
 from nitorch.core.struct import Structure
+from ..helpers import pop_velocity_values
 
 
 class FileWithInfo(Structure):
@@ -32,6 +33,8 @@ class Displacement(Transform):
 class Velocity(Transform):
     order: int = 1
     json: str = None                # Shooting parameters (JSON sidecar)
+    t0: float = 0                   # Integrate the velocity from time t0...
+    t1: float = 1                   # ...to time t1
 
 
 class Composer(Structure):
@@ -52,12 +55,18 @@ usage:
     -d, --displacement      Dense or free-form displacement field
         -n, --order             Order of the encoding splines (1)
         -u, --unit              Unit/Space of the displacement (mm or [vox])
-    -v, --velocity          Diffeomorphic velocity field [JSON]
+    -v, --velocity          Diffeomorphic velocity field [JSON] [T0 T1]
                             If a JSON file with shooting parameters is
                             provided (or <vel>.json exists, as written by
                             `nitorch register`), the velocity is shot
                             geodesically. Else, it is a stationary
                             velocity field (SVF) and is exponentiated.
+                            [T0 T1]: integrate the velocity from time T0
+                            to time T1 (default: 0 1), i.e., the transform
+                            that reslices an image at time T0 along the
+                            path to time T1 (time 0: moving image,
+                            time 1: fixed image). Bounds outside [0, 1]
+                            extrapolate the path.
    
     Each of these transforms can be inverted by prepending 'i' in the
     short form or appending '-inverse' in the long form:
@@ -70,6 +79,8 @@ usage:
     -l2, --linear-square            Square of a linear transform
     -v2, --velocity-square          Square of a diffeomorphic velocity field
     These can also be inverted: -il2, --linear-inverse-square, etc.
+    For velocities, these are shorthands for time bounds:
+    -v2 VEL  = -v VEL 0 0.5,   -iv VEL = -v VEL 1 0,   -iv2 VEL = -v VEL 0.5 0
    
     Other tags are:
     -t,  --target            Defines the target space.
@@ -156,8 +167,11 @@ def parse_transform(args, options, rest=None):
 
     # optional JSON sidecar with shooting parameters
     # (else, `<vel>.json` is auto-detected in `main.read_info`)
-    if isinstance(opt, Velocity) and cli.next_isvalue(args):
-        opt.json, *args = args
+    # and optional time bounds
+    if isinstance(opt, Velocity):
+        opt.json, bounds, args = pop_velocity_values(args, tag, rest)
+        if bounds:
+            opt.t0, opt.t1 = bounds
 
     options.transformations.append(opt)
 
