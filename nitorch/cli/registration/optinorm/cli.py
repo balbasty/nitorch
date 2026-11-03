@@ -20,6 +20,9 @@ def cli(args=None):
         print(help)
         print(f'[ERROR] {str(e)}', file=sys.stderr)
         return 1
+    except Exception as e:
+        print(f'[ERROR] {str(e)}', file=sys.stderr)
+        return 1
 
 
 commands['optinorm'] = cli
