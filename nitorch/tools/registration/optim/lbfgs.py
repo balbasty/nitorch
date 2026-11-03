@@ -65,16 +65,23 @@ class LBFGS(FirstOrder):
                 return closure_ls(param.add(delta, alpha=x), *a, **k)
             step, loss, grad = self.wolfe(
                 0, closure1, delta=delta, loss=loss, grad=grad)
-            closure(param)  # to plot stuff / update loss state
+            # apply the step with the same operation as the trials, so that
+            # the parameters are bitwise those at which `loss` and `grad`
+            # were evaluated
+            param.add_(delta, alpha=step)
             delta.mul_(step)
             self.lr *= step
+            self.update_state(grad, delta)
+            # Line-search trials do not keep their side effects (cached
+            # transforms, loss states, printed and recorded objective):
+            # commit them, at the accepted point.
+            closure(param)
+            return param, loss, grad
 
         # print('up ', delta.tolist())
         self.update_state(grad, delta)
         param = self.update(delta, param)
-
-        if not self.wolfe:
-            loss, grad = closure(param, grad=True)
+        loss, grad = closure(param, grad=True)
 
         return param, loss, grad
 
