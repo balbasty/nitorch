@@ -46,9 +46,9 @@ The readout direction is set with `-d` using anatomical axis letters, for exampl
 
 ### Output files
 
-Outputs are written as floating-point images that copy the format, orientation matrix and header of the input file they derive from (the first input file when one output holds several files). The `-o` option takes one or several path templates. In a template, `{dir}`, `{sep}`, `{base}` and `{ext}` are replaced by the directory, path separator, base name (without extension) and extension of the input file, and `{n}` by the zero-based index of the echo.
+Outputs are written as floating-point images that copy the format, orientation matrix and header of the input file they derive from (the first input file when one output holds several files). The `-o` option takes one or several path templates. In a template, `{dir}`, `{sep}`, `{base}` and `{ext}` are replaced by the directory, path separator, base name (without extension) and extension of the input file, and `{n}` by the zero-based index of the echo (or, when there is one output per input, of the input file). Echoes are counted over all input files, a 4D file contributing all of its volumes.
 
-The first matching row below applies.
+The number of outputs is checked before anything is computed. The first matching row below applies.
 
 | Condition | Behaviour |
 | --------- | --------- |
@@ -57,7 +57,7 @@ The first matching row below applies.
 | One `-o` value, otherwise | One 4D file with all echoes along the fourth dimension, named after the first input file. |
 | As many `-o` values as input files | Input file *i* is written to the *i*-th template, with as many echoes as the input. |
 | As many `-o` values as echoes | One 3D file per echo, named after the first input file. |
-| Any other number | An error. |
+| Any other number | An error, reported before any computation: `Expected 1 output, or one per input (N), or one per echo (E); got K.` |
 
 The default template is `{dir}{sep}{base}_epic{ext}`, so with a single 4D input `echoes.nii.gz`, the result is `echoes_epic.nii.gz`. When the input path has no directory part, `{dir}` is the current directory.
 
