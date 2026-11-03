@@ -99,7 +99,7 @@ line with the value of the objective at each iteration.
 | ------ | ----- | ----------- | ------- |
 | `-n`, `--max-iter` | `ITER...` | Maximum number of reweighting iterations, then of conjugate-gradient iterations per reweighting. A single value is used for both. | `10 32` |
 | `-t`, `--tolerance` | `TOL...` | Stopping tolerance of the reweighting iterations, then of the conjugate-gradient iterations. A single value is used for both. | `1e-4` |
-| `-x`, `--optim` | `OPTIM` | Solver for the linear system of each reweighting: conjugate gradients (`cg`), relaxation (`relax`), or either of them started from a full multigrid initialisation (`fmg+cg`, `fmg+relax`; `fmg` alone means `fmg+cg`). The first nine reweighting iterations always use conjugate gradients, so `relax` only takes over from the tenth one: with the default `-n 10`, in the last iteration only. | `cg` |
+| `-x`, `--optim` | `OPTIM` | Solver for the linear system of each reweighting: conjugate gradients (`cg`), relaxation (`relax`), or either of them started from a full multigrid initialisation (`fmg+cg`, `fmg+relax`; `fmg` alone means `fmg+cg`). The chosen solver is used throughout, from the first reweighting iteration. Relaxation may need more inner iterations than conjugate gradients (second value of `-n`) to reach the same accuracy. | `cg` |
 
 ### Interface and hardware
 
