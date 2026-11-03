@@ -80,7 +80,32 @@ def convert_device(device):
     return _convert
 
 
-parser = cli.CommandParser('optinorm', help=help)
+class _OptinormParser(cli.CommandParser):
+    """CommandParser with clearer errors for unknown options and `--affine`.
+
+    The shared parser takes unknown dash-prefixed arguments as input
+    images, and reports an invalid `--affine` value as a missing one.
+    """
+
+    def parse(self, args):
+        args = list(args)
+        if self._check_help_arg(args) is not None:
+            return super().parse(args)
+        tags = set(self.options.tags) | set(self.groups.tags)
+        for i, arg in enumerate(args):
+            if cli.istag(arg) and arg not in tags:
+                raise cli.ParseError(f'Unknown option {arg}')
+            if arg == '--affine':
+                value = args[i+1] if i+1 < len(args) else None
+                if value not in affine_models:
+                    allowed = ', '.join(affine_models)
+                    got = 'nothing' if value is None else repr(value)
+                    raise cli.ParseError(f'--affine expects one of '
+                                         f'{{{allowed}}}, got {got}')
+        return super().parse(args)
+
+
+parser = _OptinormParser('optinorm', help=help)
 parser.add_positional('input', nargs='+', help='Input images')
 parser.add_option('output', ('-o', '--output'), nargs=1, default='norm',
                   help='Output directory')
