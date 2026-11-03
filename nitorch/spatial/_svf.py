@@ -186,73 +186,6 @@ def _jhj(jac, hess):
     return out
 
 
-def _small_det(mat):
-    """Determinant of a field of small (D <= 3) matrices, in closed form
-    (batched LU is slow for millions of tiny matrices)"""
-    dim = mat.shape[-1]
-    if dim == 1:
-        return mat[..., 0, 0]
-    if dim == 2:
-        return mat[..., 0, 0] * mat[..., 1, 1] - mat[..., 0, 1] * mat[..., 1, 0]
-    if dim == 3:
-        return (mat[..., 0, 0] * (mat[..., 1, 1] * mat[..., 2, 2] -
-                                  mat[..., 1, 2] * mat[..., 2, 1]) -
-                mat[..., 0, 1] * (mat[..., 1, 0] * mat[..., 2, 2] -
-                                  mat[..., 1, 2] * mat[..., 2, 0]) +
-                mat[..., 0, 2] * (mat[..., 1, 0] * mat[..., 2, 1] -
-                                  mat[..., 1, 1] * mat[..., 2, 0]))
-    return mat.det()
-
-
-def _small_solve(mat, vec):
-    """Solve `mat @ x = vec` for a field of small (D <= 3) matrices, by
-    Cramer's rule: each component of the solution is accumulated from
-    cofactors computed on the fly, so that the inverse (a D*D field) is
-    never formed."""
-    dim = vec.shape[-1]
-    if dim > 3:
-        return linalg.lmdiv(mat, vec[..., None])[..., 0]
-    m = [[mat[..., i, j] for j in range(dim)] for i in range(dim)]
-    if dim == 1:
-        return vec / m[0][0][..., None]
-    if dim == 2:
-        det = _small_det(mat)
-        x0 = m[1][1] * vec[..., 0] - m[0][1] * vec[..., 1]
-        x1 = m[0][0] * vec[..., 1] - m[1][0] * vec[..., 0]
-        return torch.stack([x0, x1], -1).div_(det[..., None])
-
-    def cof(i, j):
-        # cofactor (i, j) of a 3x3 matrix
-        return (m[(i+1) % 3][(j+1) % 3] * m[(i+2) % 3][(j+2) % 3] -
-                m[(i+1) % 3][(j+2) % 3] * m[(i+2) % 3][(j+1) % 3])
-
-    det = _small_det(mat)
-    out = []
-    for i in range(3):
-        # x_i = sum_j adj[i, j] vec_j = sum_j cof[j, i] vec_j
-        xi = cof(0, i).mul_(vec[..., 0])
-        xi.addcmul_(cof(1, i), vec[..., 1])
-        xi.addcmul_(cof(2, i), vec[..., 2])
-        out.append(xi.div_(det))
-    return torch.stack(out, -1)
-
-
-def _small_matvec(mat, vec):
-    """Matrix-vector product for a field of small (D <= 3) matrices, as
-    a few elementwise products (batched matmul is slow for millions of
-    tiny matrices, and broadcasting would allocate a D*D field)"""
-    dim = vec.shape[-1]
-    if dim > 3:
-        return linalg.matvec(mat, vec)
-    rows = []
-    for i in range(dim):
-        row = mat[..., i, 0] * vec[..., 0]
-        for j in range(1, dim):
-            row = row.addcmul(mat[..., i, j], vec[..., j])
-        rows.append(row)
-    return torch.stack(rows, -1)
-
-
 def _disp_jacobian(disp, bound='dft', out=None):
     """Jacobian of the transformation `Id + disp` (central differences).
 
@@ -352,7 +285,7 @@ def exp_backward(vel, *gradhess, inverse=False, steps=8,
     # rotate gradient a bit so that when steps == 0, we get the same
     # gradients as the smalldef case
     ijac = 2 * torch.eye(dim, dtype=jac.dtype, device=jac.device) - jac
-    grad = _small_solve(ijac.transpose(-1, -2), grad)
+    grad = linalg.small_solve(ijac.transpose(-1, -2), grad)
     del ijac
 
     for step in range(steps):
@@ -361,12 +294,12 @@ def exp_backward(vel, *gradhess, inverse=False, steps=8,
             # (rather than composing the Jacobians, which requires pulling
             # all D*D components: same quantity, cheaper)
             jac = _disp_jacobian(vel, bound, out=jacbuf)
-        det = _small_det(jac)
+        det = linalg.small_det(jac)
         jac = jac.transpose(-1, -2)
         grid = id + vel
         grad0 = grad
         grad = _pull_vel(grad, grid, **opt)      # \
-        grad = _small_matvec(jac, grad)          # | push forward
+        grad = linalg.small_matvec(jac, grad)          # | push forward
         grad *= det[..., None]                   # /
         grad += grad0                            # add all scales (SVF)
         if hess is not None:

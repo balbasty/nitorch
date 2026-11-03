@@ -1,34 +1,12 @@
-"""`exp_backward` (SVF): small-matrix helpers, finite-difference Jacobian
-of the squared field, and accuracy against autograd (#158)."""
+"""`exp_backward` (SVF): finite-difference Jacobian of the squared field,
+and accuracy against autograd (#158). The closed-form small-matrix helpers
+it uses are tested in `test_linalg_small.py`."""
 import torch
 import pytest
 from nitorch import spatial
 from nitorch.spatial import _svf
 
 dt = torch.double
-
-
-def _mats(dim, n=50, seed=0):
-    g = torch.Generator().manual_seed(seed)
-    m = torch.randn([n, dim, dim], dtype=dt, generator=g)
-    m = m + 3 * torch.eye(dim, dtype=dt)
-    v = torch.randn([n, dim], dtype=dt, generator=g)
-    return m, v
-
-
-@pytest.mark.parametrize('dim', [1, 2, 3, 4])
-def test_small_matrix_ops(dim):
-    m, v = _mats(dim)
-    assert torch.allclose(_svf._small_det(m), m.det(), rtol=1e-12)
-    ref = torch.linalg.solve(m, v)
-    assert torch.allclose(_svf._small_solve(m, v), ref, rtol=1e-10, atol=1e-12)
-    mt = m.transpose(-1, -2)                    # non-contiguous views
-    ref = torch.linalg.solve(mt, v)
-    assert torch.allclose(_svf._small_solve(mt, v), ref, rtol=1e-10, atol=1e-12)
-    ref = (m @ v[..., None])[..., 0]
-    assert torch.allclose(_svf._small_matvec(m, v), ref, rtol=1e-12)
-    assert torch.allclose(_svf._small_matvec(mt, v), (mt @ v[..., None])[..., 0],
-                          rtol=1e-12)
 
 
 @pytest.mark.parametrize('dim', [2, 3])

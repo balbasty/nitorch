@@ -11,6 +11,7 @@ from ._linalg_logm import logm
 from ._linalg_sqrtm import sqrtm
 from ._linalg_qr import eig_sym, eig_sym_
 from ._linalg_sym import *
+from ._linalg_small import *
 
 
 if hasattr(torch, 'linalg') and hasattr(torch.linalg, 'solve'):
