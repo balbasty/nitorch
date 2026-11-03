@@ -433,35 +433,44 @@ def shoot(
 
 
 class _ApproximateShoot(torch.autograd.Function):
+    """Geodesic shooting with an approximate backward pass.
+
+    Positional arguments follow `shoot_approx` / `shoot`:
+    (vel, greens, absolute, membrane, bending, lame, factor, voxel_size,
+     return_inverse, displacement, steps, fast, verbose)
+
+    Since `shoot` returns phi ~= id - v and iphi ~= id + v, the gradient
+    is approximated by `-push(g, phi) + ig`.
+    """
 
     @staticmethod
-    def forward(ctx, *args):
-        has_inverse = args[7]
-        displacement = args[8]
-        outputs = shoot(*args)
-        if has_inverse:
-            # forward + inverse (only save forward)
-            ctx.save_for_backward(outputs[0])
-        else:
-            # forward only
-            ctx.save_for_backward(outputs)
-        ctx.args = {'nb_args': len(args),
-                    'displacement': displacement,
-                    'inverse': has_inverse}
+    def forward(ctx, vel, greens, absolute, membrane, bending, lame, factor,
+                voxel_size, return_inverse, displacement, steps, fast,
+                verbose):
+        outputs = shoot(vel, greens, absolute, membrane, bending, lame,
+                        factor, voxel_size, return_inverse, displacement,
+                        steps, fast, verbose)
+        grid = outputs[0] if return_inverse else outputs
+        if displacement:
+            grid = grid + identity_grid(grid.shape[-grid.shape[-1]-1:-1],
+                                        **utils.backend(grid))
+        # only save the forward transform (as a coordinate grid)
+        ctx.save_for_backward(grid)
+        ctx.inverse = return_inverse
         return outputs
 
     @staticmethod
-    def backward(ctx, grad_output):
+    def backward(ctx, *grad_outputs):
         grid, = ctx.saved_tensors
-        if ctx.args['inverse']:
-            grad_output, igrad_output = grad_output
+        grad_output = grad_outputs[0]
+        igrad_output = grad_outputs[1] if ctx.inverse else None
         pull_prm = dict(bound='dft', interpolation=1, extrapolate=True)
-        grad = _push_grid(grad_output, grid, **pull_prm)
-        if ctx.args['inverse']:
-            grad -= igrad_output
-        output = [None] * ctx.args['nb_args']
-        output[0] = grad
-        return tuple(output)
+        grad = None
+        if grad_output is not None:
+            grad = _push_grid(grad_output, grid, **pull_prm).neg_()
+        if igrad_output is not None:
+            grad = igrad_output.clone() if grad is None else grad.add_(igrad_output)
+        return (grad,) + (None,) * 12
 
 
 def shoot_approx(vel, greens=None,
