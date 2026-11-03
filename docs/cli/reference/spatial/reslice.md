@@ -189,7 +189,7 @@ Streamline files (`.trk`) can be given as inputs, alone or together with volumes
 
 | Option                  | Value         | Description                                                                                                                | Default          |
 | ----------------------- | ------------- | -------------------------------------------------------------------------------------------------------------------------- | ---------------- |
-| `-k`, `--chunk`         | `[SIZE...]`   | Compute the output in blocks of this size (in voxels; one value or three) to limit memory use. Without a value: 128.        | whole volume     |
+| `-k`, `--chunk`         | `[SIZE...]`   | Compute the output in blocks of this size (in voxels; one value or three) to limit memory use. Without a value: 128. Approximate: see [known limitations](#known-limitations). | whole volume     |
 | `-cpu`, `--cpu`         |               | Use the CPU.                                                                                                               | CPU              |
 | `-gpu`, `--gpu`         | `[ID]`        | Use a GPU, optionally the one with this index (see [hardware](../../conventions.md#hardware)).                              | off              |
 
@@ -199,6 +199,8 @@ With `-k`, the blocks are laid out over the output grid. Two caveats apply:
 
 - The `--clip` range and the floor used by `--log` and `--logit` are computed for each block rather than over the whole image.
 - The spline pre-filter, for orders 2 and above, runs on each block separately, so the result differs slightly from an unchunked run. With order 1 (the default) it is exact.
+
+`-k` thus trades exactness for memory: use it when the volume does not fit in memory, and expect small differences from an unchunked run whenever one of these caveats applies.
 
 ## Examples
 
