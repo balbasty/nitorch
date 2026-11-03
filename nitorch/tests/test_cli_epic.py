@@ -313,3 +313,50 @@ def test_map_files_shapes(tmp_path, shape):
     io.savef(torch.rand(shape), fname, affine=torch.eye(4))
     ne = 1 if len(shape) == 3 else max(shape[3:])
     assert tuple(map_files(fname).shape) == (ne, 4, 5, 6)
+
+
+# ----------------------------------------------------------------------
+#   reversed echo count
+# ----------------------------------------------------------------------
+
+@pytest.mark.parametrize('inputs,rev', [([1, 1], ['in0.nii']),
+                                        ([2, 2], ['in0.nii'])])
+def test_reversed_count_mismatch_is_parse_error(monkeypatch, tmp_path,
+                                                inputs, rev):
+    with pytest.raises(ParseError) as e:
+        _run_synth(monkeypatch, tmp_path, inputs, ['-r', *rev])
+    msg = str(e.value)
+    assert f'as forward echoes ({sum(inputs)})' in msg
+    assert f'got {inputs[0]}' in msg
+
+
+def test_tools_reversed_count_mismatch_is_value_error():
+    x = torch.rand(4, 4, 5, 6) + 1
+    with pytest.raises(ValueError, match='same shape'):
+        epic(x, reverse_echoes=x[:2], max_iter=(1, 1), verbose=0,
+             device='cpu')
+
+
+# ----------------------------------------------------------------------
+#   no-synth Hessian (must not use uninitialised memory)
+# ----------------------------------------------------------------------
+
+def test_noreverse_hessian_is_initialised(monkeypatch):
+    from nitorch.tools.denoising import epic as epic_mod
+    g = torch.Generator().manual_seed(0)
+    x = torch.rand(3, 6, 7, 8, generator=g) + 1
+    vs = torch.randn(6, 7, 8, generator=g) * 0.5
+    opt = dict(lam=1, sigma=1, max_iter=(2, 4), tol=0, verbose=0)
+    empty_like = torch.empty_like
+    outs = []
+    # make "uninitialised" memory deterministic garbage: the result must
+    # not depend on it
+    for value in (float('nan'), 1e6, -3.):
+        monkeypatch.setattr(
+            torch, 'empty_like',
+            lambda *a, v=value, **k: empty_like(*a, **k).fill_(v))
+        outs.append(epic_mod.run_epic_noreverse(x, vs, **opt))
+    monkeypatch.setattr(torch, 'empty_like', empty_like)
+    for out in outs:
+        assert torch.isfinite(out).all()
+        assert torch.allclose(out, outs[0])

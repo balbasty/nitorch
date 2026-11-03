@@ -52,6 +52,12 @@ def epic(echoes, reverse_echoes=True, fieldmap=None, extrapolate=False,
     ndim = len(echoes.shape) - 1
     if reverse_echoes is True or reverse_echoes is None:
         check_synth(len(echoes))
+    elif reverse_echoes is not False and \
+            tuple(reverse_echoes.shape) != tuple(echoes.shape):
+        raise ValueError(
+            f'Reversed echoes must have the same shape as the forward '
+            f'echoes: expected {list(echoes.shape)}, got '
+            f'{list(reverse_echoes.shape)}.')
 
     # estimate noise variance + scale regularization
     noise, tissue = 1, []
@@ -395,7 +401,7 @@ def run_epic_noreverse(echoes, voxshift=None, lam=1, sigma=1,
 
     # compute hessian once and for all
     if do_voxshift:
-        one = torch.empty_like(voxshift)[None]
+        one = torch.ones_like(voxshift)[None]
         h = torch.empty_like(echoes)
         h[0::2] = push1d(pull1d(one, voxshift), voxshift)
         h[1::2] = push1d(pull1d(one, ivoxshift), ivoxshift)

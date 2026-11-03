@@ -104,6 +104,12 @@ def main(options):
         reversed_echoes = options.synth
     else:
         reversed_echoes = options.reversed
+    if options.reversed:
+        nrev = sum(map_files(r).shape[0] for r in options.reversed)
+        if nrev != sum(nechoes):
+            raise ParseError(
+                f'Expected as many reversed echoes (-r) as forward echoes '
+                f'({sum(nechoes)}); got {nrev}.')
     if reversed_echoes is True and sum(nechoes) < 4:
         # synthesis interpolates/extrapolates from >= 2 echoes of each
         # polarity (also for the first/last echoes, with or without -e)
