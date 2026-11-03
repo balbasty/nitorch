@@ -489,7 +489,7 @@ weights of the `--lame` option.
 | `-f`, `--fov`               | `NAME...`           | Names of the images (see `--name` of `@@fix`/`@@mov`) whose fields of view define the lattice. Images without a `--name` are named after their first filename. | all images         |
 | `-i`, `--input`, `--init`   | `FILE`              | Initial field, or a scalar image whose grid defines the lattice of a zero-initialised field.                                         | zeros on the mean space |
 | `-o`, `--output`            | `[PATH` &vert; `true` &vert; `false]` | Where to write the field. `{dir}` and `{name}` are available. With no value, `true`, `yes` or `1`, the default path is used; `false`, `no` or `0` writes nothing. | `{dir}/{name}.nii.gz` |
-| `-h`, `--hessian`           | `[PATH]`            | Also write the Hessian of the matching term at the solution (a map of local confidence). With no path, `{dir}/{name}_hessian.nii.gz`. Used to weight [`vopt`](vopt.md). | not written        |
+| `-h`, `--hessian`           | `[PATH` &vert; `true` &vert; `false]` | Where to write the Hessian of the matching term at the solution (a map of local confidence), used to weight [`vopt`](vopt.md). `{dir}` and `{name}` are available. With no value, `true`, `yes` or `1`, the default path `{dir}/{name}_hessian.nii.gz` is used; `false`, `no` or `0` writes nothing. | not written |
 | `-2d`                       | `[AXIS]`            | Restrict the deformation to the plane normal to `AXIS`. Without a value, axis 2.                                                     | 3D                 |
 
 The default lattice has the mean voxel size of the images and covers all

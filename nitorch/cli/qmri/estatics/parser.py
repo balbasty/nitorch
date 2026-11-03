@@ -37,7 +37,7 @@ Optimization options
 General options:
     --cpu, --gpu                    Device to use [cpu]
     -o, --output-dir                Output directory [same as input files]
-    -h, --help [LEVEL]              Display this help
+    -h, --help                      Display this help
     -v, --verbose [LVL]             Level of verbosity [1=print], 2=plot
     --framerate                     Framerate of plotting function, in Hz [1]
 
