@@ -48,7 +48,7 @@ def setup_device(device, ndevice):
 
 
 def _cli(args):
-    """Command-line interface for `nipaint` without exception handling"""
+    """Command-line interface for `denoise` without exception handling"""
     args = args or sys.argv[1:]
 
     options = parser.parse(args)

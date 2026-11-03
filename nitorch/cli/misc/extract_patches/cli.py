@@ -5,7 +5,7 @@ import sys
 
 
 def cli(args=None):
-    f"""Command-line interface for `nichunk`
+    f"""Command-line interface for `extract_patches`
     
     {help}
     
@@ -24,7 +24,7 @@ def cli(args=None):
 
 
 def _cli(args):
-    """Command-line interface for `nichunk` without exception handling"""
+    """Command-line interface for `extract_patches` without exception handling"""
     args = args or sys.argv[1:]
 
     options = parse(args)
