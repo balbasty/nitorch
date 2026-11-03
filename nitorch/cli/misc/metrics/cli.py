@@ -529,43 +529,66 @@ def hausdorff95(pred, ref, average=None, exclude=(0,)):
 
 
 def hausdorff(pred, ref, average=None, exclude=(0,), percentile: float = 1):
+    """Directed (prediction -> reference) Hausdorff distance, per label.
 
-    def _hausdorff(p, r, acc=None):
-        from nitorch.spatial import euclidean_distance_transform
-        if ~p.any():
-            return torch.zeros([])
-        r = euclidean_distance_transform(~r)
-        p = r[p]
-        if acc is not None:
-            acc.append(p)
+    `pred` and `ref` are [C, *spatial] label maps (C = channels / pairs).
+    The distance transform is computed per channel, over spatial axes only.
+
+    A label that is absent from the prediction or from the reference
+    has an infinite distance, and is excluded (with a warning) from the
+    macro, weighted and micro averages. If no label remains, the
+    averages are infinite.
+    """
+    from nitorch.spatial import euclidean_distance_transform
+    average = average or ()
+    ndim = ref.dim() - 1
+    inf = torch.tensor(float('inf'))
+
+    def _distances(p, r):
+        # distance of each predicted voxel to the closest reference
+        # voxel *of the same channel* (EDT over spatial axes only)
+        d = euclidean_distance_transform(~r, dim=ndim)
+        return d[p]
+
+    def _reduce(d):
         if percentile == 1:
-            return p.max().cpu()
+            return d.max().cpu()
         else:
-            return quantile(p, percentile).cpu()
+            return quantile(d, percentile).cpu()
 
     results = {}
-    labels = set(ref.unique().tolist())
+    labels = set(ref.unique().tolist()) | set(pred.unique().tolist())
     labels.difference_update(set(exclude))
-    acc = [] if 'micro' in average else None
+    labels = sorted(labels)
+    dists = {}
+    missing = []
     for label in labels:
-        results[label] = _hausdorff(pred == label, ref == label, acc)
+        p, r = pred == label, ref == label
+        if not p.any() or not r.any():
+            results[label] = inf
+            missing.append(label)
+            continue
+        dists[label] = _distances(p, r)
+        results[label] = _reduce(dists[label])
+    if missing and average:
+        warnings.warn(f'hausdorff: labels {missing} are missing from the '
+                      f'prediction or the reference (distance = inf) and '
+                      f'are excluded from the averages')
 
-    results0 = dict(results)
+    valid = [label for label in labels if label in dists]
     if 'micro' in average:
-        acc = torch.cat(acc)
-        if percentile == 1:
-            acc = acc.max().cpu()
-        else:
-            acc = quantile(acc, percentile).cpu()
-        results['micro'] = acc
+        results['micro'] = (_reduce(torch.cat([dists[label] for label in valid]))
+                            if valid else inf)
     if 'macro' in average:
-        results['macro'] = sum(results0.values()) / len(results0)
+        results['macro'] = (sum(results[label] for label in valid) / len(valid)
+                            if valid else inf)
     if 'weighted' in average:
         # weights = reference label volumes (as for overlap metrics)
-        vol = {label: (ref == label).sum().cpu() for label in labels}
-        results['weighted'] = (sum(results0[label] * vol[label]
-                                   for label in labels)
-                               / sum(vol.values()))
+        vol = {label: (ref == label).sum().cpu() for label in valid}
+        results['weighted'] = (sum(results[label] * vol[label]
+                                   for label in valid)
+                               / sum(vol.values())
+                               if valid else inf)
 
     for label in results.keys():
         if hasattr(results[label], 'item'):
