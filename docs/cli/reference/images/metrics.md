@@ -148,12 +148,17 @@ $\ell$. It is therefore a *directed* distance, from prediction to reference: a
 reference structure that the prediction misses entirely does not increase it.
 `hausdorff95` replaces the maximum with the 95th percentile of these distances,
 which is much less sensitive to a few stray voxels. Distances are Euclidean and
-expressed in **voxels**; the voxel size is not applied. If the prediction does not
-contain the label at all, the distance is reported as 0.
+expressed in **voxels**; the voxel size is not applied.
 
-The distances are computed on the whole stacked image, with the channel axis
-treated as a fourth dimension with unit spacing. For meaningful results, evaluate
-single-channel label maps.
+Unlike the overlap metrics, which use the labels of the reference, `hausdorff`
+and `hausdorff95` are computed for the union of the labels of the reference and
+of the prediction (minus `--exclude`). A label that is missing from either image
+has no defined distance and is reported as `inf` (`Infinity` in the JSON output).
+Such labels are left out of the `macro`, `weighted` and `micro` averages, with a
+warning that names them; if no label remains, the averages are `inf`.
+
+With several `-p`/`-r` pairs, or 4D files, distances are computed within each
+channel, and the value of a label pools the distances of all channels.
 
 ## Image metrics
 
@@ -216,7 +221,7 @@ summary score to every metric. It can be given several modes at once.
 
 The `micro` score of a label metric uses the sums of TP, TN, FP and FN over the
 labels. For `hausdorff`, it is the maximum (or percentile) of the distances
-pooled over all labels. For image metrics, `micro` of `mse` is the mean over all
+pooled over the labels that are present in both images. For image metrics, `micro` of `mse` is the mean over all
 voxels of all channels, and of `medae` the median over all of them; for `mrse` it
 is the mean, over voxels, of the Euclidean norm of the difference vector across
 channels, which is a different quantity from the per-channel mean of absolute
