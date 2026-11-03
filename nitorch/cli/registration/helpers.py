@@ -1,6 +1,9 @@
+import os
+import json
 import torch
 from nitorch.spatial import grid_pull, identity_grid, resize_grid
 from nitorch.core.utils import movedim
+from nitorch.core.pyutils import file_mod
 
 # ----------------------------------------------------------------------
 #                           HELPERS
@@ -202,3 +205,75 @@ class BacktrackingLineSearch(torch.optim.Optimizer):
     @property
     def param_groups(self):
         return self.optim.param_groups
+
+
+# ----------------------------------------------------------------------
+#                       VELOCITY EXPONENTIATION
+# ----------------------------------------------------------------------
+# Shared by `reslice` and `compose`.
+
+# keys of the JSON sidecar (written by `nitorch register`) that are
+# forwarded to `spatial.shoot`
+shoot_keys = ('absolute', 'membrane', 'bending', 'lame', 'factor',
+              'steps', 'fast')
+
+
+def load_shoot_parameters(fname):
+    """Read shooting parameters from a JSON sidecar"""
+    with open(fname) as f:
+        prm = json.load(f)
+    return {key: val for key, val in prm.items() if key in shoot_keys}
+
+
+def find_shoot_json(fname):
+    """Return the path of the shooting sidecar `<fname>.json`, if any.
+
+    The sidecar is only returned if it exists and contains shooting
+    parameters (i.e., a `'bending'` key), as written by `nitorch register`.
+    """
+    sidecar = file_mod(fname, ext='.json')
+    if os.path.exists(sidecar):
+        with open(sidecar, "r") as f:
+            prm = json.load(f)
+        if 'bending' in prm:
+            return sidecar
+    return None
+
+
+def exponentiate_velocity(vel, affine, json=None, square=False, inv=False):
+    """Exponentiate a velocity field into a voxel displacement field
+
+    Parameters
+    ----------
+    vel : (*spatial, dim) tensor
+        Velocity field, in voxels. Modified in-place if `square`.
+    affine : (dim+1, dim+1) tensor
+        Orientation matrix of the velocity field.
+    json : str, optional
+        Path to a JSON sidecar with shooting parameters. If provided,
+        the velocity is geodesically shot (`spatial.shoot`); otherwise
+        it is treated as a stationary velocity field (`spatial.exp`).
+    square : bool
+        The velocity encodes the square of the transform to apply:
+        halve it before exponentiation.
+    inv : bool
+        Return the inverse transform.
+
+    Returns
+    -------
+    disp : (*spatial, dim) tensor
+        Displacement field, in voxels.
+    """
+    from nitorch import spatial
+    if square:
+        vel.mul_(0.5)
+    if json:
+        prm = load_shoot_parameters(json)
+        prm['voxel_size'] = spatial.voxel_size(affine)
+        disp = spatial.shoot(vel[None], displacement=True,
+                             return_inverse=inv, **prm)
+        if inv:
+            disp = disp[-1]
+    else:
+        disp = spatial.exp(vel[None], displacement=True, inverse=inv)
+    return disp[0]  # drop batch dimension

@@ -31,6 +31,7 @@ class Displacement(Transform):
 
 class Velocity(Transform):
     order: int = 1
+    json: str = None                # Shooting parameters (JSON sidecar)
 
 
 class Composer(Structure):
@@ -51,7 +52,12 @@ usage:
     -d, --displacement      Dense or free-form displacement field
         -n, --order             Order of the encoding splines (1)
         -u, --unit              Unit/Space of the displacement (mm or [vox])
-    -v, --velocity          Diffeomorphic velocity field
+    -v, --velocity          Diffeomorphic velocity field [JSON]
+                            If a JSON file with shooting parameters is
+                            provided (or <vel>.json exists, as written by
+                            `nitorch register`), the velocity is shot
+                            geodesically. Else, it is a stationary
+                            velocity field (SVF) and is exponentiated.
    
     Each of these transforms can be inverted by prepending 'i' in the
     short form or appending '-inverse' in the long form:
@@ -147,6 +153,11 @@ def parse_transform(args, options, rest=None):
         else:
             args = [tag, *args]
             break
+
+    # optional JSON sidecar with shooting parameters
+    # (else, `<vel>.json` is auto-detected in `main.read_info`)
+    if isinstance(opt, Velocity) and cli.next_isvalue(args):
+        opt.json, *args = args
 
     options.transformations.append(opt)
 

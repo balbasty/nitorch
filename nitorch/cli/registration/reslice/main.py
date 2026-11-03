@@ -246,17 +246,9 @@ def collapse_transforms(transformations):
     return trfs
 
 
-# keys of the JSON sidecar (written by `nitorch register`) that are
-# forwarded to `spatial.shoot`
-_shoot_keys = ('absolute', 'membrane', 'bending', 'lame', 'factor',
-               'steps', 'fast')
-
-
-def load_shoot_parameters(fname):
-    """Read shooting parameters from a JSON sidecar"""
-    with open(fname) as f:
-        prm = json.load(f)
-    return {key: val for key, val in prm.items() if key in _shoot_keys}
+# kept for backward compatibility (now shared with `compose`)
+_shoot_keys = helpers.shoot_keys
+load_shoot_parameters = helpers.load_shoot_parameters
 
 
 def exponentiate_transforms(transformations, **backend):
@@ -267,21 +259,9 @@ def exponentiate_transforms(transformations, **backend):
             trf.shape = squeeze_to_nd(f.shape, 3, 1)
             trf.dat = f.fdata(**backend).reshape(trf.shape)
             trf.shape = trf.shape[:3]
-            if trf.json:
-                if trf.square:
-                    trf.dat.mul_(0.5)
-                prm = load_shoot_parameters(trf.json)
-                prm['voxel_size'] = spatial.voxel_size(trf.affine)
-                trf.dat = spatial.shoot(trf.dat[None], displacement=True,
-                                        return_inverse=trf.inv, **prm)
-                if trf.inv:
-                    trf.dat = trf.dat[-1]
-            else:
-                if trf.square:
-                    trf.dat.mul_(0.5)
-                trf.dat = spatial.exp(trf.dat[None], displacement=True,
-                                      inverse=trf.inv)
-            trf.dat = trf.dat[0]  # drop batch dimension
+            trf.dat = helpers.exponentiate_velocity(
+                trf.dat, trf.affine, json=trf.json,
+                square=trf.square, inv=trf.inv)
             trf.inv = False
             trf.square = False
             trf.order = 1
