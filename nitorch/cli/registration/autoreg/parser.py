@@ -28,7 +28,7 @@ usage:
                                     (edge-based, for strong intensity non-uniformity)
         -dice, --dice               Dice coefficients (for soft/hard segments)
             -l, --labels *LABELS        Labels to use (default: all except 0)
-            -w, --weights *WEIGHTS     Label-wise weights (default: False)
+            -w, --weights *WEIGHTS      Label-wise weights (default: False)
         -cat,  --categorical        Categorical cross-entropy (for soft segments)
         -oth, --other               Not a loss -> other images to warp at the end.
     Note that the -fix and -mov tags must be placed directly after their 
