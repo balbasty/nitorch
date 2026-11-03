@@ -5,6 +5,7 @@ from torch.nn import functional as F
 from nitorch import core
 from nitorch.core import utils, math, py
 from nitorch.core.py import make_list
+from nitorch.core import bounds
 from ._affine import affine_conv
 
 
@@ -129,6 +130,17 @@ def _normalize_padding(padding):
         return npadding
 
 
+def _is_zero_bound(bound):
+    """True if `bound` (any spelling, or a list of them) means zero padding."""
+    try:
+        bound = bounds.to_nitorch(bound)
+    except (ValueError, TypeError, AttributeError):
+        return False
+    if isinstance(bound, (list, tuple)):
+        return len(bound) > 0 and all(b == 'zero' for b in bound)
+    return bound == 'zero'
+
+
 def pad_same(dim, tensor, kernel_size, dilation=1, bound='zero', value=0):
     """Applies a padding that preserves the input dimensions when
     followed by a convolution-like (i.e. moving window) operation.
@@ -228,7 +240,7 @@ def conv(dim, tensor, kernel, bias=None, stride=1, padding=0, bound='zero',
                 raise ValueError('Cannot compute "same" padding '
                                  'for even-sized kernels.')
             padding[i] = dilation[i] * (kernel_size[i] // 2)
-    if bound != 'zero' and sum(padding) > 0:
+    if not _is_zero_bound(bound) and sum(padding) > 0:
         tensor = core.utils.pad(tensor, padding, bound, side='both')
         padding = 0
 
@@ -367,7 +379,7 @@ def pool(dim, tensor, kernel_size=3, stride=None, dilation=1, padding=0,
     padding0 = padding
     sum_padding = sum([sum(p) if isinstance(p, (list, tuple)) else p
                        for p in padding])
-    if ((not use_torch) or (bound != 'zero' and sum_padding > 0)
+    if ((not use_torch) or (not _is_zero_bound(bound) and sum_padding > 0)
             or any(isinstance(p, (list, tuple)) for p in padding)):
         # torch implementation -> handles zero-padding
         # our implementation -> needs explicit padding
