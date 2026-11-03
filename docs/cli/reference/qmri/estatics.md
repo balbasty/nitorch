@@ -81,12 +81,12 @@ These options describe one contrast and apply to the `-c` they follow.
 | Option               | Value                          | Description | Default |
 | -------------------- | ------------------------------ | ----------- | ------- |
 | `--likelihood`       | `{gauss,chi}`                  | Noise model of the magnitude images. `gauss` is a Gaussian model; `chi` is a non-central chi model, better suited to low signal-to-noise ratios, whose degrees of freedom are estimated from the data. | `gauss` |
-| `--register`         | `[yes&vert;no]`                     | Rigidly align the contrasts before fitting. Alone, the flag means `yes`. Writes the registered echoes, see [Output files](#output-files). | `no` |
+| `--register`         | `[yes|no]`                     | Rigidly align the contrasts before fitting. Alone, the flag means `yes`. Writes the registered echoes, see [Output files](#output-files). | `no` |
 | `--recon-space`      | `{mean,NAME,INDEX}`            | Space in which the maps are computed. `mean` is the mean space of all contrasts, with a field of view that covers all of them. Otherwise, give the name of a contrast (as set after `-c`) or its zero-based index to use its orientation and shape. | `mean` |
 | `--regularization`   | `{no,tkh,tv,jtv}`              | Penalty on the maps: none, Tikhonov (membrane energy), total variation, or joint total variation across all maps. See [Regularisation](#regularisation). | `jtv` |
 | `--lam-intercept`    | `VAL...`                       | Penalty weight of the log-intercepts. Give one value per contrast, or fewer values to repeat the last one. | `50` |
 | `--lam-decay`        | `VAL`                          | Penalty weight of the R2* map. | `0.05` |
-| `--meetup`           | `[yes&vert;no]`                     | Estimate a distortion field per contrast and correct for it. Alone, the flag means `yes`. | `no` |
+| `--meetup`           | `[yes|no]`                     | Estimate a distortion field per contrast and correct for it. Alone, the flag means `yes`. | `no` |
 | `--lam-meetup`       | `VAL`                          | Weight of the bending-energy penalty on the distortion fields. | `1e5` |
 
 ### Optimisation
