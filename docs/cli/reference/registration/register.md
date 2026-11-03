@@ -384,7 +384,7 @@ poorly constrained affine registration from drifting.
 
 | Option                       | Value         | Description                                                                                                                                  | Default                  |
 | ---------------------------- | ------------- | -------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------ |
-| `-p`, `--position`           | `sym` &vert; `mov` &vert; `fix` | Which image the affine acts on. See [below](#position-of-the-affine). | `sym`                    |
+| `-p`, `--position`           | `sym` &vert; `mov` &vert; `fix` | Where the affine sits in the forward (fixed-to-moving) model. See [below](#position-of-the-affine). | `sym`                    |
 | `-g`, `--progressive`        | `[BOOL]`      | Initialise by progressively freeing degrees of freedom: rigid, then similitude, then affine (up to the chosen model), each on the whole pyramid. | off                      |
 | `-i`, `--input`, `--init`    | `FILE` &vert; `fov` &vert; `com` | Initial transformation: a file, or `fov` to align the centres of the fields of view, or `com` to align the centres of mass. | identity                 |
 | `-o`, `--output`             | `[PATH` &vert; `true` &vert; `false]` | Where to write the affine matrix (an LTA file). `{dir}` and `{name}` are available. With no value, `true`, `yes` or `1`, the default path is used; `false`, `no` or `0` writes nothing. | `{dir}/{name}.lta`       |
@@ -396,23 +396,47 @@ poorly constrained affine registration from drifting.
 
 #### Position of the affine
 
-An affine registration between two images is only defined up to *where*
-you put the transformation: you can move the moving image onto the fixed
-image, the fixed image onto the moving image, or both halfway to a common
-space. This changes nothing about the optimum (and the matrix written to
-disk is always the full fixed-to-moving transformation), but it changes how
-the loss is evaluated and where the output images live.
+The forward model of `register` always maps coordinates of the fixed image to
+coordinates of the moving image. When the registration has both an affine and
+a nonlinear component, the position says *where the affine sits* in that
+composition. With $A$ the affine (the matrix written to `{name}.lta`, which is
+always the full fixed-to-moving transformation) and $\varphi$ the nonlinear
+transformation, the model is:
 
-- `sym` (default) applies half of the transformation to each image, towards
-  a mid-point space, so that neither image is privileged. Swapping the roles
-  of the fixed and moving images gives the inverse transformation.
-  This is the best choice when the two images play comparable roles.
-- `mov` resamples the moving image into the space of the fixed image.
-- `fix` does the opposite.
+| Position        | Forward model                                                   | The nonlinear field acts...        |
+| --------------- | --------------------------------------------------------------- | ---------------------------------- |
+| `mov`           | $x \mapsto A\bigl(\varphi(x)\bigr)$                            | on fixed-image (world) coordinates |
+| `fix`           | $x \mapsto \varphi\bigl(A(x)\bigr)$                            | in the frame of the moving image   |
+| `sym` (default) | $x \mapsto A^{1/2}\bigl(\varphi(A^{1/2}(x))\bigr)$              | in a frame halfway between the two |
 
-The position also determines the content of the `{base}.moved{ext}` files:
-the image not being moved keeps its orientation matrix, and the other one is
-adjusted. With `sym`, both images end up in the halfway space.
+The position does **not** change where the loss is computed: the moving image
+is always pulled through the forward model onto the voxel grid of the fixed
+image, and the loss is evaluated there. The only exception is a symmetric loss
+(`-s` on a loss, see above), which also warps the fixed image into the moving
+space through the inverse model and adds the same loss there. This is
+independent of the position.
+
+- **Affine-only registration.** The three positions describe the same
+  transformation ($A^{1/2}A^{1/2}=A$), so they have the same optimum. They
+  only differ in the parameterisation and in the headers of the `.moved`
+  outputs (see below).
+- **With a nonlinear component.** The position changes the model, because it
+  changes the frame in which the nonlinear field lives, and hence how it is
+  regularised. The results can therefore differ. It also determines the order
+  in which the transformations must be chained when applying them with
+  `reslice` (see [Applying the transformations](#applying-the-transformations)).
+- `sym` makes the *model* symmetric: its inverse has the same structure, with
+  the roles of the fixed and moving images swapped. Combined with a symmetric
+  loss (`-s`), it gives a fully symmetric registration. It is the best choice
+  when the two images play comparable roles.
+
+The position also determines the orientation matrices written to the
+`{base}.moved{ext}` files (this concerns the output headers only, not the
+loss). With `mov`, the orientation matrix of the moving image is adjusted by
+the affine and the fixed image keeps its own. With `fix`, it is the other way
+around. With `sym`, both images receive half of the affine, and end up in the
+halfway space. Full reslicing (`-r`) is not affected by the position: the
+output is always on the grid of the other image.
 
 ### Nonlinear: `@nonlin`
 
@@ -634,9 +658,11 @@ whenever possible. With a purely affine registration, the voxel data are
 copied unchanged and only the orientation matrix in the header is modified;
 the result can be viewed on top of the other image, without any
 interpolation. If a nonlinear transformation is present, the image is
-resampled on its own grid. With `sym`, both the fixed and the moving
-images are moved halfway to each other. **Full reslicing** (`-r`), in
-contrast, always produces an image on the grid of the other image: the
+resampled on its own grid. The position of the affine only decides which
+orientation matrices are modified: the moving image's with `mov`, the fixed
+image's with `fix`, and half of the affine on each with `sym`. **Full
+reslicing** (`-r`), in contrast, always produces an image on the grid of the
+other image: the
 moving image on the fixed grid, and the fixed image on the moving grid.
 
 ## Applying the transformations

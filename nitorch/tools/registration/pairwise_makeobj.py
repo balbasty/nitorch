@@ -132,10 +132,12 @@ def make_affine(basis='rigid', position='symmetric', penalty=None, init=None):
     basis : {'translation', 'rotation', 'rigid', 'similitude', 'affine'}, default='rigid'
         Affine basis name
     position : {'moving', 'fixed', 'symmetric'}, default='symmetric'
-        Which image should be rotated by this transformation.
-        If 'symmetric', both images are rotated by the transformation and
-        its inverse, towards a mean space; thereby making the model fully
-        symmetric.
+        Where the affine sits in the forward (fixed-to-moving) model.
+        If 'moving', the model is A(phi(x)); if 'fixed', it is phi(A(x));
+        if 'symmetric', half of the affine is on each side,
+        A^(1/2)(phi(A^(1/2)(x))), which makes the model symmetric.
+        The loss is always computed in fixed space (and also in moving
+        space if the loss is symmetric), whatever the position.
     penalty : float or list[float] or dict, optional
         Precision of a Gaussian prior on the Lie parameters
         (see `objects.AffineModel`). A float lambda gives the penalty
@@ -181,10 +183,12 @@ def make_affine_2d(plane, affine_ref, basis='rigid', position='symmetric',
     basis : {'translation', 'rotation', 'rigid', 'similitude', 'affine'}, default='rigid'
         Affine basis name
     position : {'moving', 'fixed', 'symmetric'}, default='symmetric'
-        Which image should be rotated by this transformation.
-        If 'symmetric', both images are rotated by the transformation and
-        its inverse, towards a mean space; thereby making the model fully
-        symmetric.
+        Where the affine sits in the forward (fixed-to-moving) model.
+        If 'moving', the model is A(phi(x)); if 'fixed', it is phi(A(x));
+        if 'symmetric', half of the affine is on each side,
+        A^(1/2)(phi(A^(1/2)(x))), which makes the model symmetric.
+        The loss is always computed in fixed space (and also in moving
+        space if the loss is symmetric), whatever the position.
 
     Returns
     -------

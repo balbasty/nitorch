@@ -47,7 +47,8 @@ for you:
 - The transformation is **rigid** (6 parameters), or a full **affine** (12
   parameters) with `-a`. There is no initialisation by progressive
   freeing of parameters, and no prior on the parameters.
-- The affine is **symmetric**: half of the transformation is applied to each
+- The affine is in the **symmetric** position: it is parameterised by its
+  square root, and half of it is applied to the header of each `.moved`
   image. The matrix written to disk is the full transformation, which maps
   fixed world coordinates to moving world coordinates, in RAS convention. See
   [Position of the affine](register.md#position-of-the-affine).
