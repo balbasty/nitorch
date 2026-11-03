@@ -244,3 +244,127 @@ def test_shoot_steps_saved_and_used_by_reslice(tmp_path, monkeypatch):
     reslice_main.exponentiate_transforms([trf])
     assert captured['steps'] == 3
     assert captured['fast'] is True
+
+
+
+# ----------------------------------------------------------------------
+#   8. @affine/@nonlin -o: bare / true -> default path, false -> none
+# ----------------------------------------------------------------------
+
+@pytest.mark.parametrize('group, default', [
+    ('@affine', '{dir}{sep}{name}.lta'),
+    ('@nonlin', '{dir}{sep}{name}.nii.gz'),
+])
+@pytest.mark.parametrize('args, expected', [
+    ([], 'default'), (['-o'], 'default'), (['-o', 'true'], 'default'),
+    (['-o', 'yes'], 'default'), (['-o', 'false'], False),
+    (['-o', 'no'], False), (['-o', 'out.ext'], 'out.ext'),
+])
+def test_transform_output_bool(group, default, args, expected):
+    options = parser.parse(['@loss', 'mse'] + IMAGES + [group] + args)
+    expected = default if expected == 'default' else expected
+    assert getattr(options, group[1:]).output == expected
+    check_options(options)
+
+
+@pytest.mark.parametrize('group', ['@affine', '@nonlin'])
+def test_transform_output_bad_template(group):
+    options = parser.parse(['@loss', 'mse'] + IMAGES + [group, '-o', '{x}'])
+    with pytest.raises(ParseError, match=f'{group} -o'):
+        check_options(options)
+
+
+def test_affine_output_false_writes_nothing(tmp_path, monkeypatch):
+    # before the fix, `-o false` wrote a file named `false` in the cwd
+    monkeypatch.chdir(tmp_path)
+    rng = np.random.default_rng(0)
+    fix = write(str(tmp_path / 'fix.nii.gz'), rng.random([12, 12, 12]))
+    mov = write(str(tmp_path / 'mov.nii.gz'), rng.random([12, 12, 12]))
+    before = set(os.listdir(tmp_path))
+    _cli(['@loss', 'mse', '@@fix', fix, '-o', 'false', '@@mov', mov,
+          '-o', 'false', '@affine', 'translation', '-o', 'false',
+          '@@optim', 'gd', '-n', '1', '@optim', '-n', '1',
+          '@pyramid', '-l', '0'])
+    assert set(os.listdir(tmp_path)) == before
+
+
+# ----------------------------------------------------------------------
+#   9. simplereg / affreg: false outputs, --bound nearest
+# ----------------------------------------------------------------------
+
+def _simplereg(*args):
+    from nitorch.cli.registration.simplereg.parser import parser as sparser
+    from nitorch.cli.registration.simplereg.cli import build_register_args
+    options = sparser.parse(['-m', 'mov.nii', '-f', 'fix.nii', *args])
+    return parser.parse(build_register_args(options))
+
+
+@pytest.mark.parametrize('flag, group', [('-a', 'affine'), ('-w', 'nonlin')])
+@pytest.mark.parametrize('value, expected', [
+    ('false', False), ('no', False), ('true', 'default'), ('x.ext', 'x.ext'),
+])
+def test_simplereg_output_false(flag, group, value, expected):
+    defaults = {'affine': '{dir}{sep}{name}.lta',
+                'nonlin': '{dir}{sep}{name}.nii.gz'}
+    options = _simplereg(flag, value)
+    expected = defaults[group] if expected == 'default' else expected
+    assert getattr(options, group).output == expected
+
+
+@pytest.mark.parametrize('bound, expected', [
+    ('nearest', 'replicate'), ('replicate', 'replicate'), ('dft', 'dft'),
+])
+def test_simplereg_bound(bound, expected):
+    options = _simplereg('--bound', bound)
+    assert options.loss[0].fix.bound == expected
+    assert options.loss[0].mov.bound == expected
+
+
+def test_affreg_output_false(monkeypatch):
+    from nitorch.cli.registration.affreg import cli as affreg_cli
+    captured = []
+    monkeypatch.setattr(affreg_cli, 'cli_register',
+                        lambda args: captured.append(args))
+    affreg_cli._cli(['-m', 'mov.nii', '-f', 'fix.nii', '-o', 'false'])
+    options = parser.parse(captured[0])
+    assert options.affine.output is False
+
+
+# ----------------------------------------------------------------------
+#   10. stray values in @loss: name the loss and the option
+# ----------------------------------------------------------------------
+
+def test_loss_stray_value_after_flag():
+    with pytest.raises(ParseError, match=r"@loss lcc: unexpected value '2' "
+                                         r"after -s/--symmetric.*--stride"):
+        parser.parse(['@loss', 'lcc', '-s', '2'] + IMAGES)
+
+
+def test_loss_stray_value_after_factor():
+    with pytest.raises(ParseError, match=r"@loss mse: unexpected value 'x'"):
+        parser.parse(['@loss', 'mse', '3', 'x'] + IMAGES)
+
+
+def test_loss_no_stray_value():
+    options = parser.parse(['@loss', 'lcc', '--stride', '2', '-s'] + IMAGES
+                           + ['@loss', 'mse'] + IMAGES + ['@affine'])
+    assert options.loss[0].stride in (2, [2])
+    assert options.loss[0].symmetric
+    assert options.loss[1].name == 'mse'
+
+
+# ----------------------------------------------------------------------
+#   11. sqz -w auto: rejected (no automatic weighting)
+# ----------------------------------------------------------------------
+
+def test_sqz_weight_auto_rejected():
+    options = parser.parse(['@loss', 'sqz', '-w', 'auto'] + IMAGES)
+    with pytest.raises(ParseError, match='sqz -w/--weight: `auto`'):
+        check_options(options)
+
+
+@pytest.mark.parametrize('args, expected', [([], 1), (['-w', '2'], 2.)])
+def test_sqz_weight(images, args, expected):
+    options, loss = built_loss(images, 'sqz', *args)
+    check_options(options)
+    assert loss.lam == expected

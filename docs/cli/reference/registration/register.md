@@ -262,7 +262,7 @@ and before `@@fix`/`@@mov`.
 | `mi`           | `-n`, `--order`         | `N [N]`            | Order of the B-spline (Parzen window) that spreads each voxel over neighbouring bins.                | `3`                |
 | `mse`          | `-w`, `--weight`        | `VAL` &vert; `auto` | Precision (inverse variance) of the noise. With `auto`, it is estimated from the data.              | `auto`             |
 | `mad`, `tuk`   | `-w`, `--weight`        | `VAL` &vert; `auto` | Precision of the residuals. With `auto`, it is estimated from the data.                             | `auto`             |
-| `sqz`          | `-w`, `--weight`        | `VAL` &vert; `auto` | Precision used to weight the product.                                                                | `1`                |
+| `sqz`          | `-w`, `--weight`        | `VAL`              | Precision used to weight the product. There is no automatic weighting: `auto` is an error.          | `1`                |
 | `mad`, `tuk`   | `-j`, `--joint`         |                    | Use a single weight map shared by all channels, rather than one per channel.                         |                    |
 | `lcc`          | `-p`, `--patch`         | `VAL... [UNIT]`    | Size of the local window, one value or one per axis. The unit is `vox`, `mm` or `pct` (percentage of the image size). With the default Gaussian kernel the size is a FWHM; with a square kernel it is the full width. | `10 pct`           |
 | `lcc`          | `--stride`              | `VAL...`           | Distance between consecutive windows, in voxels. Larger values are faster.                           | `1`                |
@@ -283,6 +283,8 @@ and before `@@fix`/`@@mov`.
     subsampled by two.
 
 `--stride` has no short tag: in every loss, `-s` is the symmetric flag.
+Because that flag takes no value, `lcc -s 2` is an error: the message names
+the loss and the option before the stray value, and suggests `--stride`.
 
 ### Image options (`@@fix`, `@@mov`)
 
@@ -385,7 +387,7 @@ poorly constrained affine registration from drifting.
 | `-p`, `--position`           | `sym` &vert; `mov` &vert; `fix` | Which image the affine acts on. See [below](#position-of-the-affine). | `sym`                    |
 | `-g`, `--progressive`        | `[BOOL]`      | Initialise by progressively freeing degrees of freedom: rigid, then similitude, then affine (up to the chosen model), each on the whole pyramid. | off                      |
 | `-i`, `--input`, `--init`    | `FILE` &vert; `fov` &vert; `com` | Initial transformation: a file, or `fov` to align the centres of the fields of view, or `com` to align the centres of mass. | identity                 |
-| `-o`, `--output`             | `PATH`        | Where to write the affine matrix (an LTA file). `{dir}` and `{name}` are available.                                                          | `{dir}/{name}.lta`       |
+| `-o`, `--output`             | `[PATH` &vert; `true` &vert; `false]` | Where to write the affine matrix (an LTA file). `{dir}` and `{name}` are available. With no value, `true`, `yes` or `1`, the default path is used; `false`, `no` or `0` writes nothing. | `{dir}/{name}.lta`       |
 | `-t`, `--translation-penalty`| `F`           | Relative weight of the prior on translations (multiplies `FACTOR`).                                                                          | `1`                      |
 | `-r`, `--rotation-penalty`   | `F`           | Relative weight of the prior on rotations.                                                                                                   | `1`                      |
 | `-z`, `--zoom-penalty`       | `F`           | Relative weight of the prior on zooms.                                                                                                       | `1`                      |
@@ -463,7 +465,7 @@ weights of the `--lame` option.
 | `-p`, `--pad`               | `VAL... [UNIT]`     | Pad the field of view of the lattice, by a percentage (`%`, the default unit) or a distance (`mm`).                                  | `0 %`              |
 | `-f`, `--fov`               | `NAME...`           | Names of the images (see `--name` of `@@fix`/`@@mov`) whose fields of view define the lattice. Images without a `--name` are named after their first filename. | all images         |
 | `-i`, `--input`, `--init`   | `FILE`              | Initial field, or a scalar image whose grid defines the lattice of a zero-initialised field.                                         | zeros on the mean space |
-| `-o`, `--output`            | `PATH`              | Where to write the field. `{dir}` and `{name}` are available.                                                                        | `{dir}/{name}.nii.gz` |
+| `-o`, `--output`            | `[PATH` &vert; `true` &vert; `false]` | Where to write the field. `{dir}` and `{name}` are available. With no value, `true`, `yes` or `1`, the default path is used; `false`, `no` or `0` writes nothing. | `{dir}/{name}.nii.gz` |
 | `-h`, `--hessian`           | `[PATH]`            | Also write the Hessian of the matching term at the solution (a map of local confidence). With no path, `{dir}/{name}_hessian.nii.gz`. Used to weight [`vopt`](vopt.md). | not written        |
 | `-2d`                       | `[AXIS]`            | Restrict the deformation to the plane normal to `AXIS`. Without a value, axis 2.                                                     | 3D                 |
 

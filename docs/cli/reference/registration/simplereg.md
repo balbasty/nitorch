@@ -127,7 +127,7 @@ Applied to both images. When omitted, the default of `register` is used.
 | ----------------- | -------------- | --------------------------------------------------------------------------------------------------------- | -------------- |
 | `--fwhm`          | `VAL [UNIT]`   | Smooth the images (FWHM), in `vox` or `mm`.                                                               | `0` (none)     |
 | `--pad`           | `VAL [UNIT]`   | Pad the images, in `vox` or `mm`.                                                                         | `0` (none)     |
-| `--bound`         | `BND`          | Boundary condition: `dct2`, `dct1`, `dst2`, `dst1`, `dft`, `zero` or `nearest`.                           | `dct2`         |
+| `--bound`         | `BND`          | Boundary condition: `dct2`, `dct1`, `dst2`, `dst1`, `dft`, `zero`, `replicate` or `nearest` (also `border`), the last two being the same condition. | `dct2`         |
 | `--order`         | `N`            | Interpolation order (0 to 7).                                                                             | `1`            |
 | `--rescale`       | `[MN] MX`      | Rescale the images so that their `MN`/`MX` percentiles map to (0, 1). `--rescale 0` disables rescaling.   | `0 95`         |
 | `--discretize`    | `[N]`          | Discretize the images into `N` bins (`256` if no value).                                                  | not discretized |
@@ -136,8 +136,8 @@ Applied to both images. When omitted, the default of `register` is used.
 
 | Option                | Value                 | Description                                                                                  | Default                    |
 | --------------------- | --------------------- | -------------------------------------------------------------------------------------------- | -------------------------- |
-| `-a`, `--output-affine` | `PATH`              | Where to write the affine. `{dir}` is the directory of the fixed image, `{name}` the model. | `{dir}/{name}.lta`         |
-| `-w`, `--output-warp` | `PATH`                | Where to write the nonlinear field.                                                          | `{dir}/{name}.nii.gz`      |
+| `-a`, `--output-affine` | `PATH` &vert; `false` | Where to write the affine. `{dir}` is the directory of the fixed image, `{name}` the model. `false` disables it. | `{dir}/{name}.lta`         |
+| `-w`, `--output-warp` | `PATH` &vert; `false` | Where to write the nonlinear field. `false` disables it.                                                       | `{dir}/{name}.nii.gz`      |
 | `-x`, `--moved`       | `PATH` &vert; `false` | Where to write the moved moving image (minimal reslicing). `false` disables it.              | `{dir}/{base}.moved{ext}`  |
 | `-r`, `--resliced`    | `PATH`                | Where to write the moving image resliced on the fixed image grid.                            | not written                |
 
