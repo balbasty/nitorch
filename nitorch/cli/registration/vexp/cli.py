@@ -37,7 +37,7 @@ def _cli(args):
         vexp(fname, type=options.type, unit=options.unit,
              inverse=options.inv,
              bound=options.bound, steps=options.nb_steps, output=ofname,
-             device=options.device)
+             device=options.device, inversion=options.inversion)
 
 
 commands['vexp'] = cli

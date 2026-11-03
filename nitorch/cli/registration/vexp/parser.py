@@ -11,6 +11,7 @@ class Vexp(Structure):
     bound: str = 'dft'
     inv: bool = False
     nb_steps: int = 8
+    inversion: str = None
     device: str = 'cpu'
     output: list = '{dir}{sep}{base}.vexp{ext}'
 
@@ -23,6 +24,9 @@ usage:
     -t,   --type TYPE       {d[isplacement], t[ransformation]} (default: d)
     -u,   --unit UNIT       {v[oxel], mm} (default: v)
     -inv, --inverse         Generate the inverse transform (default: false)
+    --inversion METHOD      {default, push, newton}: how the inverse is computed
+                            (default: from <vel>.json, as written by
+                            `register @nonlin svf --inversion`, else default)
     -n,   --nb-steps STEPS  Number of scaling and squaring steps (default: 8)
     -b,   --bound BND       {dft, dct1, dct2, dst1, dst2, zero}, default=dft
     -o,   --output *FILES   Output filenames (default: {dir}/{base}.vexp{ext})
@@ -69,6 +73,12 @@ def parse(args):
                     raise ParseError(f'Expected a boolean after {tag}, '
                                      f'got {val}')
             struct.inv = val
+        elif tag == '--inversion':
+            cli.check_next_isvalue(args, tag)
+            struct.inversion, *args = args
+            if struct.inversion not in ('default', 'push', 'newton'):
+                raise ParseError(f'{tag} expects one of default, push, '
+                                 f'newton, got {struct.inversion}')
         elif tag in ('-o', '--output'):
             struct.output = []
             while cli.next_isvalue(args):

@@ -4,6 +4,7 @@ from nitorch.core import py, utils, linalg, fft
 from ._finite_differences import diff
 from ._regularisers import regulariser, regulariser_grid
 from ._grid import identity_grid, grid_pull, grid_push
+from ._grid_inv import grid_inv, check_inversion
 
 _default_absolute = 1e-4
 _default_membrane = 1e-3
@@ -242,8 +243,9 @@ def shoot(
     steps=8,
     fast=True,
     verbose=False,
+    inversion='default',
 ):
-    """Exponentiate a velocity field by geodesic shooting.
+    r"""Exponentiate a velocity field by geodesic shooting.
 
     Notes
     -----
@@ -280,6 +282,25 @@ def shoot(
         If True, use a faster integration scheme, which may induce
         some numerical error (the energy is not exactly preserved
         along time). Else, use the slower but more precise scheme.
+    verbose : bool, default=False
+        Print the energy at each time step.
+    inversion : {'default', 'push', 'newton'}, default='default'
+        How the forward transform (`grid`) is computed.
+
+        - 'default': accumulate the small inverse steps by
+          right-composition, $\psi \gets \psi \circ (id - v_t/T)$.
+          This first-order scheme interpolates the accumulated
+          transform at every step, so `grid` is less accurate than
+          `igrid`, and the two are not exactly inverse of each other.
+        - 'push', 'newton': only the inverse transform `igrid`
+          ($\varphi$, which is integrated more accurately) is
+          integrated, and `grid` is its numerical inverse
+          `grid_inv(igrid, method=inversion)`. 'push' (push + count +
+          regularised fill) is robust to steep warps; 'newton' refines
+          it with a few regularised Gauss-Newton steps and is the most
+          inverse-consistent. Both are slower than 'default'
+          (at 64^3, push and newton take about 2.5x and 13x the time
+          of the default shooting with `return_inverse=True`).
 
     Returns
     -------
@@ -303,6 +324,9 @@ def shoot(
     # and was distributed as part of [SPM](https://www.fil.ion.ucl.ac.uk/spm)
     # under the GNU General Public Licence (version >= 2).
 
+    inversion = check_inversion(inversion)
+    invert = inversion != 'default'
+
     vel = torch.as_tensor(vel)
     backend = utils.backend(vel)
     dim = vel.shape[-1]
@@ -323,8 +347,11 @@ def shoot(
     id = identity_grid(spatial, **backend)
     mom = mom0 = regulariser_grid(vel, **prm, bound='dft')
     vel = vel / steps
-    disp = -vel
-    if return_inverse or not fast:
+    # the inverse is needed by the exact scheme, and to compute the
+    # forward transform by inversion
+    need_inverse = return_inverse or not fast or invert
+    disp = None if invert else -vel
+    if need_inverse:
         idisp = vel.clone()
 
     for i in range(1, abs(steps)):
@@ -352,12 +379,17 @@ def shoot(
         # $\psi \gets \psi \circ (id - \tfrac{1}{T} v)$
         # JA: I found that simply using
         # $\psi \gets \psi - \tfrac{1}{T} (D \psi) v$ was not so stable.
-        disp = _pull_grid(disp, id - vel, **pull_prm).sub_(vel)
-        if return_inverse or not fast:
+        if not invert:
+            disp = _pull_grid(disp, id - vel, **pull_prm).sub_(vel)
+        if need_inverse:
             idisp += _pull_grid(vel, id + idisp, **pull_prm)
 
     if verbose:
         print('')
+    if invert:
+        # $\psi \gets \varphi^{-1}$
+        jac = mom = mom0 = vel = greens = None  # free integration buffers
+        disp = grid_inv(idisp, type='disp', bound='dft', method=inversion)
     if not displacement:
         disp += id
         if return_inverse:

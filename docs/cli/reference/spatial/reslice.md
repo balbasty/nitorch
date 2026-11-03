@@ -93,15 +93,24 @@ The file is a volume with three components (the shifts along the three axes) in 
 
 By default the three components are in **voxels** of the field's own grid. With `-u mm`, they are millimetres in world space and are converted by the orientation matrix of the field. The unit option is written right after the file name of the field, for example `-d disp.nii.gz -u mm`.
 
-The inverse (`-id`) of a displacement field has no closed form. The field is resampled to the voxel size of the output grid and inverted numerically by a regularised least-squares scheme, so the inverse is approximate, in particular where the field folds.
+The inverse (`-id`) of a displacement field has no closed form. The field is resampled to the voxel size of the output grid and inverted numerically by a regularised least-squares scheme, so the inverse is approximate, in particular where the field folds. If the displacement was written by `register @nonlin smalldef --inversion newton` and its `.json` sidecar is next to it, the inverse is refined by regularised Gauss-Newton steps, as `register` did.
 
 #### Velocity fields
 
 The file is a volume with three components in the last dimension, expressed in voxels of its own grid. It is exponentiated by scaling and squaring ([see `vexp`](vexp.md#description)) with 8 steps, to a displacement field defined on the grid of the velocity file, and then applied like a displacement field. The inverse (`-iv`) is the exponential of $-v$, which is exact up to the accuracy of scaling and squaring, unlike the inverse of a displacement field. `-v2` halves $v$ before exponentiating.
 
-A velocity file can be followed by the name of a **JSON file** with shooting parameters. The field is then taken to be an *initial velocity* and is integrated by geodesic shooting instead of by scaling and squaring. The regularisation stored in the JSON file (`absolute`, `membrane`, `bending`, `lame` and `factor`, plus the number of `steps` and the `fast` flag when present) is passed to the shooting routine, together with the voxel size of the velocity file. If you give no JSON file and a file with the same name as the velocity field and the extension `.json` exists and contains a `bending` entry, it is used automatically. Otherwise the field is a stationary velocity field.
+A velocity file can be followed by the name of a **JSON file**, as written by [`register`](../registration/register.md#outputs). Its `model` entry says what the velocity is:
+
+- With `"model": "shoot"`, or with no `model` entry at all, the field is an *initial velocity* and is integrated by geodesic shooting instead of by scaling and squaring. The regularisation stored in the file (`absolute`, `membrane`, `bending`, `lame` and `factor`, plus the number of `steps` and the `fast` flag) is passed to the shooting routine, together with the voxel size of the velocity file.
+- With `"model": "svf"`, the field is a stationary velocity field, exponentiated by scaling and squaring.
+
+The `inversion` entry (`default`, `push` or `newton`, as in [`register --inversion`](../registration/register.md#choosing-how-the-warp-is-inverted-with-inversion)) selects how inverted maps are computed. A JSON file without it behaves as before, with `default`.
+
+If you give no JSON file and a file with the same name as the velocity field and the extension `.json` exists, it is used automatically, whether it describes a shooting velocity (it contains a `bending` entry, or `"model": "shoot"`) or a stationary one (`"model": "svf"`). Otherwise the field is a stationary velocity field.
 
 **Time bounds.** A velocity field describes a path of transformations indexed by time. By convention, the moving image sits at time 0 and the fixed image at time 1. The tag `-v FILE T0 T1` applies the part of that path that goes from time `T0` to time `T1`: it turns an image at time `T0` into the image at time `T1`. The bounds default to 0 and 1, so `-v FILE 0 1` is the same as `-v FILE`. For a stationary velocity field, the transformation is exactly $\exp\big((T_1 - T_0)\,v\big)$. For a shooting velocity (one with a JSON file), the field is integrated by geodesic shooting over the interval from `T0` to `T1`. Bounds outside $[0, 1]$ are allowed and extrapolate the path, with the same loss of accuracy as for larger velocities.
+
+The inversion method is applied to each map as it is built, exactly as the model builds it at $t=1$, and before the maps are composed; it is not applied to the composed interval map. For a shooting velocity, only the forward map $\varphi_{T_1}$ is inverted (the inverse is integrated directly). For a stationary velocity field, the maps of negative time, the exponentials of $-tv$, are the ones that are inverted. With `default`, nothing changes.
 
 The bounds follow the velocity file, and the JSON file if there is one, which must come first. After the velocity file, a number is read as a time bound and anything else as the JSON file. Give either no bounds or exactly two. The `.json` file next to the velocity field is still found automatically when you give bounds without a JSON file.
 

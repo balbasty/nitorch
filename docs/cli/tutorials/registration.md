@@ -202,6 +202,7 @@ principle, invertible: it does not fold the brain onto itself, and its inverse
 is the flow along the opposite velocity. The other models are `shoot`
 (geodesic shooting) and `smalldef` (a plain displacement field, which is not
 constrained to be invertible).
+With any of these models, the option `--inversion {default,push,newton}` controls how the side of the warp that is not computed directly is inverted. `--inversion newton` makes the forward and inverse warps of `shoot` much more accurate inverses of each other on steep deformations, at a noticeable cost; see [its description](../reference/registration/register.md#choosing-how-the-warp-is-inverted-with-inversion).
 
 Because the nonlinear field has many more degrees of freedom than the affine
 matrix, it is *regularised*: the registration is penalised for deformations

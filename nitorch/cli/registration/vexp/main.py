@@ -1,11 +1,11 @@
 from nitorch import spatial, io
-from nitorch.core import py
+from nitorch.core import py, utils
 import torch
 import os
 
 
 def vexp(inp, type='displacement', unit='voxel', inverse=False,
-         bound='dft', steps=8, device=None, output=None):
+         bound='dft', steps=8, device=None, output=None, inversion=None):
     """Exponentiate a stationary velocity fields.
 
     Parameters
@@ -28,6 +28,13 @@ def vexp(inp, type='displacement', unit='voxel', inverse=False,
         Number of scaling and squaring steps.
     device : str, optional
         Device to use.
+    inversion : {'default', 'push', 'newton'}, optional
+        How the inverse field is computed (if `inverse`).
+        'default': exponentiate the negated velocity;
+        'push', 'newton': numerically invert the forward field
+        (`spatial.grid_inv`), as `register @nonlin svf --inversion`.
+        If None, read it from the sidecar `<inp>.json` written by
+        `nitorch register` (if any), else 'default'.
     output : str, optional
         Output filename(s).
         If the input is not a path, the unstacked data is not written
@@ -64,10 +71,30 @@ def vexp(inp, type='displacement', unit='voxel', inverse=False,
     dat = dat.to(device=device)
     aff = aff.to(device=device)
 
+    # inversion method
+    if inversion is None:
+        inversion = 'default'
+        if fname:
+            from ..helpers import find_shoot_json, load_sidecar_model
+            sidecar = find_shoot_json(fname)
+            if sidecar:
+                model, sidecar_inversion = load_sidecar_model(sidecar)
+                if model == 'svf':
+                    inversion = sidecar_inversion
+    inversion = spatial.check_inversion(inversion)
+
     # exponentiate
     displacement = (type.lower()[0] == 'd')
-    dat = spatial.exp(dat[None], inverse=inverse, steps=steps, bound=bound,
-                      displacement=displacement)[0]
+    if inverse and inversion != 'default':
+        dat = spatial.exp(dat[None], steps=steps, bound=bound,
+                          displacement=True)[0]
+        dat = spatial.grid_inv(dat, type='disp', bound=bound,
+                               method=inversion)
+        if not displacement:
+            dat += spatial.identity_grid(dat.shape[:-1], **utils.backend(dat))
+    else:
+        dat = spatial.exp(dat[None], inverse=inverse, steps=steps,
+                          bound=bound, displacement=displacement)[0]
     if unit == 'mm':
         if displacement:
             # displacements are vectors: only the linear part applies

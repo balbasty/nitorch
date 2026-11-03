@@ -164,11 +164,11 @@ def write_data(options):
                 if trf.inv:
                     vx0 = spatial.voxel_size(mat)
                     vx1 = spatial.voxel_size(target.affine.to(**backend))
-                    factor = vx0 / vx1
+                    factor = (vx0 / vx1).tolist()
                     disp, mat = spatial.resize_grid(trf.dat[None], factor,
                                                     affine=mat,
                                                     interpolation=trf.order)
-                    disp = spatial.grid_inv(disp[0], type='disp')
+                    disp = helpers.invert_displacement(disp[0], trf.file)
                     order = 1
                 else:
                     disp = trf.dat
