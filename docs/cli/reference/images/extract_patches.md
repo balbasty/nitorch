@@ -50,6 +50,8 @@ file name template can use these numbers, as described in
 | ------ | ---------------------------------------------------------------- |
 | `FILE` | The input volume. Exactly one file; it must come before options. |
 
+A bare `--` ends option parsing, and the single argument after it is the input volume, which lets its name start with a dash: `nitorch extract_patches -n 32 -- -odd.nii`.
+
 ## Options
 
 | Option             | Value          | Description                                                                                                                                                       | Default                                    |

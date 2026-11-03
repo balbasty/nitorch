@@ -706,6 +706,8 @@ nitorch reslice FLAIR.nii.gz -l2 affine.lta -v svf.nii.gz -l2 affine.lta \
     it with `-r` at registration time and skip the extra step. The recipes
     above are for other images that were not part of the registration.
 
+A bare `--` is not supported, since `register` has no positional inputs: it is an error. Write a file name that starts with a dash as `./-name`.
+
 ## Global options
 
 These must precede the first group.

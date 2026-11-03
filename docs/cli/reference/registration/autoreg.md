@@ -162,6 +162,8 @@ nitorch autoreg -all -nit 200 -mi -fix ... -mov ... -aff
 `autoreg` has no positional arguments. Files are given in `-fix`, `-mov` and
 `-init` options.
 
+A bare `--` adds the arguments that follow it to the `-fix` or `-mov` file list just before it, or to the value of a preceding `-o` or `-r`, so that file names can start with a dash. Other options need `./-name`.
+
 ## Options
 
 ### Losses

@@ -61,6 +61,8 @@ Fields are written in floating point (32 bits). Matrices are written as FreeSurf
 
 `compose` takes no positional arguments. The first argument on the command line must be a transformation tag; a value that does not belong to a tag is an error.
 
+A bare `--` completes the option just before it, so that the last value can start with a dash: `nitorch compose -l a.lta -o -- -out.nii`. Only the last option can take dash-prefixed values this way; write the others as `./-name`.
+
 ## Options
 
 ### Transformations

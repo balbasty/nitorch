@@ -91,7 +91,7 @@ Running `nitorch topup` without arguments prints the help. An unknown subcommand
 
 The short option `-m` means `--mask`, and `-j` means `--modulation`.
 
-Options can be written before or after the positional inputs. The value of `-j` and `-d` is optional: when present, it must be one of `yes`, `no`, `true`, `false`, `1`, `0`, `on` or `off`. Any other word following the flag is treated as the next argument, and the flag means `yes`. For example, `topup fit -d pos.nii neg.nii` fits a diffeomorphic model. Options that take a list of values, on the other hand, still consume everything up to the next option, so give them after the inputs.
+Options can be written before or after the positional inputs. The value of `-j` and `-d` is optional: when present, it must be one of `yes`, `no`, `true`, `false`, `1`, `0`, `on` or `off`. Any other word following the flag is treated as the next argument, and the flag means `yes`. For example, `topup fit -d pos.nii neg.nii` fits a diffeomorphic model. Options that take a list of values, on the other hand, still consume everything up to the next option, so give them after the inputs, or end option parsing with `--` and write the inputs after it: `topup fit -p 100 -- pos.nii neg.nii`, `topup apply -p a b -- dist.nii`.
 
 ### Optimisation
 
