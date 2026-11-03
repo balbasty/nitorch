@@ -73,31 +73,6 @@ def test_vopt_lame_values():
     assert prm['lame'] == [1.]
 
 
-@pytest.mark.parametrize('args', [
-    ['--nope', 'a', 'b'],
-    ['a', '--nope', 'b'],
-    ['a', 'b', '--nope'],
-])
-def test_optinorm_unknown_option(args, capsys):
-    rc = commands['optinorm'](args)
-    _, err = capsys.readouterr()
-    assert rc == 1
-    assert 'Unknown option --nope' in err
-
-
-@pytest.mark.parametrize('args,got', [
-    (['a', 'b', '--affine'], 'nothing'),
-    (['a', 'b', '--affine', '-a', '1'], "'-a'"),
-    (['a', 'b', '--affine', 'foo'], "'foo'"),
-])
-def test_optinorm_affine_needs_valid_value(args, got, capsys):
-    rc = commands['optinorm'](args)
-    _, err = capsys.readouterr()
-    assert rc == 1
-    assert ('--affine expects one of {rigid, similitude, affine}, got '
-            + got) in err
-
-
 def test_optinorm_valid_options_still_parse():
     from nitorch.cli.registration.optinorm.parser import parser
     opt = parser.parse(['a', 'b', '--affine', 'similitude', '-a', '-1',

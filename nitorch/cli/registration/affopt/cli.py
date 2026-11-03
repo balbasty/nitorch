@@ -1,7 +1,7 @@
 import sys
 
 from nitorch.cli.cli import commands
-from nitorch.core.cli import ParseError
+from nitorch.core.cli import ParseError, pop_values
 from nitorch.io.transforms import loadf, savef
 from nitorch.spatial import optimal_affine
 
@@ -102,34 +102,16 @@ def parse(args):
     inputs = {}
     output = log = affine = similitude = rigid = None
 
-    tags = (
-        '-i', '--input',
-        '-o', '--output',
-        '-l', '--lie', '--log',
-        '-a', '--aff', '--affine',
-        '-s', '--sim', '--similitude',
-        '-r', '--rig', '--rigid'
-    )
-
     while args:
         tag = args.pop(0)
         if tag in ('-h', '--help'):
             raise AskForHelp
         elif tag in ('-i', '--input'):
-            fix = args.pop(0)
-            if fix in tags:
-                raise ParseError(f'Expected <fix> <mov> <path> after {tag}')
-            mov = args.pop(0)
-            if mov in tags:
-                raise ParseError(f'Expected <fix> <mov> <path> after {tag}')
-            path = args.pop(0)
-            if path in tags:
-                raise ParseError(f'Expected <fix> <mov> <path> after {tag}')
+            fix, mov, path = pop_values(
+                args, '-i/--input', 3, names='<fix> <mov> <path>')
             inputs[(fix, mov)] = path
         elif tag in ('-o', '--output'):
-            out = args.pop(0)
-            if out in tags:
-                raise ParseError(f'Expected <path> after {tag}')
+            out, = pop_values(args, '-o/--output', 1, names='<path>')
             if output is not None:
                 raise ParseError(f'Max one {tag} accepted')
             output = out

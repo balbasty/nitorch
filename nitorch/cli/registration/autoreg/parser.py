@@ -133,8 +133,9 @@ examples:
 """
 
 
-class ParseError(RuntimeError):
-    pass
+# Shared with other nitorch parsers (so that `pop_values` errors are
+# caught as parse errors)
+from nitorch.core.cli import ParseError, pop_values  # noqa: E402
 
 # --------------------
 #   DEFINE MAIN TAGS
@@ -302,12 +303,11 @@ def parse_file(args, opt):
             # (lin + nonlin applied, final space = target space)
             args, opt.resliced = parse_image_output(args, tag)
         elif tag in ('-inter', '--interpolation'):
-            check_next_isvalue(args, tag)
-            opt.interpolation, *args = args
-            opt.interpolation = int(opt.interpolation)
+            opt.interpolation, = pop_values(
+                args, '-inter/--interpolation', 1, int, istag=istag)
         elif tag in ('-bnd', '--bound'):
-            check_next_isvalue(args, tag)
-            opt.bound, *args = args
+            opt.bound, = pop_values(
+                args, '-bnd/--bound', 1, istag=istag)
         elif tag in ('-ex', '--extrapolate'):
             opt.extrapolate = True
         elif tag in ('-pyr', '--pyramid'):
@@ -340,12 +340,11 @@ def parse_moving_and_target(args, opt):
             opt.fixed = struct.FixedImageFile()
             args = parse_file(args, opt.fixed)
         elif tag in ('-inter', '--interpolation'):
-            check_next_isvalue(args, tag)
-            opt.interpolation, *args = args
-            opt.interpolation = int(opt.interpolation)
+            opt.interpolation, = pop_values(
+                args, '-inter/--interpolation', 1, int, istag=istag)
         elif tag in ('-bnd', '--bound'):
-            check_next_isvalue(args, tag)
-            opt.bound, *args = args
+            opt.bound, = pop_values(
+                args, '-bnd/--bound', 1, istag=istag)
         elif tag in ('-ex', '--extrapolate'):
             opt.extrapolate = True
         elif tag in ('-pyr', '--pyramid'):
@@ -370,22 +369,19 @@ def parse_moving_and_target(args, opt):
                 val, *args = args
                 opt.patch.append(int(val))
         elif isinstance(opt, struct.MILoss) and tag in ('-f', '--fwhm'):
-            check_next_isvalue(args, tag)
-            opt.fwhm, *args = args
-            opt.fwhm = float(opt.fwhm)
+            opt.fwhm, = pop_values(
+                args, '-f/--fwhm', 1, float, istag=istag)
         elif isinstance(opt, struct.MILoss) and tag in ('-b', '--bins'):
-            check_next_isvalue(args, tag)
-            opt.bins, *args = args
-            opt.bins = int(opt.bins)
+            opt.bins, = pop_values(
+                args, '-b/--bins', 1, int, istag=istag)
         elif isinstance(opt, struct.MILoss) and tag in ('-t', '--threshold'):
-            check_next_isvalue(args, tag)
-            opt.threshold, *args = args
-            opt.threshold = float(opt.threshold)
+            opt.threshold, = pop_values(
+                args, '-t/--threshold', 1, float, istag=istag)
         elif isinstance(opt, struct.MILoss) and tag in ('-n', '--order'):
-            check_next_isvalue(args, tag)
-            opt.order, *args = args
-            if opt.order != 'inf':
-                opt.order = int(opt.order)
+            opt.order, = pop_values(
+                args, '-n/--order', 1, istag=istag,
+                convert=lambda x: x if x == 'inf' else int(x),
+                names="<int> or 'inf'")
         elif isinstance(opt, struct.DiceLoss) and tag in ('-w', '--weights'):
             opt.weights = True
             while next_isvalue(args):
@@ -457,20 +453,17 @@ def parse_transform(args, options):
                 optreg.factor = (factor[0] if not islinelastic else factor)
             opt.losses.append(optreg)
         elif tag in ('-init', '--init'):
-            check_next_isvalue(args, tag)
-            opt.init, *args = args
+            opt.init, = pop_values(
+                args, '-init/--init', 1, istag=istag)
         elif tag in ('-lr', '--learning-rate'):
-            check_next_isvalue(args, tag)
-            opt.lr, *args = args
-            opt.lr = float(opt.lr)
+            opt.lr, = pop_values(
+                args, '-lr/--learning-rate', 1, float, istag=istag)
         elif tag in ('-wd', '--weight-decay'):
-            check_next_isvalue(args, tag)
-            opt.weight_decay, *args = args
-            opt.weight_decay = float(opt.weight_decay)
+            opt.weight_decay, = pop_values(
+                args, '-wd/--weight-decay', 1, float, istag=istag)
         elif tag in ('-stop', '--stop'):
-            check_next_isvalue(args, tag)
-            opt.stop, *args = args
-            opt.stop = float(opt.stop)
+            opt.stop, = pop_values(
+                args, '-stop/--stop', 1, float, istag=istag)
         elif tag in ('-o', '--output'):
             opt.output = True
             if next_isvalue(args):
@@ -532,29 +525,25 @@ def parse_optim(args, options):
             break
         tag, *args = args
         if tag in ('-nit', '--max-iter'):
-            check_next_isvalue(args, tag)
-            opt.max_iter, *args = args
-            opt.max_iter = int(opt.max_iter)
+            opt.max_iter, = pop_values(
+                args, '-nit/--max-iter', 1, int, istag=istag)
         elif tag in ('-lr', '--learning-rate'):
-            check_next_isvalue(args, tag)
-            opt.lr, *args = args
-            opt.lr = float(opt.lr)
+            opt.lr, = pop_values(
+                args, '-lr/--learning-rate', 1, float, istag=istag)
         elif tag in ('-wd', '--weight-decay'):
-            check_next_isvalue(args, tag)
-            opt.weight_decay, *args = args
-            opt.weight_decay = float(opt.weight_decay)
+            opt.weight_decay, = pop_values(
+                args, '-wd/--weight-decay', 1, float, istag=istag)
         elif tag in ('-stop', '--stop'):
-            check_next_isvalue(args, tag)
-            opt.stop, *args = args
-            opt.stop = float(opt.stop)
+            opt.stop, = pop_values(
+                args, '-stop/--stop', 1, float, istag=istag)
         elif tag in ('-ls', '--line-search'):
             opt.ls = True
             if next_isvalue(args):
-                opt.ls, *args = args
-                opt.ls = int(opt.ls)
+                opt.ls, = pop_values(
+                    args, '-ls/--line-search', 1, int, istag=istag)
         elif isinstance(opt, struct.LBFGS) and tag in ('-h', '--history'):
-            check_next_isvalue(args, tag)
-            opt.history = int(args.pop(0))
+            opt.history, = pop_values(
+                args, '-h/--history', 1, int, istag=istag)
         else:
             args = [tag, *args]
             break
@@ -572,29 +561,25 @@ def parse_defaults(args, options):
             break
         tag, *args = args
         if tag in ('-nit', '--max-iter'):
-            check_next_isvalue(args, tag)
-            opt.max_iter, *args = args
-            opt.max_iter = int(opt.max_iter)
+            opt.max_iter, = pop_values(
+                args, '-nit/--max-iter', 1, int, istag=istag)
         elif tag in ('-lr', '--learning-rate'):
-            check_next_isvalue(args, tag)
-            opt.lr, *args = args
-            opt.lr = float(opt.lr)
+            opt.lr, = pop_values(
+                args, '-lr/--learning-rate', 1, float, istag=istag)
         elif tag in ('-stop', '--stop'):
-            check_next_isvalue(args, tag)
-            opt.stop, *args = args
-            opt.stop = float(opt.stop)
+            opt.stop, = pop_values(
+                args, '-stop/--stop', 1, float, istag=istag)
         elif tag in ('-ls', '--line-search'):
             opt.ls = True
             if next_isvalue(args):
-                opt.ls, *args = args
-                opt.ls = int(opt.ls)
+                opt.ls, = pop_values(
+                    args, '-ls/--line-search', 1, int, istag=istag)
         elif tag in ('-inter', '--interpolation'):
-            check_next_isvalue(args, tag)
-            opt.interpolation, *args = args
-            opt.interpolation = int(opt.interpolation)
+            opt.interpolation, = pop_values(
+                args, '-inter/--interpolation', 1, int, istag=istag)
         elif tag in ('-bnd', '--bound'):
-            check_next_isvalue(args, tag)
-            opt.bound, *args = args
+            opt.bound, = pop_values(
+                args, '-bnd/--bound', 1, istag=istag)
         elif tag in ('-ex', '--extrapolate'):
             opt.extrapolate = True
         elif tag in ('-o', '--output'):
@@ -664,22 +649,21 @@ def parse(args):
                 else:
                     options.progressive = bool(int(options.progressive))
         elif tag in ('-pad', '--padding'):
-            check_next_isvalue(args, tag)
-            options.pad, *args = args
-            options.pad = float(options.pad)
+            options.pad, = pop_values(
+                args, '-pad/--padding', 1, float, istag=istag)
             if next_isvalue(args):
                 options.pad_unit, *args,  = args
         elif tag in ('-v', '--verbose'):
             options.verbose = 2
             if next_isvalue(args):
-                options.verbose, *args,  = args
-                options.verbose = int(options.verbose)
+                options.verbose, = pop_values(
+                    args, '-v/--verbose', 1, int, istag=istag)
         elif tag in ('-cpu', '--cpu'):
             options.device = 'cpu'
         elif tag in ('-gpu', '--gpu'):
             options.device = 'cuda'
             if next_isvalue(args):
-                gpu, *args = args
+                gpu, = pop_values(args, '-gpu/--gpu', 1, int, istag=istag)
                 options.device = 'cuda:{:d}'.format(int(gpu))
 
         # Something went wrong

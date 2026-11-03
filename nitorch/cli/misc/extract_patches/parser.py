@@ -38,8 +38,8 @@ def parse(args):
 
     struct = Patch()
 
-    cli.check_next_isvalue(args)
-    struct.file = args.pop(0)
+    struct.file, = cli.pop_values(args, 'extract_patches', 1,
+                                  names='<file>')
 
     while args:
         if cli.next_isvalue(args):
@@ -49,11 +49,11 @@ def parse(args):
         if tag in ('-n', '--size'):
             struct.size = []
             while cli.next_isvalue(args):
-                struct.size.append(int(args.pop(0)))
+                struct.size += cli.pop_values(args, '-n/--size', 1, int)
         elif tag in ('-s', '--stride'):
             struct.stride = []
             while cli.next_isvalue(args):
-                struct.stride.append(int(args.pop(0)))
+                struct.stride += cli.pop_values(args, '-s/--stride', 1, int)
         elif tag in ('-o', '--output'):
             struct.output = []
             while cli.next_isvalue(args):

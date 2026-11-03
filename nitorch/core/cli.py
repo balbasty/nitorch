@@ -102,6 +102,91 @@ def check_next_isvalue(args, group='', symbols='-'):
         raise ParseError(f'Expected a value for tag {group} but found nothing.')
 
 
+def pop_values(args, opt, n=1, convert=None, names=None, nmin=None,
+               istag=istag):
+    """Pop the values of an option from the front of a list of arguments
+
+    Helper for hand-written parsers: it replaces raw `args.pop(0)` calls,
+    which crash with `IndexError` when the value is missing, or silently
+    take the next option as the value.
+
+    Parameters
+    ----------
+    args : list of str
+        Remaining arguments (the option tag already popped).
+        Modified in place.
+    opt : str or sequence of str
+        Option name(s), used in error messages (e.g., `('-o', '--output')`
+        or `'-o/--output'`).
+    n : int, default=1
+        (Maximum) number of values to pop.
+    convert : callable, optional
+        Conversion applied to each value (e.g., `float`).
+        A `ValueError` or `TypeError` is turned into a `ParseError`.
+    names : str or sequence of str, optional
+        Name(s) of the values, used in error messages
+        (e.g., `'<fix> <mov> <path>'` or `['<fix>', '<mov>', '<path>']`).
+        Default: `<float>`/`<int>` if `convert` is `float`/`int`,
+        else `<value>`.
+    nmin : int, optional
+        If given, pop between `nmin` and `n` values, stopping at the
+        first tag or at the end of `args`. By default, exactly `n`.
+    istag : callable, default=istag
+        Predicate telling if an argument is a tag (i.e., not a value).
+        By default, dash-prefixed and not a number, so that `-1`, `-.5`
+        or `-inf` are values.
+
+    Returns
+    -------
+    values : list
+        Popped (and converted) values.
+
+    Raises
+    ------
+    ParseError
+        If fewer than `n` (or `nmin`) values are available, e.g.
+        `-o/--output expects 1 value: <path>`, or if a conversion fails,
+        e.g. `-a/--absolute expects <float>, got 'abc'`.
+    """
+    if not isinstance(opt, str):
+        opt = '/'.join(opt)
+    if names is None:
+        names = {float: '<float>', int: '<int>'}.get(convert, '<value>')
+    if isinstance(names, str):
+        value_names = None
+    else:
+        value_names = list(names)
+        names = ' '.join(names)
+    nmin = n if nmin is None else nmin
+
+    def _count(k):
+        return f'{k} value' + ('s' if k != 1 else '')
+
+    values = []
+    while len(values) < n:
+        if not args or istag(args[0]):
+            if len(values) >= nmin:
+                break
+            if nmin == n:
+                count = _count(n)
+            elif n == float('inf'):
+                count = f'at least {_count(nmin)}'
+            else:
+                count = f'{nmin} to {n} values'
+            raise ParseError(f'{opt} expects {count}: {names}')
+        value = args.pop(0)
+        if convert is not None:
+            try:
+                value = convert(value)
+            except (ValueError, TypeError):
+                name = names
+                if value_names and len(values) < len(value_names):
+                    name = value_names[len(values)]
+                raise ParseError(f'{opt} expects {name}, got {value!r}')
+        values.append(value)
+    return values
+
+
 class Parsed(dict):
 
     def __getattr__(self, item):

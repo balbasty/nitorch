@@ -2,7 +2,7 @@ import sys
 import os.path as op
 
 from nitorch.cli.cli import commands
-from nitorch.core.cli import ParseError, isvalue
+from nitorch.core.cli import ParseError, isvalue, pop_values
 from nitorch import io
 from nitorch.spatial import optimal_svf, svf_labels, voxel_size as get_voxel_size
 from nitorch.core.py import fileparts
@@ -101,68 +101,46 @@ def parse(args):
     inputs, weights = {}, {}
     output = bound = absolute = membrane = bending = lame = None
 
-    tags = (
-        '-i', '--input',
-        '-w', '--weight',
-        '-o', '--output',
-        '-x', '--bound',
-        '-a', '--absolute',
-        '-m', '--membrane',
-        '-b', '--bending',
-        '-l', '--lame',
-    )
-
-    def _pop(opt, n, names, convert=str):
-        # pop `n` values for option `opt`, or raise a clear ParseError
-        values = []
-        for _ in range(n):
-            if not args or args[0] in tags:
-                count = f'{n} value' + ('s' if n > 1 else '')
-                raise ParseError(f'{opt} expects {count}: {names}')
-            value = args.pop(0)
-            try:
-                values.append(convert(value))
-            except ValueError:
-                raise ParseError(f'{opt} expects {names}, got {value!r}')
-        return values
-
     while args:
         tag = args.pop(0)
         if tag in ('-h', '--help'):
             raise AskForHelp
         elif tag in ('-i', '--input'):
-            fix, mov, path = _pop('-i/--input', 3, '<fix> <mov> <path>')
+            fix, mov, path = pop_values(
+                args, '-i/--input', 3, names='<fix> <mov> <path>')
             inputs[(fix, mov)] = path
         elif tag in ('-w', '--weight'):
-            fix, mov, path = _pop('-w/--weight', 3, '<fix> <mov> <path>')
+            fix, mov, path = pop_values(
+                args, '-w/--weight', 3, names='<fix> <mov> <path>')
             weights[(fix, mov)] = path
         elif tag in ('-o', '--output'):
-            out, = _pop('-o/--output', 1, '<path>')
+            out, = pop_values(args, '-o/--output', 1, names='<path>')
             if output is not None:
                 raise ParseError(f'Max one {tag} accepted')
             output = out
         elif tag in ('-x', '--bound'):
             if bound is not None:
                 raise ParseError(f'Max one {tag} accepted')
-            bound, = _pop('-x/--bound', 1, '<bound>')
+            bound, = pop_values(args, '-x/--bound', 1, names='<bound>')
         elif tag in ('-a', '--absolute'):
             if absolute is not None:
                 raise ParseError(f'Max one {tag} accepted')
-            absolute, = _pop('-a/--absolute', 1, '<float>', float)
+            absolute, = pop_values(args, '-a/--absolute', 1, float, '<float>')
         elif tag in ('-m', '--membrane'):
             if membrane is not None:
                 raise ParseError(f'Max one {tag} accepted')
-            membrane, = _pop('-m/--membrane', 1, '<float>', float)
+            membrane, = pop_values(args, '-m/--membrane', 1, float, '<float>')
         elif tag in ('-b', '--bending'):
             if bending is not None:
                 raise ParseError(f'Max one {tag} accepted')
-            bending, = _pop('-b/--bending', 1, '<float>', float)
+            bending, = pop_values(args, '-b/--bending', 1, float, '<float>')
         elif tag in ('-l', '--lame'):
             if lame is not None:
                 raise ParseError(f'Max one {tag} accepted')
-            lame = _pop('-l/--lame', 1, '<float> [<float>]', float)
+            lame = pop_values(args, '-l/--lame', 1, float, '<float> [<float>]')
             if args and isvalue(args[0]):
-                lame += _pop('-l/--lame', 1, '<float> [<float>]', float)
+                lame += pop_values(args, '-l/--lame', 1, float,
+                                   '<float> [<float>]')
         elif tag[:1] == '-':
             raise ParseError(f'Unknown tag {tag}')
         else:
