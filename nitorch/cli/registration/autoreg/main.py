@@ -621,7 +621,8 @@ def write_transforms(options):
 
     if affine:
         lin = linear_matrix(affine, affine.dat, affine.basis, affine.dim)
-        io.transforms.savef(lin.cpu(), affine.output, type=2)
+        # raw matrix written as-is (labelled physical-to-physical)
+        io.transforms.save(lin.cpu(), affine.output, type=2)
 
     if nonlin:
         affine = nonlin.affine
