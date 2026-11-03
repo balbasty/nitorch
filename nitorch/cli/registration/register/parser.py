@@ -421,22 +421,23 @@ class _LossGroup(cli.NamedGroup):
             all_stops += option.tags
         all_stops += self.groups.tags
         results = cli.Parsed()
+        nargs0 = len(args)
         results.name = self.switch.parse(args, all_stops)
         results.merge(self.positionals.parse(args, all_stops))
         options = self.options + self.suboptions.get(results.name, [])
         before = list(args)
         results.merge(options.parse(args, all_stops))
         if args and args[0] not in all_stops and not args[0].startswith('@'):
+            if len(args) == nargs0 and not args[0].startswith('-'):
+                # first value is neither a loss name nor a factor
+                # (e.g. `@loss foo`): report it as an invalid loss name
+                raise self.switch._invalid_value(args[0])
             self._stray(results.name, options, before, args)
         results.merge(self.groups.parse(args, all_stops))
         return results
 
     def _stray(self, name, options, before, args):
         nconsumed = len(before) - len(args)
-        if nconsumed == 0 and not args[0].startswith('-'):
-            # first value is neither a loss name nor a factor
-            # (e.g. `@loss foo`): report it as an invalid loss name
-            raise self.switch._invalid_value(args[0])
         msg = f'{self.tags[0]} {name}: unexpected value {args[0]!r}'
         prev = before[nconsumed - 1] if nconsumed else None
         prev_opt = [o for o in options if prev in o.tags]
