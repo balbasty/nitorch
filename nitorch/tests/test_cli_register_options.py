@@ -274,7 +274,9 @@ def test_transform_output_bad_template(group):
         check_options(options)
 
 
-def test_affine_output_false_writes_nothing(tmp_path):
+def test_affine_output_false_writes_nothing(tmp_path, monkeypatch):
+    # before the fix, `-o false` wrote a file named `false` in the cwd
+    monkeypatch.chdir(tmp_path)
     rng = np.random.default_rng(0)
     fix = write(str(tmp_path / 'fix.nii.gz'), rng.random([12, 12, 12]))
     mov = write(str(tmp_path / 'mov.nii.gz'), rng.random([12, 12, 12]))
