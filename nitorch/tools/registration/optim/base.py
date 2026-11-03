@@ -359,7 +359,23 @@ class OptimIterator(OptimWrapper):
                 break
             loss_prev, loss_max = loss, max(loss, loss_max)
 
+        self.commit_line_search(param, closure, derivatives)
         return (param, loss, *derivatives)
+
+    def commit_line_search(self, param, closure, derivatives):
+        """Evaluate `closure` normally at the final parameters if the last
+        step did not.
+
+        A step returns only the derivatives that it evaluated at the new
+        parameters. When some are missing (e.g. the Hessian after a strong
+        Wolfe line search), the next step evaluates them in a normal
+        evaluation. There is no next step after the last one, so that
+        normal evaluation (loss only) is done here: line-search trials do
+        not keep their side effects (cached transforms, loss states,
+        printed and recorded objective).
+        """
+        if len(derivatives) < len(self.requires):
+            closure(param)
 
     def repr_keys(self):
         return ['max_iter', 'tol', 'stop']
@@ -409,7 +425,10 @@ class InterleavedOptimIterator(OptimIterator):
             outputs0, outputs = outputs, []
             for opt, cls, out in zip(optim, closure, outputs0):
                 step = opt.step if opt.iter is self else opt.iter
-                out = step(out[0], cls, **self.derivatives_to_dict(*out[1:]))
+                # Only pass the parameters: the loss and derivatives of
+                # this block's previous turn were evaluated before the
+                # other blocks moved.
+                out = step(out[0], cls)
                 outputs.append(out)
 
             # check convergence

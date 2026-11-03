@@ -67,6 +67,7 @@ class PairwiseRegister:
                  verbose=True,           # verbosity level
                  framerate=1,            # plotting framerate
                  figure=None,            # Matplotlib figure
+                 hessian=False,          # nonlin Hessian at the solution
                  ):
         """
 
@@ -91,6 +92,11 @@ class PairwiseRegister:
             - 3: plot stuff (much slower).
         framerate : float, default=1
             Update plot at most `framerate` times per second.
+        hessian : bool, default=False
+            Make sure that `nonlin.hess` holds the Hessian at the final
+            parameters. The optimiser only returns it if its last step
+            evaluated it there (e.g., not after a Wolfe line search);
+            otherwise it is evaluated once at the end of `fit`.
 
         Returns
         -------
@@ -98,6 +104,7 @@ class PairwiseRegister:
             Total loss of the joint problem
         """
         self.losses = SumSimilarity.sum(losses)
+        self.hessian = hessian
         self.verbose = verbose
         self.affine = affine
         self.nonlin = nonlin
@@ -239,6 +246,15 @@ class PairwiseRegister:
                 if isinstance(hess, (list, tuple)):
                     hess = hess[-1]
                 self.nonlin.hess = hess
+            if (self.hessian and self.nonlin.hess is None
+                    and not getattr(self.nonlin, 'frozen', False)):
+                # not returned by the optimiser (e.g., the last step was a
+                # Wolfe line search, which does not evaluate it): evaluate
+                # it at the final parameters
+                verbose, step.verbose = step.verbose, 0
+                _, _, self.nonlin.hess = step.do_vel(
+                    self.nonlin.parameters(), grad=True, hess=True)
+                step.verbose = verbose
 
         return step.ll
 

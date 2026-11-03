@@ -6,6 +6,13 @@
 - `PairwiseRegister.fit` no longer evaluates the data term at the initial
   parameters (the optimiser does it anyway), unless a loss keeps a state
   that this evaluation initialises.
+- Optimisation steps only return derivatives evaluated at the parameters
+  they return. After a strong Wolfe line search (which does not compute
+  the Hessian), the next Gauss-Newton step evaluates a fresh Hessian
+  instead of reusing the first one, and that normal evaluation commits
+  the side effects of the accepted point. The loss-only commit runs once,
+  after the last step. Interleaved (joint) blocks start each turn with a
+  fresh evaluation.
 """
 import torch
 import pytest
@@ -171,3 +178,102 @@ def test_removing_initial_evaluation_does_not_change_result(kind, monkeypatch):
     assert max(float(x.abs().max()) for x in new) > 1e-4  # it did move
     for x, y in zip(new, old):
         assert torch.allclose(x, y, rtol=0, atol=1e-12), (x - y).abs().max()
+
+
+# ----------------------------------------------------------------------
+#        Fresh derivatives after a Wolfe line search
+# ----------------------------------------------------------------------
+
+def _trace(kind, loss='mse', max_iter=3, outer=2):
+    calls = []
+    orig = {}
+    for name in ('do_affine_only', 'do_affine', 'do_vel'):
+        orig[name] = getattr(PairwiseRegisterStep, name)
+    sim, affine, nonlin, optim = _setup(kind, loss, max_iter=max_iter)
+    for opt in (optim if kind == 'joint' else [optim]):
+        opt.iter.tol = 0                # exactly `max_iter` steps
+    if kind == 'joint':
+        optim.max_iter = outer
+    try:
+        for name, fn in orig.items():
+            def wrapper(self, x, grad=False, hess=False, in_line_search=False,
+                        _orig=fn, _name=name):
+                calls.append((_name, grad, hess, in_line_search))
+                return _orig(self, x, grad=grad, hess=hess,
+                             in_line_search=in_line_search)
+            setattr(PairwiseRegisterStep, name, wrapper)
+        PairwiseRegister([sim], affine, nonlin, optim, verbose=0).fit()
+    finally:
+        for name, fn in orig.items():
+            setattr(PairwiseRegisterStep, name, fn)
+    return calls, affine, nonlin
+
+
+def _runs(calls):
+    # split the trace into runs of the same block
+    runs = []
+    for c in calls:
+        if not runs or runs[-1][0][0] != c[0]:
+            runs.append([])
+        runs[-1].append(c)
+    return runs
+
+
+@pytest.mark.parametrize('kind', ['affine', 'nonlin'])
+def test_hessian_is_recomputed_at_each_step(kind):
+    calls, *_ = _trace(kind, max_iter=3)
+    normal = [c for c in calls if not c[3]]
+    # one normal evaluation with the Hessian per step (no line-search
+    # trial asks for it), then one loss-only commit after the last step
+    assert all(c[2] for c in normal[:-1]), normal
+    assert not (normal[-1][1] or normal[-1][2]), normal
+    assert len(normal) - 1 == 3, normal
+    assert not any(c[2] for c in calls if c[3])
+
+
+def test_joint_blocks_start_each_turn_with_fresh_derivatives():
+    calls, *_ = _trace('joint', max_iter=2, outer=2)
+    runs = _runs(calls)
+    assert [r[0][0] for r in runs] == ['do_affine', 'do_vel'] * 2, runs
+    for run in runs:
+        # each turn starts with a normal evaluation of loss, gradient and
+        # Hessian at the current parameters (not a line-search trial from
+        # stale derivatives), and ends with the loss-only commit
+        assert run[0][1:] == (True, True, False), run
+        assert run[-1][1:] == (False, False, False), run
+        assert sum(1 for c in run if not (c[1] or c[2] or c[3])) == 1, run
+
+
+@pytest.mark.parametrize('kind', ['affine', 'nonlin', 'joint'])
+@pytest.mark.parametrize('loss', ['mse', 'mad'])
+def test_cached_transforms_match_final_parameters(kind, loss):
+    # `pairwise_postproc` writes the outputs from the cached transforms
+    # (`exp(recompute=False)`): they must be those of the final parameters
+    calls, affine, nonlin = _trace(kind, loss)
+    if affine is not None:
+        assert torch.equal(affine.exp(recompute=False), affine.exp())
+    if nonlin is not None:
+        assert torch.equal(nonlin.exp(recompute=False), nonlin.exp())
+
+
+def test_first_order_wolfe_still_reuses_gradient():
+    # gradient descent + Wolfe: no Hessian, the trial gradient is valid at
+    # the accepted point and reused; side effects are committed after each
+    # line search
+    from nitorch.tools.registration.optim.gd import GradientDescent
+    from nitorch.tools.registration.optim.wolfe import StrongWolfeLineSearch
+    from nitorch.tools.registration.optim.base import OptimIterator
+    calls = []
+
+    def closure(x, grad=False, in_line_search=False):
+        calls.append((grad, in_line_search))
+        f = 0.25 * x.square().sum()
+        return (f, 0.5 * x) if grad else f
+
+    gd = GradientDescent(lr=1)
+    gd.search = StrongWolfeLineSearch()
+    gd.iter = OptimIterator(max_iter=3, tol=0)
+    gd.iter(torch.ones(1, dtype=dt), closure)
+    assert calls[0] == (True, False)
+    assert sum(1 for c in calls if c == (True, False)) == 1, calls
+    assert calls.count((False, False)) == 3, calls       # one per step
