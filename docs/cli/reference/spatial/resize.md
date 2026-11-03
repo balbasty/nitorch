@@ -28,7 +28,7 @@ At least one of `-f`, `-v` and `-s` is required. Without one, `resize` prints it
 - `-f` gives the zoom factor directly. A factor above 1 yields more, smaller voxels; a factor below 1 yields fewer, larger voxels. Fractions such as `1/2` are accepted.
 - `-s` gives the shape of the output, in voxels. Used alone, the zoom factor is the ratio of output to input shape.
 
-One value applies to all three axes; otherwise give one value per axis. Unless `-s` is given, the output shape is the input shape multiplied by the zoom factor, truncated to an integer and at least 1.
+One value applies to all three axes; otherwise give one value per axis. Unless `-s` is given, the output shape follows from the input shape $N$ and the zoom factor $f$, and depends on the anchor (see [below](#anchors)). It is truncated to an integer and at least 1.
 
 When `-s` is given together with `-f` or `-v`, it fixes the output shape explicitly. With the `centers` and `edges` anchors, the factor is then irrelevant, since the voxel size follows from the two shapes. With the `first` and `last` anchors, the factor still sets the voxel size exactly, and the shape sets how many voxels are generated: if it is larger than the zoomed input, the extra voxels at the far end are padding.
 
@@ -36,12 +36,14 @@ When `-s` is given together with `-f` or `-v`, it fixes the output shape explici
 
 The anchor says which points of the input and output grids coincide.
 
-| Anchor    | What is aligned                                      | Voxel size of the output                          |
-| --------- | ---------------------------------------------------- | ------------------------------------------------- |
-| `centers` | The centres of the first and last voxels.            | Derived, so that both shapes span the same distance. |
-| `edges`   | The outer edges of the first and last voxels.        | Input size multiplied by the ratio of input to output shape: the field of view is exactly preserved. |
-| `first`   | The centre of the first voxel only.                  | Input size divided by the factor, exactly.        |
-| `last`    | The centre of the last voxel only.                   | Input size divided by the factor, exactly.        |
+| Anchor    | What is aligned                                      | Output shape (no `-s`)         | Voxel size of the output                          | Samples outside the field of view |
+| --------- | ---------------------------------------------------- | ------------------------------ | ------------------------------------------------- | --------------------------------- |
+| `centers` | The centres of the first and last voxels.            | $\lfloor N f \rfloor$          | Derived, so that both shapes span the same distance. | Never. |
+| `edges`   | The outer edges of the first and last voxels.        | $\lfloor N f \rfloor$          | Input size multiplied by the ratio of input to output shape: the field of view is exactly preserved. | Up to half an input voxel at each end when up-sampling. |
+| `first`   | The centre of the first voxel only.                  | $\lfloor (N-1) f \rfloor + 1$  | Input size divided by the factor, exactly.        | Never. |
+| `last`    | The centre of the last voxel only.                   | $\lfloor (N-1) f \rfloor + 1$  | Input size divided by the factor, exactly.        | Never. |
+
+For example, 10 voxels with a factor of 2 give 20 voxels with `centers` or `edges`, but 19 with `first` or `last`: the 20th voxel would lie beyond the last input voxel. Likewise, a factor of 1/3 gives 4 voxels with `first`, i.e. every third voxel of the input, and 256 voxels resized from 1 mm to 0.5 mm give 511. An explicit shape (`-s`) always takes precedence over these rules.
 
 The default, `centers`, is the usual choice for resizing images or fields. With `centers` or `edges`, the voxel size you get can differ slightly from the one you asked for with `-v`, because the output shape is an integer: use `-a first` if you need exactly the requested voxel size. With `first`, a factor of 1/2 and an interpolation order of 0 amount to keeping every second voxel. Axes of length one are always treated with `edges`.
 
@@ -51,7 +53,7 @@ You may give one anchor per axis. Only the first letter of an anchor is read, so
 
 Values are resampled with B-splines of order `-i`: 0 is nearest neighbour, 1 is trilinear (the default), and 2 and above are higher-order splines. Orders can be given as numbers from 0 to 6, or as names (`nearest`, `linear`, `quadratic`, `cubic`, `fourth`, `fifth`, `sixth`, `seventh`). By default, the spline pre-filter is applied (`-p yes`), so that for orders above 1 the resampled image really interpolates the input rather than blurring it. A different order can be given for each axis.
 
-The boundary condition `-b` describes how the image is extended beyond its edges, which matters for the spline pre-filter and for the voxels close to an edge. The default `dct2` mirrors the image about its outer edge. The accepted values are listed under [boundary conditions](#boundary-conditions). Samples that fall outside the field of view of the input are set to zero.
+The boundary condition `-b` describes how the image is extended beyond its edges, which matters for the spline pre-filter and for the voxels close to an edge. The default `dct2` mirrors the image about its outer edge. The accepted values are listed under [boundary conditions](#boundary-conditions). It also applies to samples that fall outside the field of view of the input (see the [table of anchors](#anchors)), which are filled according to `-b` rather than set to zero. This holds for images and, with `-g`, for displacement and transformation fields.
 
 ### Output type
 
@@ -81,7 +83,7 @@ At least one of the following is required. `-f` and `-v` are mutually exclusive.
 | ------------------------ | ------------ | --------------------------------------------------------------------------------------------------------------------- | --------- |
 | `-a`, `--anchor`         | `ANCHOR...`  | `centers`, `edges`, `first` or `last`; one per axis if needed. [See above](#anchors).                                  | `centers` |
 | `-i`, `--interpolation`  | `ORDER...`   | Interpolation order, 0 to 6 as a number, or a name from `nearest` to `seventh`; one per axis if needed.               | `1`       |
-| `-b`, `--bound`          | `BND...`     | Boundary condition; one per axis if needed. [See below](#boundary-conditions).                                         | `dct2`    |
+| `-b`, `--bound`          | `BND...`     | Boundary condition, for the pre-filter and for samples outside the field of view; one per axis if needed. [See below](#boundary-conditions).                                         | `dct2`    |
 | `-p`, `--prefilter`      | `BOOL`       | Apply the spline pre-filter: `yes`, `no` (also `true`, `false`, `1`, `0`).                                             | `yes`     |
 | `-g`, `--grid`           | `{d,t}`      | Treat the input as a displacement (`d`) or transformation (`t`) field. [See below](#resizing-displacement-and-transformation-fields). | off       |
 
@@ -109,7 +111,7 @@ The device flags of this command must be written with two dashes (`--cpu`, `--gp
 
 ### Resizing displacement and transformation fields
 
-With `-g`, the input is a field with three components (stored as the last dimension), expressed in voxels of the input grid. After resampling, its values are rescaled so that they are expressed in voxels of the output grid. With `-g d` (displacement), each component is divided by the ratio of output to input voxel size: for example, with `-f 2` and `-a first` a displacement of 1 voxel becomes 2 voxels. With `-g t` (transformation, i.e. absolute voxel coordinates), the coordinates are also shifted so that they index the output grid.
+With `-g`, the input is a field with three components (stored as the last dimension), expressed in voxels of the input grid. Samples outside the field of view follow the boundary condition `-b`, applied to the displacements themselves, so coordinates are not reflected. After resampling, its values are rescaled so that they are expressed in voxels of the output grid. With `-g d` (displacement), each component is divided by the ratio of output to input voxel size: for example, with `-f 2` and `-a first` a displacement of 1 voxel becomes 2 voxels. With `-g t` (transformation, i.e. absolute voxel coordinates), the coordinates are also shifted so that they index the output grid.
 
 ## Examples
 
@@ -125,7 +127,7 @@ The same, written with a fraction and a chosen output name:
 nitorch resize T1w.nii.gz -f 1/2 -o T1w_half.nii.gz
 ```
 
-Resample to 1 mm isotropic voxels, keeping exactly the requested voxel size by anchoring on the first voxel, and using cubic splines:
+Resample to 1 mm isotropic voxels, keeping exactly the requested voxel size by anchoring on the first voxel, and using cubic splines. The output has $\lfloor (N-1) f \rfloor + 1$ voxels along an axis of $N$ input voxels, where $f$ is the input voxel size in mm:
 
 ```shell
 nitorch resize sub-01_T1w.nii.gz -v 1 -a first -i 3 -o sub-01_T1w_1mm.nii.gz
