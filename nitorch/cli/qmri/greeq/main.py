@@ -92,15 +92,12 @@ def _main(options):
         'r2s': options.lam if options.lam_t2 is None else options.lam_t2,
         'mt': options.lam if options.lam_mt is None else options.lam_mt,
     }
-    # greeq_opt.distortion.enable = options.meetup
-    # greeq_opt.distortion.bending = options.lam_meetup
     greeq_opt.preproc.register = options.register
 
     # prepare files
     contrasts = [None] * len(options.contrast)
     transmits = [None] * len(options.contrast)
     receives = [None] * len(options.contrast)
-    b0s = [None] * len(options.contrast)
     for i, c in enumerate(options.contrast):
 
         # read meta-parameters
@@ -168,17 +165,6 @@ def _main(options):
                 meta['magnitude'] = mag[0]
             receives[i] = qio.PrecomputedFieldMap(files, **meta)
 
-        if c.b0:
-            files = c.b0
-            meta = {}
-            if files[-1].lower() in ('hz', '1/s', 'vox'):
-                *files, unit = files
-                meta['unit'] = unit
-            files, *mag = files
-            if mag:
-                meta['magnitude'] = mag[0]
-            b0s[i] = qio.PrecomputedFieldMap(files, **meta)
-
     # shared fieldmaps
 
     if options.transmit:
@@ -206,19 +192,6 @@ def _main(options):
         for i in range(len(receives)):
             if receives[i] is None:
                 receives[i] = qio.PrecomputedFieldMap(files, **meta)
-
-    if options.b0:
-        files = options.b0
-        meta = {}
-        if files[-1].lower() in ('hz', '1/s', 'vox'):
-            *files, unit = files
-            meta['unit'] = unit
-        files, *mag = files
-        if mag:
-            meta['magnitude'] = mag[0]
-        for i in range(len(b0s)):
-            if b0s[i] is None:
-                b0s[i] = qio.PrecomputedFieldMap(files, **meta)
 
     # run algorithm
     [pd, r1, r2s, *mt] = greeq(contrasts, transmits, receives, greeq_opt)

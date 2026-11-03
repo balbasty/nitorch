@@ -69,9 +69,18 @@ def test_greeq_shared_receive(vols, monkeypatch):
     assert len(receives) == 1 and receives[0] is not None
 
 
-def test_greeq_shared_b0(vols, monkeypatch):
-    # B0 maps are not used by the model, but must not crash the CLI
-    _run_greeq(['-b0', vols['b0'], 'hz'] + _greeq_contrast(vols), monkeypatch)
+@pytest.mark.parametrize('opt', [
+    ['-b0', 'b0.nii', 'hz'],
+    ['--b0-field', 'b0.nii'],
+    ['--meetup'],
+    ['--lam-meetup', '1e5'],
+])
+def test_greeq_unimplemented_options_are_rejected(opt):
+    # B0 maps and MEETUP distortion correction are not implemented in greeq
+    with pytest.raises(greeq_main.ParseError, match='Unknown option'):
+        greeq_parser.parse(opt + ['-c', '-e', 'x.nii'])
+    with pytest.raises(greeq_main.ParseError, match='Unknown option'):
+        greeq_parser.parse(['-c', '-e', 'x.nii'] + opt)
 
 
 def test_greeq_verbose_default():
