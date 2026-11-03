@@ -148,3 +148,11 @@ def test_optinorm_end_to_end(tmp_path):
     nonlin = corr('img{}.norm.nii.gz')
     assert nonlin > rigid > 0.5
     assert nonlin > 0.9
+
+
+def test_optinorm_help_matches_parser():
+    """`-h` takes no value: the help must not advertise a LEVEL."""
+    from nitorch.cli.registration.optinorm.parser import help
+    assert parser.parse(['-h']).help
+    line = [l for l in help.splitlines() if '--help' in l][0]
+    assert '[LEVEL]' not in line

@@ -10,11 +10,15 @@ usage:
     -r, --ref               Path to reference image.
     -m, --metrics           Metrics to compute. See below.
     -s, --average           Compute mean metrics for multiple labels/images: {'micro', 'macro', 'weighted'}
+                            ('weighted' = weighted by reference label volume;
+                            label metrics only)
     -x, --exclude [0]       Labels that should never be considered foreground (can be "none")
     -a, --append            Merge results into the output JSON file if it exists
     -o, --output            Output filename (default: {dir}/{base}.metrics.json)
                             Can use {dir}, {sep}, {base} and {ext} of the first
-                            predicted image.
+                            predicted image. With several -p/-r pairs, image
+                            metrics are keyed by the base name of each
+                            predicted image (rather than its index).
         --cpu [N=0]         Use CPU with N threads. If N=0: as many threads as CPUs.
         --gpu [ID=0]        Use GPU
     
@@ -39,7 +43,7 @@ metrics for images
     mse         Mean Squared Error
     rmse        Root Mean Squared Error
     mrse        Mean Root Squared Error
-    mad         Median Absolute Deviation
+    mad         Median Absolute Error           = median(|pred - ref|)
     psnr        Peak Signal-to-Noise Ratio      = 10 * log10(range**2 / MSE)
     ssim        Structural Similarity Index Measure
     images      All of the above
