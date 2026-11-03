@@ -36,7 +36,7 @@ def torch2(monkeypatch):
 ])
 def test_maybe_compile_dispatch(mode, numel, compiled, monkeypatch, torch2):
     calls = []
-    monkeypatch.setattr(torch, 'compile', _fake_compile(calls))
+    monkeypatch.setattr(torch, 'compile', _fake_compile(calls), raising=False)
     monkeypatch.setenv('NI_COMPILE', mode)
     f = J.maybe_compile(_kernel)
     x = torch.rand(numel)
@@ -49,7 +49,7 @@ def test_maybe_compile_dispatch(mode, numel, compiled, monkeypatch, torch2):
 
 def test_maybe_compile_falls_back_once(monkeypatch, torch2):
     calls = []
-    monkeypatch.setattr(torch, 'compile', _fake_compile(calls, fail=True))
+    monkeypatch.setattr(torch, 'compile', _fake_compile(calls, fail=True), raising=False)
     monkeypatch.setenv('NI_COMPILE', '1')
     f = J.maybe_compile(_kernel)
     x = torch.rand(8)
@@ -66,7 +66,7 @@ def test_maybe_compile_runtime_failure_falls_back(monkeypatch, torch2):
         def compiled(*a, **k):
             raise RuntimeError('inductor: no C++ compiler')
         return compiled
-    monkeypatch.setattr(torch, 'compile', compile)
+    monkeypatch.setattr(torch, 'compile', compile, raising=False)
     monkeypatch.setenv('NI_COMPILE', '1')
     f = J.maybe_compile(_kernel)
     x = torch.rand(8)
@@ -77,7 +77,7 @@ def test_maybe_compile_runtime_failure_falls_back(monkeypatch, torch2):
 
 def test_maybe_compile_eager_errors_propagate(monkeypatch, torch2):
     # a genuine error (eager fails too) is not swallowed by the fallback
-    monkeypatch.setattr(torch, 'compile', _fake_compile([]))
+    monkeypatch.setattr(torch, 'compile', _fake_compile([]), raising=False)
     monkeypatch.setenv('NI_COMPILE', '1')
     f = J.maybe_compile(_kernel)
     with warnings.catch_warnings():
