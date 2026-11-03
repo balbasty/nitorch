@@ -165,7 +165,7 @@ between prediction and reference, then optionally averaged.
 | `mse`  | Mean squared error, the mean of $(\text{pred} - \text{ref})^2$.              |
 | `rmse` | Root mean squared error, the square root of `mse`.                           |
 | `mrse` | Mean of the absolute difference, $\text{mean}\,\lvert \text{pred} - \text{ref} \rvert$. The built-in help calls it "mean root squared error". |
-| `mad`  | Median absolute error, the median of the absolute difference, $\text{median}\,\lvert \text{pred} - \text{ref} \rvert$. Despite the name, it is the median *error* between the two images, not the deviation from their own median. |
+| `medae` | Median absolute error (MedAE), the median of the absolute difference, $\text{median}\,\lvert \text{pred} - \text{ref} \rvert$, as in scikit-learn's `median_absolute_error`. It is the median *error* between the two images, not the deviation from their own median. The former name `mad` is still accepted as a deprecated alias: it triggers a warning and the scores are written under `medae`. |
 | `psnr` | Peak signal-to-noise ratio in decibels, $10 \log_{10}(L^2 / \text{mse})$, where $L$ is the width of the [dynamic range](#dynamic-range). |
 | `ssim` | Structural similarity index. [See below](#ssim).                             |
 
@@ -212,15 +212,21 @@ summary score to every metric. It can be given several modes at once.
 | ---------- | --------------------------------------------------------------------------------------------- |
 | `macro`    | The unweighted mean of the per-label (or per-channel) scores. Every label counts equally.     |
 | `micro`    | The score recomputed after pooling the counts (or voxels) of all labels or channels. Large structures dominate. |
-| `weighted` | The mean of the per-label scores, weighted by the number of reference voxels of each label ($P$). Available for label metrics, including the Hausdorff distances. Asking for it together with an image metric is an error. |
+| `weighted` | The mean of the per-label scores, weighted by the number of reference voxels of each label ($P$). Available for label metrics, including the Hausdorff distances. |
 
 The `micro` score of a label metric uses the sums of TP, TN, FP and FN over the
 labels. For `hausdorff`, it is the maximum (or percentile) of the distances
 pooled over all labels. For image metrics, `micro` of `mse` is the mean over all
-voxels of all channels, and of `mad` the median over all of them; for `mrse` it
+voxels of all channels, and of `medae` the median over all of them; for `mrse` it
 is the mean, over voxels, of the Euclidean norm of the difference vector across
 channels, which is a different quantity from the per-channel mean of absolute
 errors.
+
+`weighted` has no meaning for image metrics. When label and image metrics are
+requested together, `-s weighted` applies to the label metrics only: image metrics
+keep their `micro` and `macro` scores and get no `weighted` entry. If only image
+metrics are requested, `metrics` warns that `-s weighted` has no effect and runs
+normally.
 
 ## Arguments
 
@@ -234,8 +240,8 @@ errors.
 | ------------------ | ---------------------- | ------------------------------------------------------------------------------------------------- | ------------------------------- |
 | `-p`, `--pred`     | `FILE...`              | Predicted image(s). Files are stacked as channels. [See above](#inputs).                          | *required*                      |
 | `-r`, `--ref`      | `FILE...`              | Reference image(s), with the same total shape as the prediction.                                  | *required*                      |
-| `-m`, `--metrics`  | `METRIC...`            | Metrics to compute: `dice`, `jaccard`, `accuracy`, `ppv`, `npv`, `fdr`, `tpr`, `fpr`, `fnr`, `tnr`, `plr`, `nlr`, `hausdorff`, `hausdorff95` (label metrics, or `labels` for all of them); `mse`, `rmse`, `mrse`, `mad`, `psnr`, `ssim` (image metrics, or `images` for all of them). The two families can be mixed. [See above](#description). | *required*                      |
-| `-s`, `--average`  | `AVERAGE...`           | Summary scores to add: `micro`, `macro`, `weighted`. `weighted` applies to label metrics only. [See above](#averaging). | none                            |
+| `-m`, `--metrics`  | `METRIC...`            | Metrics to compute: `dice`, `jaccard`, `accuracy`, `ppv`, `npv`, `fdr`, `tpr`, `fpr`, `fnr`, `tnr`, `plr`, `nlr`, `hausdorff`, `hausdorff95` (label metrics, or `labels` for all of them); `mse`, `rmse`, `mrse`, `medae`, `psnr`, `ssim` (image metrics, or `images` for all of them). The two families can be mixed. [See above](#description). | *required*                      |
+| `-s`, `--average`  | `AVERAGE...`           | Summary scores to add: `micro`, `macro`, `weighted`. `weighted` applies to label metrics only and is ignored, with a warning, if no label metric is requested. [See above](#averaging). | none                            |
 | `-x`, `--exclude`  | `LABEL...`             | Labels that are never scored as foreground. Use `none` to exclude nothing. Label metrics only.    | `0`                             |
 | `-o`, `--output`   | `FILE`                 | Name or template of the JSON file. Only one value is accepted.                                    | `{dir}{sep}{base}.metrics.json` |
 | `-a`, `--append`   | `[BOOL]`               | Merge the scores, metric by metric, into the output file if it exists, instead of overwriting it. [See above](#output). | off                             |
