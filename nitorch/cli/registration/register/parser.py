@@ -185,7 +185,7 @@ usage:
         -z, --zoom-penalty F            Penalty factor of zooms [1]
         -s, --shear-penalty F           Penalty factor of shears [1]
     Common options:
-        -p, --position                  Position of the affine: [sym], mov, fix
+        -p, --position                  Position of the affine in the forward model: [sym], mov, fix
         -g, --progressive               Progressive optimization (t -> r -> s -> a) [false]
         -i, --input                     Path to initial transform (fov, com, or file path)
         -o, --output                    Path to the output transform: [{dir}/{name}.lta]
