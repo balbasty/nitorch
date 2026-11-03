@@ -451,6 +451,7 @@ def shoot(
         # $\psi \gets \varphi^{-1}$, initialized with $2 id - \varphi$
         # (the composed $\psi$ is a better initial guess, but computing
         # it costs `steps-1` pulls, more than the iterations it saves)
+        jac = mom = mom0 = vel = None  # free buffers no longer needed
         disp = _fixedpoint_inverse(idisp, idisp.neg(), id, fixedpoint_iter,
                                    fixedpoint_tol, **pull_prm)
     if not displacement:
