@@ -350,12 +350,13 @@ class PairwiseRegisterStep:
             if not x.dtype.is_floating_point:
                 x = x.float()
             mask = (x == 0).any(dim=list(range(x.ndim-2)))
-            xmasked = x[~mask]
-            mn, mx = utils.quantile(xmasked, [0.005, 0.995],
-                                    dim=range(-2, 0), bins=1024).unbind(-1)
-            mx = mx.max(mn + 1e-8)
-            mn, mx = mn[..., None, None], mx[..., None, None]
-            x = x.sub(mn).div_(mx-mn).clamp_(0, 1)
+            if not mask.all():
+                xmasked = x[~mask]
+                mn, mx = utils.quantile(xmasked, [0.005, 0.995],
+                                        dim=range(-2, 0), bins=1024).unbind(-1)
+                mx = mx.max(mn + 1e-8)
+                mn, mx = mn[..., None, None], mx[..., None, None]
+                x = x.sub(mn).div_(mx-mn).clamp_(0, 1)
             return x
 
         if dim == 3:
