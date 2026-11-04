@@ -183,6 +183,15 @@ def read_info(options):
                                       factor=factor, anchor='f')
 
 
+def _compose_linear(transformations, like):
+    """Compose all linear transforms of a chain (in order)"""
+    aff = torch.eye(like.shape[-1], dtype=like.dtype, device=like.device)
+    for trf in transformations:
+        if isinstance(trf, struct.Linear):
+            aff = spatial.affine_matmul(aff, trf.affine.to(aff))
+    return aff
+
+
 def channel_index(channels, nb_channels):
     """Convert a list of channel specifications into a list of indices
 
@@ -403,7 +412,13 @@ def write_volumes(options):
 
         resample = True
         if not options.target:
-            oaffine = file.affine
+            # Minimal reslicing: keep all linear transforms of the chain
+            # (not only the first one) in the output orientation matrix,
+            # so that the resampled residual warp is (close to) the
+            # identity, even if a large affine sits after a field.
+            oaffine = spatial.affine_lmdiv(
+                _compose_linear(options.transformations, file.affine),
+                file.affine)
             oshape = file.shape
             if options.voxel_size:
                 ovx = utils.make_vector(options.voxel_size, 3,

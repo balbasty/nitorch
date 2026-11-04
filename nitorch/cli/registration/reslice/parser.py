@@ -44,7 +44,10 @@ usage:
 
     Other tags are:
     -t, --target            Defines the target space.
-                            If not provided, minimal reslicing is performed.
+                            If not provided, minimal reslicing is performed:
+                            all linear transforms are absorbed in the output
+                            orientation matrix and only the nonlinear part
+                            is resampled.
     -o,  --output           Name of the output file (default: '*.resliced*')
     -i,  --interpolation    Interpolation order. Use `l` for labels. (1)
     -p,  --prefilter        Apply spline prefilter [yes|no]; bare -p = yes (yes)
