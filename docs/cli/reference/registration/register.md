@@ -499,6 +499,7 @@ weights of the `--lame` option.
 | `-o`, `--output`            | `[PATH` &vert; `true` &vert; `false]` | Where to write the field. `{dir}` and `{name}` are available. With no value, `true`, `yes` or `1`, the default path is used; `false`, `no` or `0` writes nothing. | `{dir}/{name}.nii.gz` |
 | `-h`, `--hessian`           | `[PATH` &vert; `true` &vert; `false]` | Where to write the Hessian of the matching term at the solution (a map of local confidence), used to weight [`vopt`](vopt.md). `{dir}` and `{name}` are available. With no value, `true`, `yes` or `1`, the default path `{dir}/{name}_hessian.nii.gz` is used; `false`, `no` or `0` writes nothing. | not written |
 | `--inversion`               | `{default,push,newton}` | `@nonlin`, all models. How the side of the warp that is not computed directly is obtained by inverting the other one. `default` keeps the model's usual behaviour; `push` and `newton` are more elaborate inverses. See [below](#choosing-how-the-warp-is-inverted-with-inversion). | `default`          |
+| `--exact`                   | `[BOOL]`            | `@nonlin shoot`, long form only. Integrate the geodesic exactly rather than by chaining one-step transports. Rejected for `svf` and `smalldef`. See [below](#fast-or-exact-shooting-with-exact). | `false`            |
 | `-2d`                       | `[AXIS]`            | Restrict the deformation to the plane normal to `AXIS`. Without a value, axis 2.                                                     | 3D                 |
 
 The default lattice has the mean voxel size of the images and covers all
@@ -535,6 +536,29 @@ All accuracy and cost figures are approximate, and were measured on 3D benchmark
 
 !!! tip "When to use it"
     Use `--inversion newton` with `shoot` when the deformations are steep and an accurate, inverse-consistent forward warp matters, for example when you will pull images back and forth with `reslice`. For small deformations, or if you only use one direction, the default is accurate enough. For `svf`, there is rarely a reason to change it.
+
+#### Fast or exact shooting with `--exact`
+
+Geodesic shooting integrates the initial velocity $v_0$ forward in time, and the way each step is taken makes a difference. By default, `shoot` uses a **fast** scheme: every step transports the momentum by the small warp of that step only, and the steps are chained. Each transport resamples, and so blurs, the momentum, and the total blur amounts to roughly $|v|$ voxels² however many steps you use. The scheme is cheap, but it does not converge to the true geodesic: raising `--steps` does not make it more accurate.
+
+With `--exact`, the **exact** scheme transports the *initial* momentum along the warp integrated so far at each step. There is a single resampling per step, so the result converges to the geodesic as `--steps` grows. The option is long-only and takes an optional boolean (`--exact`, `--exact true`, `--exact no`...). It only applies to `@nonlin shoot`; `svf` and `smalldef` reject it.
+
+The table shows the error on the inverse warp $\varphi$ against a 256-step exact reference, for a 3D image of 48³ voxels with a maximum velocity of 10 voxels. Errors are in voxels, as mean / max.
+
+| Steps | Fast            | Exact           |
+| ----- | --------------- | --------------- |
+| 8     | 0.056 / 0.19    | 0.034 / 0.10    |
+| 32    | 0.090 / 0.32    | 0.0077 / 0.023  |
+| 128   | 0.100 / 0.36    | 0.0011 / 0.0033 |
+
+The fast scheme gets slightly worse with more steps, while the exact one improves steadily. The fast scheme also loses energy along the path: the energy kept relative to the start is 0.53-0.57 after 8 steps and falls to 0.34-0.52 after 128, whereas the exact scheme keeps about 0.80, as the reference does, whatever the number of steps.
+
+Exact shooting costs more: at 64³ voxels, a shooting call takes 1.4-1.7 times as long (1.3-1.4 times when the inverse is computed too). In a short symmetric registration of that size, the wall time rose by 14% (58 s to 66 s). In return, the forward and inverse warps were about twice as consistent (mean $|\psi\circ\varphi - \mathrm{id}|$ from 0.083 to 0.046 voxel, maximum from 0.79 to 0.42), with a similar recovered warp. As elsewhere, these figures are approximate and were measured on a CPU.
+
+The choice is saved in `{name}.json` as the `fast` entry (`false` with `--exact`). [`reslice`](../spatial/reslice.md#velocity-fields) and [`compose`](../spatial/compose.md) read it and shoot the velocity with the same scheme. This matters: a velocity estimated with one scheme must be shot again with the same one. In one test, shooting a velocity estimated with the fast scheme exactly moved the warp by about 3 voxels.
+
+!!! tip "When to use it"
+    Use `--exact` when the geodesic itself matters: with many steps, when the velocity will be shot again (for example to get intermediate time points), or when velocities are compared. It is also a good choice when inverse consistency matters, alone or combined with `--inversion newton`. Otherwise the fast scheme, which remains the default, is a reasonable choice.
 
 ## Optimisation
 
@@ -678,7 +702,7 @@ the fields `{dir}` (a directory), `{sep}` (the path separator), `{base}`
 | ----------------------------------- | ------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
 | `{dir}/{name}.lta`                  | `@affine` is used                     | The affine matrix, in RAS-to-RAS convention. For example `rigid.lta`, `affine.lta`. It maps fixed to moving world coordinates. Always the *full* transformation, whatever the position. |
 | `{dir}/{name}.nii.gz`               | `@nonlin` is used                     | The field, in voxels of its own lattice: a velocity for `svf` (`svf.nii.gz`) and `shoot`, a displacement for `smalldef`. |
-| `{dir}/{name}.json`                 | `@nonlin`                             | The model and the inversion method (`model` and `inversion`), for all models. For `shoot`, also the regularisation (penalty and factor) and the number of integration `steps` and `fast` flag used during registration, needed to integrate the shooting equations the same way (`shoot.json`). Read by [`reslice`](../spatial/reslice.md#velocity-fields), [`compose`](../spatial/compose.md) and [`vexp`](../spatial/vexp.md). |
+| `{dir}/{name}.json`                 | `@nonlin`                             | The model and the inversion method (`model` and `inversion`), for all models. For `shoot`, also the regularisation (penalty and factor) and the number of integration `steps` and `fast` flag used during registration (`false` with [`--exact`](#fast-or-exact-shooting-with-exact)), needed to integrate the shooting equations the same way (`shoot.json`). Read by [`reslice`](../spatial/reslice.md#velocity-fields), [`compose`](../spatial/compose.md) and [`vexp`](../spatial/vexp.md). |
 | `{dir}/{name}_hessian.nii.gz`       | `@nonlin -h`                          | Hessian of the matching term.                                                                                      |
 | `{dir}/momentum.nii.gz`, `affine_momentum.json` | `@@optim nes`/`ogm` with `-o` | Final momentum of the optimiser.                                                                              |
 | `{dir}/{base}.moved{ext}`           | for each image, unless `-o false`     | The image carried to the registered space, with *minimal reslicing*.                                              |

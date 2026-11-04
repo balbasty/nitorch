@@ -216,6 +216,13 @@ usage:
                                         shoot: the forward (from the more accurate
                                         inverse). push: robust; newton: push + Gauss-
                                         Newton steps, most inverse-consistent, slowest.
+    Shoot options:
+        --exact [BOOL]                  Exact geodesic shooting [false]: transport the
+                                        initial momentum along the integrated warp at
+                                        each step (spatial.shoot(fast=False)), which
+                                        converges to the geodesic as --steps grows.
+                                        Default (fast): chained one-step transports,
+                                        cheaper but biased (does not converge).
 
 @optim options:
     NAME can take values:
@@ -754,6 +761,13 @@ nonlin.add_option('inversion', '--inversion', nargs=1, default='default',
                       ['default', 'push', 'newton']),
                   help='How the side of the warp that is not computed '
                        'directly is obtained by inverting the other one')
+# shoot only (svf/smalldef have no such option: `--exact` is rejected)
+nonlin.add_suboption('shoot', 'exact', '--exact', nargs='?', default=False,
+                     convert=cli.Conversions.strict_bool,
+                     action=cli.Actions.store_true,
+                     help='Exact geodesic shooting (`spatial.shoot('
+                          'fast=False)`): converges to the geodesic as the '
+                          'number of steps grows, unlike the default')
 nonlin.add_group(optim)
 
 
