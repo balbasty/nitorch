@@ -814,7 +814,7 @@ void RegulariserGridImpl<scalar_t,offset_t,reduce_t>::matvec_none(
 #define GET_POINTERS \
   scalar_t *out0 = out_ptr + (x*out_sX + y*out_sY + z*out_sZ + n*out_sN);  \
   scalar_t *inp0 = inp_ptr + (x*inp_sX + y*inp_sY + z*inp_sZ + n*inp_sN);  \
-  scalar_t *hes0 = hes_ptr + (x*hes_sX + y*hes_sY + z*hes_sZ + n*inp_sN);  \
+  scalar_t *hes0 = hes_ptr + (x*hes_sX + y*hes_sY + z*hes_sZ + n*hes_sN);  \
   scalar_t *out1 = out0 + out_sC, *out2 = out1 + out_sC;    \
   scalar_t *inp1 = inp0 + inp_sC, *inp2 = inp1 + inp_sC;
 
@@ -1309,7 +1309,7 @@ void RegulariserGridImpl<scalar_t,offset_t,reduce_t>::vel2mom3d_rls_absolute(
 #define GET_POINTERS \
   scalar_t *out0 = out_ptr + (x*out_sX + y*out_sY + n*out_sN);  \
   scalar_t *inp0 = inp_ptr + (x*inp_sX + y*inp_sY + n*inp_sN);  \
-  scalar_t *hes0 = hes_ptr + (x*hes_sX + y*hes_sY + n*inp_sN);  \
+  scalar_t *hes0 = hes_ptr + (x*hes_sX + y*hes_sY + n*hes_sN);  \
   scalar_t *out1 = out0 + out_sC;        \
   scalar_t *inp1 = inp0 + inp_sC; 
 
@@ -1635,7 +1635,7 @@ void RegulariserGridImpl<scalar_t,offset_t,reduce_t>::vel2mom2d_rls_absolute(
 #define GET_POINTERS \
   scalar_t *out0 = out_ptr + (x*out_sX + n*out_sN);  \
   scalar_t *inp0 = inp_ptr + (x*inp_sX + n*inp_sN);  \
-  scalar_t *hes0 = hes_ptr + (x*hes_sX + n*inp_sN); 
+  scalar_t *hes0 = hes_ptr + (x*hes_sX + n*hes_sN); 
 
  
 template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
@@ -1834,7 +1834,7 @@ void RegulariserGridImpl<scalar_t,offset_t,reduce_t>::vel2mom1d_rls_absolute(
 #define GET_POINTERS \
   scalar_t *out0 = out_ptr + (x*out_sX + y*out_sY + z*out_sZ + n*out_sN);  \
   scalar_t *inp0 = inp_ptr + (x*inp_sX + y*inp_sY + z*inp_sZ + n*inp_sN);  \
-  scalar_t *hes0 = hes_ptr + (x*hes_sX + y*hes_sY + z*hes_sZ + n*inp_sN);  \
+  scalar_t *hes0 = hes_ptr + (x*hes_sX + y*hes_sY + z*hes_sZ + n*hes_sN);  \
   scalar_t *out1 = out0 + out_sC, *out2 = out1 + out_sC;
 
 template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE

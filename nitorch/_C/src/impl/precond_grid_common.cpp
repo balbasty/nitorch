@@ -1031,7 +1031,7 @@ prepare_tensors(const Tensor & gradient,
     int64_t Z   = dim > 2 ? gradient.size(4) : 1L;
     if (dim == 1)
       hessian = hessian.expand({N, CC, X});
-    if (dim == 2)
+    else if (dim == 2)
       hessian = hessian.expand({N, CC, X, Y});
     else
       hessian = hessian.expand({N, CC, X, Y, Z});

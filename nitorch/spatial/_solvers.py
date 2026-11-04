@@ -57,6 +57,17 @@ if compiled_backend == 'C':
 else:
     c_solvers = None
 
+
+def _c_supports(weights=None, bending=0, lame=0):
+    """Whether the compiled solvers implement this problem: they do not
+    implement per-penalty weight maps (dict), nor weighted (RLS)
+    bending or linear-elastic energies (the TorchScript solvers do)."""
+    if weights is None:
+        return True
+    if isinstance(weights, dict):
+        return False
+    return not (any(py.ensure_list(bending)) or any(py.ensure_list(lame)))
+
 # TODO:
 #   - implement separable prolong/restrict (with torchscript?)
 
@@ -1004,7 +1015,7 @@ def solve_grid_fmg(hessian, gradient, absolute=0, membrane=0, bending=0,
                                      absolute=absolute, factor=factor,
                                      voxel_size=voxel_size)
 
-    if c_solvers:
+    if c_solvers and _c_supports(weights, bending, lame):
         if optim == 'relaks':  optim = 'relax'
         return c_solvers.c_fmg_grid(
             hessian, gradient, weights,
@@ -1076,7 +1087,7 @@ def solve_field_fmg(hessian, gradient, weights=None, voxel_size=1, bound='dct2',
                                       absolute=absolute, factor=factor)
 
     dim = dim or (gradient.dim() - 1)
-    if c_solvers:
+    if c_solvers and _c_supports(weights, bending):
         if optim == 'relaks':  optim = 'relax'
         return c_solvers.c_fmg(
             hessian, gradient, weights, dim,
@@ -1173,7 +1184,7 @@ def solve_field(hessian, gradient, weights=None, dim=None,
                                       absolute=absolute, factor=factor)
 
     dim = dim or (gradient.dim() - 1)
-    if c_solvers:
+    if c_solvers and _c_supports(weights, bending):
         if optim == 'relaks':  optim = 'relax'
         if optim == 'cg':
             return c_solvers.c_pcg(
@@ -1379,7 +1390,7 @@ def solve_grid(hessian, gradient, absolute=0, membrane=0, bending=0,
                                      absolute=absolute, factor=factor,
                                      voxel_size=voxel_size)
 
-    if c_solvers:
+    if c_solvers and _c_supports(weights, bending, lame):
         if optim == 'relaks':  optim = 'relax'
         if optim == 'cg':
             return c_solvers.c_pcg_grid(
@@ -1400,7 +1411,7 @@ def solve_grid(hessian, gradient, absolute=0, membrane=0, bending=0,
     absolute = absolute * factor
     membrane = membrane * factor
     bending = bending * factor
-    lame = [l*factor for l in utils.make_vector(lame, 2).tolist()]
+    lame = [l*factor for l in utils.make_vector(lame, 2, dtype=torch.double).tolist()]
     no_reg = not (membrane or bending or any(lame))
 
     # regulariser
@@ -1756,7 +1767,7 @@ def solve_field_closedform(hessian, gradient, weights=None, dim=None,
     """
 
     dim = dim or (gradient.dim() - 1)
-    if c_solvers:
+    if c_solvers and _c_supports(weights):
         return c_solvers.c_precond(
             gradient, weights, hessian, dim, absolute, factor=factor)
 
@@ -1830,7 +1841,7 @@ def solve_grid_closedform(hessian, gradient, weights=None,
     solution : (..., *spatial, D) tensor
 
     """
-    if c_solvers:
+    if c_solvers and _c_supports(weights):
         return c_solvers.c_precond_grid(
             gradient, weights, hessian, absolute, factor=factor,
             voxel_size=voxel_size)

@@ -7,6 +7,7 @@ any backward pass through `shoot` failed.
 import itertools
 import pytest
 import torch
+from nitorch import compiled_backend
 from nitorch.spatial import shoot
 
 FLAGS = list(itertools.product([False, True], repeat=3))
@@ -43,14 +44,19 @@ def test_shoot_backward_runs(shape, flags):
     assert torch.isfinite(vel.grad).all()
     assert vel.grad.abs().sum() > 0
 
-    # values with and without autograd are bitwise identical
+    # values with and without autograd are bitwise identical (with the
+    # compiled backend, the no-grad path uses the compiled regulariser,
+    # which has no autograd: identical up to rounding)
     with torch.no_grad():
         ref = shoot(vel.detach(), steps=3, return_inverse=return_inverse,
                     displacement=displacement, fast=fast)
     out = out if return_inverse else (out,)
     ref = ref if return_inverse else (ref,)
     for o, r in zip(out, ref):
-        assert torch.equal(o.detach(), r)
+        if compiled_backend == 'C':
+            assert torch.allclose(o.detach(), r, rtol=1e-10, atol=1e-10)
+        else:
+            assert torch.equal(o.detach(), r)
 
 
 @pytest.mark.parametrize("flags", [(True, False, True)],
