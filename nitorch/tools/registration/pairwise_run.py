@@ -309,14 +309,17 @@ def run_pyramid(
 
     n_level = nb_levels - 1
     if nonlin and n_level > 0:
-        shapes = [nonlin.shape]
+        # lattice of the nonlinear field at each level: same convention
+        # as the image pyramid, so that both lattices are aligned (#114)
+        shift = _pyramid_shift(losses)
+        shapes = [list(nonlin.shape)]
         for n in range(1, nb_levels):
             shapes.append([int(math.ceil(s/2)) for s in shapes[-1]])
         if getattr(nonlin, 'frozen', False):
             nonlin0 = nonlin
-            nonlin = nonlin.downsample(shape=shapes[n_level])
+            nonlin = nonlin.downsample(**_level_map(shapes, n_level, shift))
         else:
-            nonlin = nonlin.downsample_(shape=shapes[n_level])
+            nonlin = nonlin.downsample_(**_level_map(shapes, n_level, shift))
 
     while losses:
         loss_level = losses.pop(0)
@@ -348,17 +351,65 @@ def run_pyramid(
                     if n_level == 0:
                         nonlin = nonlin0
                     else:
-                        nonlin = nonlin0.downsample(shape=shapes[n_level])
+                        nonlin = nonlin0.downsample(
+                            **_level_map(shapes, n_level, shift))
                 else:
-                    if n_level == 0:
-                        nonlin.upsample_(shape=shapes[n_level])
-                    elif n_level > 0:
-                        nonlin.upsample_(shape=shapes[n_level])
+                    nonlin.upsample_(shape=shapes[n_level], factor=2,
+                                     shift=shift)
 
     if scale_reg:
         _set_reg_factor(nonlin, factor0)
 
     return affine, nonlin, figure
+
+
+def _pyramid_shift(losses, tol=1e-4):
+    """Position, in voxels of a pyramid level, of the centre of the
+    first voxel of the next (coarser) level, as used by the image pyramid.
+
+    It is 0 for the gaussian and stride pyramids (coarse voxel `j` sits
+    on fine voxel `2*j`) and 0.5 for the average and median pyramids
+    (`2*j + 0.5`). It is read from the fixed images of two consecutive
+    levels (`losses` is ordered from coarse to fine), along an axis that
+    is halved; 0 if no image is downsampled between levels."""
+    def terms(loss):
+        if isinstance(loss, objects.SumSimilarity):
+            return list(loss)
+        return [loss]
+
+    for coarse, fine in zip(losses[:-1], losses[1:]):
+        for coarse1, fine1 in zip(terms(coarse), terms(fine)):
+            fix_c = getattr(coarse1, 'fixed', None)
+            fix_f = getattr(fine1, 'fixed', None)
+            if fix_c is None or fix_f is None:
+                continue
+            trf = torch.linalg.solve(fix_f.affine.double(),
+                                     fix_c.affine.double())
+            dim = trf.shape[-1] - 1
+            lin = trf[:dim, :dim]
+            if (lin - torch.diag(lin.diagonal())).abs().max() > tol:
+                continue
+            for d in range(dim):
+                if fix_f.shape[d] > 1 and abs(lin[d, d] - 2) < tol:
+                    return float(trf[d, -1])
+    return 0.
+
+
+def _level_map(shapes, level, shift):
+    """Options of `NonLinModel.downsample` that map the finest lattice
+    (`shapes[0]`) to pyramid level `level`, by composing the per-level
+    maps `fine = 2 * coarse + shift` (identity along axes that are
+    singleton on both lattices)"""
+    dim = len(shapes[0])
+    factor, offset = [1.] * dim, [0.] * dim
+    for n in range(1, level + 1):
+        for d in range(dim):
+            if shapes[n-1][d] == shapes[n][d] == 1:
+                continue
+            # fine0 = factor * fine_{n-1} + offset, fine_{n-1} = 2 * c + shift
+            offset[d] += factor[d] * shift
+            factor[d] *= 2
+    return dict(shape=shapes[level], factor=factor, shift=offset)
 
 
 def _voxel_size_ratio(vx, vx0, shape0):
