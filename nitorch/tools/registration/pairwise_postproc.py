@@ -113,11 +113,12 @@ def warp_images(fix, mov, affine=None, nonlin=None, dim=None, device=None, odir=
         if mov.output:
             target_affine = mov_affine
             target_shape = image.shape
-            if affine and affine.position[0].lower() in 'ms':
-                aff = affine.exp(recompute=False, cache_result=True)
-                if not nonlin and affine.position[0].lower() == 's':
-                    aff = aff.matmul(aff)
-                target_affine = spatial.affine_lmdiv(aff, target_affine)
+            if affine:
+                # Keep the full affine in the output orientation matrix
+                # (whatever its position), so that the residual warp
+                # that is resampled is (close to) the identity.
+                target_affine = spatial.affine_lmdiv(
+                    _full_affine(affine), target_affine)
 
             fname = mov.output.format(dir=odir_mov, base=base, sep=os.path.sep, ext=ext)
             if verbose:
@@ -160,11 +161,12 @@ def warp_images(fix, mov, affine=None, nonlin=None, dim=None, device=None, odir=
         if fix.output:
             target_affine = fix_affine
             target_shape = image.shape
-            if affine and affine.position[0].lower() in 'fs':
-                aff = affine.exp(recompute=False, cache_result=True)
-                if not nonlin and affine.position[0].lower() == 's':
-                    aff = aff.matmul(aff)
-                target_affine = spatial.affine_matmul(aff, target_affine)
+            if affine:
+                # Keep the full affine in the output orientation matrix
+                # (whatever its position), so that the residual warp
+                # that is resampled is (close to) the identity.
+                target_affine = spatial.affine_matmul(
+                    _full_affine(affine), target_affine)
 
             fname = fix.output.format(dir=odir_fix, base=base, sep=os.path.sep, ext=ext)
             if verbose:
@@ -194,6 +196,18 @@ def warp_images(fix, mov, affine=None, nonlin=None, dim=None, device=None, odir=
             if verbose:
                 print('done.')
             del warped
+
+
+def _full_affine(affine):
+    """Return the full affine (fixed world -> moving world) of a model.
+
+    With `position='symmetric'`, `AffineModel.exp` returns the square
+    root of the transform, so it is squared here.
+    """
+    aff = affine.exp(recompute=False, cache_result=True)
+    if affine.position[0].lower() == 's':
+        aff = aff.matmul(aff)
+    return aff
 
 
 def _almost_identity(aff):
