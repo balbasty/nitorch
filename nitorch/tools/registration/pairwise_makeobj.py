@@ -349,8 +349,19 @@ def make_nonlin_2d(plane, affine_ref, *args, **kwargs):
     return nonlin
 
 
+# Default tolerances on the size of an accepted update (#266): RMS, over the
+# (masked) voxels of the images the losses are evaluated on (the fixed
+# images, and both images of symmetric losses), of the displacement it
+# causes, each in the voxel coordinates of its own image at the current
+# pyramid level. Deliberately conservative: they only stop runs whose
+# updates have become negligible.
+AFFINE_DISP_TOLERANCE = 1e-3
+NONLIN_DISP_TOLERANCE = 1e-2
+
+
 def make_affine_optim(optim=None, order=None, line_search='wolfe', lr=None,
-                      max_iter=50, tolerance=1e-5, crit='diff', **kwargs):
+                      max_iter=50, tolerance=1e-5, crit='diff',
+                      disp_tolerance=None, **kwargs):
     """Build an Optimizer for the affine model
 
     Parameters
@@ -375,6 +386,11 @@ def make_affine_optim(optim=None, order=None, line_search='wolfe', lr=None,
         Tolerance for early stopping
     crit : {'diff', 'gain'}, default='diff'
         Stopping criterion
+    disp_tolerance : float, default=AFFINE_DISP_TOLERANCE
+        Tolerance for early stopping on the size of the accepted update:
+        RMS of the displacement it causes over the images the losses are
+        evaluated on, in their voxels (current pyramid level). 0 disables
+        it. Iterations stop as soon as either tolerance is met.
 
     Keyword Parameters
     ------------------
@@ -431,13 +447,16 @@ def make_affine_optim(optim=None, order=None, line_search='wolfe', lr=None,
     if line_search and not isinstance(affine_optim, (opt.Powell, opt.LBFGS)):
         affine_optim.search = line_search
 
-    affine_optim.iter = opt.OptimIterator(max_iter=max_iter, tol=tolerance, stop=crit)
+    if disp_tolerance is None:
+        disp_tolerance = AFFINE_DISP_TOLERANCE
+    affine_optim.iter = opt.OptimIterator(max_iter=max_iter, tol=tolerance,
+                                          stop=crit, disp_tol=disp_tolerance)
     return affine_optim
 
 
 def make_nonlin_optim(optim=None, order=None, line_search='wolfe', lr=None,
                       max_iter=50, tolerance=1e-5, crit='diff',
-                      nonlin=None, penalty=None, voxel_size=None,
+                      disp_tolerance=None, nonlin=None, penalty=None, voxel_size=None,
                       preconditioner=None, **kwargs):
     """Build an Optimizer for the affine model
 
@@ -462,6 +481,13 @@ def make_nonlin_optim(optim=None, order=None, line_search='wolfe', lr=None,
         Tolerance for early stopping
     crit : {'diff', 'gain'}, default='diff'
         Stopping criterion
+    disp_tolerance : float, default=NONLIN_DISP_TOLERANCE
+        Tolerance for early stopping on the size of the accepted update:
+        RMS of the update of the displacement (smalldef) or velocity
+        (svf, shoot: first-order estimate of the displacement change),
+        over the images the losses are evaluated on, in their voxels
+        (current pyramid level). 0 disables it. Iterations stop as soon
+        as either tolerance is met.
     nonlin : NonlinModel, optional
         Nonlinear model, from which the penalty, voxel size and
         preconditioner can be guessed.
@@ -540,7 +566,10 @@ def make_nonlin_optim(optim=None, order=None, line_search='wolfe', lr=None,
     if line_search and not isinstance(nonlin_optim, (opt.Powell, opt.LBFGS)):
         nonlin_optim.search = line_search
 
-    nonlin_optim.iter = opt.OptimIterator(max_iter=max_iter, tol=tolerance, stop=crit)
+    if disp_tolerance is None:
+        disp_tolerance = NONLIN_DISP_TOLERANCE
+    nonlin_optim.iter = opt.OptimIterator(max_iter=max_iter, tol=tolerance,
+                                          stop=crit, disp_tol=disp_tolerance)
     return nonlin_optim
 
 

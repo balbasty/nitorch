@@ -264,6 +264,13 @@ usage:
         -s, --line-search               Number of backtracking line search [wolfe]
         -t, --tolerance                 Tolerance for early stopping [1e-4]
         -c, --crit                      Stopping criterion: [diff], gain
+        -d, --disp-tolerance            Tolerance for early stopping on the size of an update:
+                                        RMS displacement over the voxels of the images the
+                                        losses are evaluated on (fixed; both if symmetric), in
+                                        their own voxels at the current pyramid level
+                                        (svf/shoot: velocity update, ~ displacement change).
+                                        Stops when either tolerance is met. 0 = off.
+                                        [affine: 1e-3, nonlin: 1e-2]
         -n, --max-iter                  Maximum number of iterations
                                         [interleaved: affine=50,  nonlin=10,
                                          sequential:  affine=100, nonlin=50]
@@ -617,6 +624,11 @@ optim.add_option('line_search', ('-s', '--line-search'), nargs=1,
                  help='Number of backtracking line search')
 optim.add_option('tolerance', ('-t', '--tolerance'), nargs=1,
                  convert=float, default=1e-4, help='Tolerance for early stopping')
+optim.add_option('disp_tolerance', ('-d', '--disp-tolerance'), nargs=1,
+                 convert=float, default=None,
+                 help='Tolerance for early stopping on the size of an '
+                      'update (RMS displacement, in image voxels at the '
+                      'current level; 0 = off)')
 optim.add_option('crit', ('-c', '--crit'), nargs=1,
                  default='diff', validation=cli.Validations.choice(['gain', 'diff']),
                  help='Criterion for early stopping')
