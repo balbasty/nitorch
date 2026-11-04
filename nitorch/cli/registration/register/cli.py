@@ -118,6 +118,10 @@ def check_options(options):
     if options.nonlin:
         _check_template(options.nonlin.hessian, '@nonlin -h/--hessian',
                         dir='', name='')
+        if options.nonlin.name == 'shoot' and options.nonlin.bound != 'dft':
+            raise ParseError(f'@nonlin --bound: shoot only supports dft '
+                             f'(circulant) boundary conditions, got '
+                             f'{options.nonlin.bound}')
 
 
 def _main(options):
@@ -351,10 +355,12 @@ def _main(options):
                     prm['model'] = 'shoot'
                     json.dump(prm, f)
             elif isinstance(nonlin, (objects.SVFModel, objects.SmallDefModel)):
-                # `reslice`/`compose`/`vexp` invert the warp the same way
+                # `reslice`/`compose`/`vexp` exponentiate and invert
+                # the warp the same way
                 with open(fjson, 'w') as f:
                     json.dump(dict(model=nonlin.model,
-                                   inversion=nonlin.inversion), f)
+                                   inversion=nonlin.inversion,
+                                   bound=nonlin.bound), f)
             if options.verbose:
                 print('Nonlin ->', fname)
 

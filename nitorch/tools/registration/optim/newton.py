@@ -69,12 +69,18 @@ class GridGaussNewton(SecondOrder):
     `factor` is used as is: it must already be normalized consistently
     with the objective function (e.g., divided by the number of voxels
     if the loss is a mean).
+
+    `bound` is the boundary condition of the regulariser. It must match
+    the one used to compute the gradient of the objective (i.e., the
+    boundary condition of the nonlinear model).
     """
 
     def __init__(self, lr=1, fmg=2, max_iter=2, factor=1, voxel_size=1,
                  absolute=0, membrane=0, bending=0, lame=0,
-                 marquardt=True, preconditioner=None, **kwargs):
+                 marquardt=True, preconditioner=None, bound='dft',
+                 **kwargs):
         super().__init__(lr, **kwargs)
+        self.bound = bound
         self.preconditioner = preconditioner
         self.factor = factor
         self.absolute = absolute
@@ -106,7 +112,8 @@ class GridGaussNewton(SecondOrder):
                    bending=self.bending,
                    lame=self.lame,
                    factor=self.factor,
-                   voxel_size=self.voxel_size)
+                   voxel_size=self.voxel_size,
+                   bound=self.bound)
         if self.fmg:
             prm['nb_iter'] = self.max_iter
             prm['nb_cycles'] = self.fmg

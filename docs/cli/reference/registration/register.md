@@ -499,6 +499,7 @@ weights of the `--lame` option.
 | `-o`, `--output`            | `[PATH` &vert; `true` &vert; `false]` | Where to write the field. `{dir}` and `{name}` are available. With no value, `true`, `yes` or `1`, the default path is used; `false`, `no` or `0` writes nothing. | `{dir}/{name}.nii.gz` |
 | `-h`, `--hessian`           | `[PATH` &vert; `true` &vert; `false]` | Where to write the Hessian of the matching term at the solution (a map of local confidence), used to weight [`vopt`](vopt.md). `{dir}` and `{name}` are available. With no value, `true`, `yes` or `1`, the default path `{dir}/{name}_hessian.nii.gz` is used; `false`, `no` or `0` writes nothing. | not written |
 | `--inversion`               | `{default,push,newton}` | `@nonlin`, all models. How the side of the warp that is not computed directly is obtained by inverting the other one. `default` keeps the model's usual behaviour; `push` and `newton` are more elaborate inverses. See [below](#choosing-how-the-warp-is-inverted-with-inversion). | `default`          |
+| `--bound`                   | `BND`               | Boundary condition of the field: `dft` (circular), `dct2`, `dct1`, `dst2`, `dst1` or `zero`. `shoot` only accepts `dft`. Not to be confused with `-b` of `@@fix`/`@@mov`, which is the boundary condition of the images. See [below](#choosing-the-boundary-condition-of-the-field-with-bound). | `dft`              |
 | `-2d`                       | `[AXIS]`            | Restrict the deformation to the plane normal to `AXIS`. Without a value, axis 2.                                                     | 3D                 |
 
 The default lattice has the mean voxel size of the images and covers all
@@ -535,6 +536,20 @@ All accuracy and cost figures are approximate, and were measured on 3D benchmark
 
 !!! tip "When to use it"
     Use `--inversion newton` with `shoot` when the deformations are steep and an accurate, inverse-consistent forward warp matters, for example when you will pull images back and forth with `reslice`. For small deformations, or if you only use one direction, the default is accurate enough. For `svf`, there is rarely a reason to change it.
+
+#### Choosing the boundary condition of the field with `--bound`
+
+The field is defined on a finite lattice, and the regularisation, the scaling and squaring of `svf` and the numerical inversion all look at neighbouring voxels, so they need to know how the field continues beyond the edges of the lattice. `--bound` sets this boundary condition, and the same one is used everywhere: in the penalty, in the Gauss-Newton solver, in the exponentiation and its derivatives, in the inversion, and when the field is resampled from one pyramid level to the next. It is saved in the `.json` sidecar, so that [`reslice`](../spatial/reslice.md#velocity-fields), [`compose`](../spatial/compose.md) and [`vexp`](../spatial/vexp.md) exponentiate and invert the field the same way.
+
+| Boundary | The field beyond the edges | Effect |
+| -------- | -------------------------- | ------ |
+| `dft`    | wraps around (circular)    | Opposite faces of the field of view are neighbours: the penalty couples them, and scaling and squaring carries displacements across them. Harmless when the edges are background. The default, and the only one `shoot` supports (its Green's function is computed by FFT). |
+| `dct2`, `dct1` | is mirrored            | A free boundary: the field can do anything at the edges. The most natural choice when tissue reaches the edges of the field of view. |
+| `dst2`, `dst1` | is mirrored and negated | Pushes the displacement towards zero at the edges. |
+| `zero`   | is zero                    | The deformation is the identity beyond the edges. |
+
+!!! tip "When to use it"
+    The default suits images surrounded by background, such as whole-head scans. If the images are cropped, for example slabs, partial fields of view or tissue blocks, so that structures touch the edges of the lattice, use `--bound dct2` (with `svf` or `smalldef`), or pad the lattice with `-p`.
 
 ## Optimisation
 
@@ -678,7 +693,7 @@ the fields `{dir}` (a directory), `{sep}` (the path separator), `{base}`
 | ----------------------------------- | ------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
 | `{dir}/{name}.lta`                  | `@affine` is used                     | The affine matrix, in RAS-to-RAS convention. For example `rigid.lta`, `affine.lta`. It maps fixed to moving world coordinates. Always the *full* transformation, whatever the position. |
 | `{dir}/{name}.nii.gz`               | `@nonlin` is used                     | The field, in voxels of its own lattice: a velocity for `svf` (`svf.nii.gz`) and `shoot`, a displacement for `smalldef`. |
-| `{dir}/{name}.json`                 | `@nonlin`                             | The model and the inversion method (`model` and `inversion`), for all models. For `shoot`, also the regularisation (penalty and factor) and the number of integration `steps` and `fast` flag used during registration, needed to integrate the shooting equations the same way (`shoot.json`). Read by [`reslice`](../spatial/reslice.md#velocity-fields), [`compose`](../spatial/compose.md) and [`vexp`](../spatial/vexp.md). |
+| `{dir}/{name}.json`                 | `@nonlin`                             | The model and the inversion method (`model` and `inversion`), for all models, and for `svf` and `smalldef`, the boundary condition of the field (`bound`). For `shoot`, also the regularisation (penalty and factor) and the number of integration `steps` and `fast` flag used during registration, needed to integrate the shooting equations the same way (`shoot.json`). Read by [`reslice`](../spatial/reslice.md#velocity-fields), [`compose`](../spatial/compose.md) and [`vexp`](../spatial/vexp.md). |
 | `{dir}/{name}_hessian.nii.gz`       | `@nonlin -h`                          | Hessian of the matching term.                                                                                      |
 | `{dir}/momentum.nii.gz`, `affine_momentum.json` | `@@optim nes`/`ogm` with `-o` | Final momentum of the optimiser.                                                                              |
 | `{dir}/{base}.moved{ext}`           | for each image, unless `-o false`     | The image carried to the registered space, with *minimal reslicing*.                                              |

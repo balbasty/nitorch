@@ -216,6 +216,11 @@ usage:
                                         shoot: the forward (from the more accurate
                                         inverse). push: robust; newton: push + Gauss-
                                         Newton steps, most inverse-consistent, slowest.
+        --bound BND                     Boundary conditions of the field, used by
+                                        the regulariser, solver and exponentiation:
+                                        [dft] (circulant), dct2 (free), dct1, dst2,
+                                        dst1, zero (identity at the edges).
+                                        shoot only supports dft.
 
 @optim options:
     NAME can take values:
@@ -712,6 +717,7 @@ nonlin_aliases = {'v': 'svf',
                   'g': 'shoot',
                   'd': 'smalldef'}
 nonlin_choices = list(nonlin_aliases.values()) + ['unset']
+nonlin_bounds = ['dft', 'dct2', 'dct1', 'dst2', 'dst1', 'zero']
 nonlin_choices = cli.Positional('name', nargs='?', default='svf',
                                 validation=cli.Validations.choice(nonlin_choices),
                                 convert=lambda x: nonlin_aliases.get(x, x),
@@ -754,6 +760,9 @@ nonlin.add_option('inversion', '--inversion', nargs=1, default='default',
                       ['default', 'push', 'newton']),
                   help='How the side of the warp that is not computed '
                        'directly is obtained by inverting the other one')
+nonlin.add_option('bound', '--bound', nargs=1, default='dft',
+                  validation=cli.Validations.choice(nonlin_bounds),
+                  help='Boundary conditions of the nonlinear field')
 nonlin.add_group(optim)
 
 
