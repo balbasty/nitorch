@@ -1690,18 +1690,18 @@ def bending_diag(voxel_size=1, bound='dct2', dim=None, weights=None):
         - `beta = ivx2.combinations(r=2).prod(-1).sum()`
     However, is a weight map is provided, the diagonal of the regulariser
     is a convolved version of the weight map. In 2D, the convolution kernel
-    has a second order "diamond" shape:
-                                    c1
+    has a 3x3 shape:
                                 d   b1  d
-                            c0  b0  a   b0  c0
+                                b0  a   b0
                                 d   b1  d
-                                    c1
     with
-        - `a  = 2.5 * alpha + 2 * beta`
-        - `b0 = 1.5 * ivx2[0]**2 + ivx2[0]*ivx2[1]`
-        - `c0 = 0.25 * ivx2[0]**2`
+        - `a  = 4 * alpha + 2 * beta`
+        - `b0 = ivx2[0]**2 + ivx2[0]*ivx2[1]`
         - `d  = 0.5 * ivx2[0]*ivx2[1]`
-    (the kernel sums to the unweighted diagonal).
+    (the kernel sums to the unweighted diagonal). The same-axis terms are
+    exact second differences `(x[k+1] - 2 x[k] + x[k-1]) / vx^2`, whose
+    squared coefficients are (1, 4, 1); the cross terms average the four
+    one-sided compositions.
 
     Parameters
     ----------
@@ -1740,26 +1740,19 @@ def bending_diag(voxel_size=1, bound='dct2', dim=None, weights=None):
         return 6 * vx.square().sum() + 8 * cvx.sum()
 
     # build sparse kernel
-    kernel = [2.5 * vx.square().sum() + 2 * cvx.sum()]
+    kernel = [4 * vx.square().sum() + 2 * cvx.sum()]
     center_index = [2] * dim
     indices = [list(center_index)]
     for d in range(dim):
         # cross
         subcvx = sum(cvx1 for cvx1, ivx1 in zip(cvx, ivx) if d in ivx1)
-        w1 = 1.5 * vx[d].square() + subcvx
-        w2 = 0.25 * vx[d].square()
-        kernel += [w1, w1, w2, w2]
+        w1 = vx[d].square() + subcvx
+        kernel += [w1, w1]
         index = list(center_index)
         index[d] = 1
         indices.append(index)
         index = list(center_index)
         index[d] = 3
-        indices.append(index)
-        index = list(center_index)
-        index[d] = 0
-        indices.append(index)
-        index = list(center_index)
-        index[d] = 4
         indices.append(index)
         # corners
         for dd in range(d+1, dim):
