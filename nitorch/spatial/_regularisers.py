@@ -49,10 +49,21 @@ else:
     c_solvers = None
 
 
-def _c_supports(weights=None, bending=0, lame=0):
-    """Whether the compiled solvers implement this problem: they do not
-    implement per-penalty weight maps (dict), nor weighted (RLS)
-    bending or linear-elastic energies (the TorchScript solvers do)."""
+def _c_supports(weights=None, bending=0, lame=0, bound=None):
+    """Whether the compiled solvers implement this problem correctly.
+
+    They do not implement per-penalty weight maps (dict), nor weighted
+    (RLS) bending or linear-elastic energies; and with `dct1` or
+    `replicate` boundaries their regularisers are not symmetric (they
+    apply the stencil to the extended field, which is self-adjoint for
+    dct2, dst2 and dft only). The TorchScript implementations are used
+    instead.
+    """
+    if bound is not None:
+        from nitorch._C.grid import bound_to_nitorch
+        names = bound_to_nitorch(core.py.make_list(bound), as_type='str')
+        if any(b in ('dct1', 'replicate') for b in names):
+            return False
     if weights is None:
         return True
     if isinstance(weights, dict):
@@ -1096,7 +1107,7 @@ def regulariser_grid(v, absolute=0, membrane=0, bending=0, lame=0,
         return torch.zeros_like(v)
 
     if (c_solvers and not v.requires_grad
-            and _c_supports(weights, bending, lame)):
+            and _c_supports(weights, bending, lame, bound)):
         return c_solvers.c_regulariser_grid(
             v, weights, None,
             absolute, membrane, bending, lame, factor,
@@ -1307,7 +1318,7 @@ def regulariser(x, absolute=0, membrane=0, bending=0, factor=1,
 
     dim = dim or (x.dim() - 1)
     if (c_solvers and not x.requires_grad
-            and _c_supports(weights, bending)):
+            and _c_supports(weights, bending, bound=bound)):
         return c_solvers.c_regulariser(
             x, weights, None, dim,
             absolute, membrane, bending, factor,
@@ -1331,23 +1342,30 @@ def regulariser(x, absolute=0, membrane=0, bending=0, factor=1,
     membrane = core.py.make_list(membrane, nb_prm) if membrane else []
     bending = core.py.make_list(bending, nb_prm) if bending else []
 
-    wa = wa.expand(x.shape) if wa is not None else [None] * nb_prm
-    wm = wm.expand(x.shape) if wm is not None else [None] * nb_prm
-    wb = wb.expand(x.shape) if wb is not None else [None] * nb_prm
+    # Iterate over the channel dimension (-dim-1), not the first one (which
+    # is a batch dimension when there is one), and accumulate out of
+    # place (in-place updates of views of `y` broke autograd).
+    def per_channel(w):
+        if w is None:
+            return [None] * nb_prm
+        return torch.as_tensor(w, **backend).expand(x.shape).unbind(-dim-1)
 
-    y = torch.zeros_like(x)
-    for x1, y1, w1, alpha in zip(x, y, wa, absolute):
-        if alpha:
-            y1.add_(_absolute(x1, weights=w1), alpha=alpha)
-    for x1, y1, w1, alpha in zip(x, y, wm, membrane):
-        if alpha:
-            y1.add_(_membrane(x1, weights=w1, **fdopt), alpha=alpha)
-    for x1, y1, w1, alpha in zip(x, y, wb, bending):
-        if alpha:
-            y1.add_(_bending(x1, weights=w1, **fdopt), alpha=alpha)
+    xs = x.unbind(-dim-1)
+    wa, wm, wb = per_channel(wa), per_channel(wm), per_channel(wb)
+    ys = []
+    for k in range(nb_prm):
+        yk = 0
+        if absolute and absolute[k]:
+            yk = yk + absolute[k] * _absolute(xs[k], weights=wa[k])
+        if membrane and membrane[k]:
+            yk = yk + membrane[k] * _membrane(xs[k], weights=wm[k], **fdopt)
+        if bending and bending[k]:
+            yk = yk + bending[k] * _bending(xs[k], weights=wb[k], **fdopt)
+        ys.append(yk if torch.is_tensor(yk) else torch.zeros_like(xs[k]))
+    y = torch.stack(ys, -dim-1)
 
     pad_spatial = (Ellipsis,) + (None,) * dim
-    return y.mul_(factor[pad_spatial])
+    return y * factor[pad_spatial]
 
 
 def regulariser_kernel(dim, absolute=0, membrane=0, bending=0,

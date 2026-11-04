@@ -58,10 +58,21 @@ else:
     c_solvers = None
 
 
-def _c_supports(weights=None, bending=0, lame=0):
-    """Whether the compiled solvers implement this problem: they do not
-    implement per-penalty weight maps (dict), nor weighted (RLS)
-    bending or linear-elastic energies (the TorchScript solvers do)."""
+def _c_supports(weights=None, bending=0, lame=0, bound=None):
+    """Whether the compiled solvers implement this problem correctly.
+
+    They do not implement per-penalty weight maps (dict), nor weighted
+    (RLS) bending or linear-elastic energies; and with `dct1` or
+    `replicate` boundaries their regularisers are not symmetric (they
+    apply the stencil to the extended field, which is self-adjoint for
+    dct2, dst2 and dft only). The TorchScript implementations are used
+    instead.
+    """
+    if bound is not None:
+        from nitorch._C.grid import bound_to_nitorch
+        names = bound_to_nitorch(py.make_list(bound), as_type='str')
+        if any(b in ('dct1', 'replicate') for b in names):
+            return False
     if weights is None:
         return True
     if isinstance(weights, dict):
@@ -1015,7 +1026,7 @@ def solve_grid_fmg(hessian, gradient, absolute=0, membrane=0, bending=0,
                                      absolute=absolute, factor=factor,
                                      voxel_size=voxel_size)
 
-    if c_solvers and _c_supports(weights, bending, lame):
+    if c_solvers and _c_supports(weights, bending, lame, bound):
         if optim == 'relaks':  optim = 'relax'
         return c_solvers.c_fmg_grid(
             hessian, gradient, weights,
@@ -1087,7 +1098,7 @@ def solve_field_fmg(hessian, gradient, weights=None, voxel_size=1, bound='dct2',
                                       absolute=absolute, factor=factor)
 
     dim = dim or (gradient.dim() - 1)
-    if c_solvers and _c_supports(weights, bending):
+    if c_solvers and _c_supports(weights, bending, bound=bound):
         if optim == 'relaks':  optim = 'relax'
         return c_solvers.c_fmg(
             hessian, gradient, weights, dim,
@@ -1184,7 +1195,7 @@ def solve_field(hessian, gradient, weights=None, dim=None,
                                       absolute=absolute, factor=factor)
 
     dim = dim or (gradient.dim() - 1)
-    if c_solvers and _c_supports(weights, bending):
+    if c_solvers and _c_supports(weights, bending, bound=bound):
         if optim == 'relaks':  optim = 'relax'
         if optim == 'cg':
             return c_solvers.c_pcg(
@@ -1390,7 +1401,7 @@ def solve_grid(hessian, gradient, absolute=0, membrane=0, bending=0,
                                      absolute=absolute, factor=factor,
                                      voxel_size=voxel_size)
 
-    if c_solvers and _c_supports(weights, bending, lame):
+    if c_solvers and _c_supports(weights, bending, lame, bound):
         if optim == 'relaks':  optim = 'relax'
         if optim == 'cg':
             return c_solvers.c_pcg_grid(
