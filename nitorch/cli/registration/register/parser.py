@@ -190,6 +190,8 @@ usage:
         -i, --input                     Path to initial transform (fov, com, or file path)
         -o, --output                    Path to the output transform: [{dir}/{name}.lta]
         -2d [AXIS=2]                    Force transform to be 2d about AXIS
+        --samples N                     Fit the affine alone (before any @nonlin) on N
+                                        random fixed voxels, drawn once per level [0: all]
 
 @nonlin options:
     NAME can take values:
@@ -712,6 +714,10 @@ affine.add_option('progressive', ('-g', '--progressive'), default=False,
 affine.add_option('is2d', '-2d', default=False, nargs='?',
                   action=cli.Actions.store_value(2),
                   convert=number_or_str(int))
+affine.add_option('samples', '--samples', default=0, nargs=1,
+                  convert=lambda x: int(float(x)),
+                  help='Number of fixed voxels sampled to fit the affine '
+                       'alone (0: all)')
 affine.add_group(optim)
 
 # nonlin group

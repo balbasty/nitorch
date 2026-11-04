@@ -203,10 +203,12 @@ def _main(options):
                 affine0 = losses[0].fixed.affine
             affine = make_affine_2d(options.affine.is2d, affine0,
                                     options.affine.name, options.affine.position,
-                                    penalty=affine_penalty, init=affine_init)
+                                    penalty=affine_penalty, init=affine_init,
+                                    samples=options.affine.samples or None)
         else:
             affine = make_affine(options.affine.name, options.affine.position,
-                                 penalty=affine_penalty, init=affine_init)
+                                 penalty=affine_penalty, init=affine_init,
+                                 samples=options.affine.samples or None)
 
     # ------------------------------------------------------------------
     #                           BUILD DENSE

@@ -24,6 +24,12 @@ import torch
 class OptimizationLoss:
     """Base class for losses used in 'old school' optimisation-based stuff."""
 
+    # True if the loss depends on the spatial arrangement of the voxels
+    # (local windows, slices...). Otherwise, it only depends on the set
+    # of (weighted) voxel values, and can be evaluated on a subset of
+    # voxels laid out in any shape.
+    spatial = False
+
     def __init__(self):
         """Specify parameters"""
         pass
@@ -114,6 +120,8 @@ class AutoGradLoss(OptimizationLoss):
 
 
 class SliceWiseLoss(OptimizationLoss):
+
+    spatial = True
 
     def __init__(self, loss, axis=-1):
         super().__init__()

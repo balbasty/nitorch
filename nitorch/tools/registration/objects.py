@@ -2353,7 +2353,8 @@ class AffineModel(TransformationModel):
         def __imul__(self, other):
             return self.mul_(other)
 
-    def __init__(self, basis, factor=1, penalty=None, optim=None, position='symmetric', dat=None):
+    def __init__(self, basis, factor=1, penalty=None, optim=None,
+                 position='symmetric', dat=None, samples=None):
         """
 
         Parameters
@@ -2390,8 +2391,19 @@ class AffineModel(TransformationModel):
             space if the loss is symmetric), whatever the position.
         dat : LogAffine or tensor, optional
             Pre-allocated log-parameters.
+        samples : int, optional
+            When the affine is fitted alone (no nonlinear component),
+            evaluate the data terms on a fixed random subset of (at
+            most) `samples` voxels of each fixed image, drawn once per
+            pyramid level, instead of on all voxels. Each sampled voxel
+            is weighted by the inverse of its probability of being
+            drawn, so the data terms keep their scale with respect to
+            the prior. Losses that depend on the spatial arrangement of
+            the voxels (local windows, slices) always use all voxels.
+            None or 0: use all voxels.
         """
         self.factor = factor
+        self.samples = samples
         self.penalty = penalty
         self._basis = basis
         self._optim = optim
@@ -2524,6 +2536,8 @@ class AffineModel(TransformationModel):
         s += [f'position={self.position}']
         if self.penalty is not None:
             s += [f'penalty={self._penalty}']
+        if getattr(self, 'samples', None):
+            s += [f'samples={self.samples}']
         s = ', '.join(s)
         return f'{self.__class__.__name__}({s})'
 
@@ -2532,7 +2546,7 @@ class Affine2dModel(AffineModel):
     """A 2D affine in a 3D world"""
 
     def __init__(self, basis, plane, ref_affine=None, factor=1, penalty=None,
-                 dat=None, position='symmetric'):
+                 dat=None, position='symmetric', samples=None):
         self._plane = plane
         self.ref_affine = ref_affine
         if ref_affine is None:
@@ -2544,7 +2558,7 @@ class Affine2dModel(AffineModel):
             rot = rot.to(ref_affine)
         self._rotation = rot
         super().__init__(basis, factor=factor, penalty=penalty, dat=dat,
-                         position=position)
+                         position=position, samples=samples)
 
     rotation = property(lambda self: self.dat.rotation if self.dat is not None else None)
     plane = property(lambda self: self.dat.plane if self.dat is not None else None)

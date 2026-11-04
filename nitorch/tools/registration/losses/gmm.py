@@ -549,6 +549,8 @@ class LGMMH(OptimizationLoss):
 
     order = 2
 
+    spatial = True
+
     def __init__(self, dim=None, bins=3, patch=20, stride=1, kernel='g',
                  max_iter=128, measure='mi', cache=True):
         """

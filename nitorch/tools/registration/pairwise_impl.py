@@ -12,7 +12,7 @@ The command line function `nitorch register` calls this model under the hood.
 """
 from threading import Thread, Lock
 from nitorch import spatial
-from nitorch.core import utils, linalg
+from nitorch.core import utils, linalg, py
 import torch
 from . import optim as optm, utils as regutils
 from .objects import (SVFModel, ShootModel, MeanSpace, Nonlin2dModel,
@@ -448,6 +448,64 @@ def _backward_position(pos):
     return {'m': 'f', 'f': 'm'}.get(pos, pos)
 
 
+class _VoxelSample:
+    """A fixed random subset of the voxels of an image.
+
+    The sampled voxels are laid out along the first spatial dimension,
+    as an image of shape `(n, 1, ..., 1)`, so that pointwise losses can
+    be evaluated on them as on any image. Each voxel is drawn uniformly,
+    without replacement, among the voxels of the image (those in its
+    mask, if it has one), and is weighted by the inverse of its
+    probability of being drawn (Horvitz-Thompson), so that sums over
+    the sample are unbiased estimates of sums over the whole image.
+
+    Attributes
+    ----------
+    grid : (n, 1, ..., 1, dim) tensor
+        Voxel coordinates of the samples
+    dat : (C, n, 1, ..., 1) tensor
+        Image values at the samples
+    mask : (C|1, n, 1, ..., 1) tensor
+        Weights of the samples (mask x inverse sampling probability)
+    """
+
+    def __init__(self, image, n, generator=None):
+        dim, shape, dat = image.dim, list(image.shape), image.dat
+        dtype = image._float_dtype
+        if image.masked:
+            inside = image.mask
+            while inside.dim() > dim:  # channels: valid in any channel
+                inside = inside.amax(0)
+            inside = (inside > 0).flatten().nonzero().squeeze(-1)
+            ncand = len(inside)
+        else:
+            inside = None
+            ncand = py.prod(shape)
+        n = min(int(n), ncand)
+        idx = torch.randperm(ncand, generator=generator)[:n]
+        idx = idx.sort().values.to(dat.device)  # sorted: local memory access
+        if inside is not None:
+            idx = inside[idx]
+
+        layout = [n] + [1] * (dim - 1)
+        coords, rem = [], idx
+        for size in reversed(shape):
+            coords.append(rem % size)
+            rem = rem // size
+        coords = torch.stack(coords[::-1], -1).to(dtype)
+        self.grid = coords.reshape([*layout, dim])
+        self.dat = dat.reshape([len(dat), -1])[:, idx]
+        self.dat = self.dat.reshape([len(dat), *layout])
+        weight = ncand / max(n, 1)
+        if image.masked:
+            mask = image.mask.to(dtype)
+            mask = mask.reshape([len(mask), -1])[:, idx].mul_(weight)
+        else:
+            mask = torch.full([1, n], weight, dtype=dtype, device=dat.device)
+        self.mask = mask.reshape([len(mask), *layout])
+        self.n, self.ncand = n, ncand
+
+
 class PairwiseRegisterStep:
     """Forward pass of Diffeo+Affine registration, with derivatives"""
     # We use a class so that we can have a state to keep track of
@@ -478,6 +536,8 @@ class PairwiseRegisterStep:
         self.last_step = None
         self.disp_hooks = {}        # size of an update, by component
         self._disp_prev = {}        # parameters at the last printed row
+        self._samples = {}          # voxel samples, by fixed image
+        self._sample_rng = None     # their (seeded) random generator
 
         self.framerate = framerate
         self.figure = figure
@@ -1316,6 +1376,34 @@ class PairwiseRegisterStep:
             out.append(sumhess)
         return tuple(out) if len(out) > 1 else out[0]
 
+    def _voxel_sample(self, loss):
+        """Voxel sample on which a loss of the affine-only fit is
+        evaluated, or None (all voxels).
+
+        It is drawn the first time it is needed and kept by this step
+        (i.e., for one pyramid level), so that the objective is the same
+        function across iterations and line searches. The seed is fixed,
+        so that a run is reproducible.
+        """
+        n = getattr(self.affine, 'samples', None)
+        if not n:
+            return None
+        if getattr(loss.loss, 'spatial', False):
+            if not self._samples.get('warned'):
+                import warnings
+                warnings.warn(f'{type(loss.loss).__name__} depends on the '
+                              f'spatial arrangement of the voxels: it is '
+                              f'evaluated on all voxels (samples ignored).')
+                self._samples['warned'] = True
+            return None
+        key = id(loss.fixed)
+        if key not in self._samples:
+            if self._sample_rng is None:
+                self._sample_rng = torch.Generator().manual_seed(0)
+            sample = _VoxelSample(loss.fixed, n, self._sample_rng)
+            self._samples[key] = sample if sample.n < sample.ncand else None
+        return self._samples[key]
+
     def do_affine_only(self, logaff, grad=False, hess=False, in_line_search=False):
         """Forward pass for updating the affine component (nonlin is None)"""
 
@@ -1355,33 +1443,50 @@ class PairwiseRegisterStep:
             aff = linalg.lmdiv(aff_mov, aff)
             gaff = gaff00 @ aff_fix
             gaff = linalg.lmdiv(aff_mov, gaff)
-            psi = spatial.affine_grid(aff, fixed.shape)
 
             # ----------------------------------------------------------
-            # forward pass
+            # forward pass (on all fixed voxels, or on a sample)
             # ----------------------------------------------------------
-            warped, warped_mask = moving.pull(psi, mask=True)
-            if fixed.masked:
-                if warped_mask is None:
-                    mask = fixed.mask
+            def forward(sample):
+                if sample is None:
+                    grid = None
+                    fixed_dat = fixed.dat
+                    fixed_mask = fixed.mask if fixed.masked else None
+                    psi = spatial.affine_grid(aff, fixed.shape)
                 else:
-                    mask = warped_mask * fixed.mask
-            else:
-                mask = warped_mask
+                    grid = sample.grid.to(aff)
+                    fixed_dat, fixed_mask = sample.dat, sample.mask
+                    psi = spatial.affine_matvec(aff, grid)
+                warped, warped_mask = moving.pull(psi, mask=True)
+                if fixed_mask is None:
+                    mask = warped_mask
+                elif warped_mask is None:
+                    mask = fixed_mask
+                else:
+                    mask = warped_mask * fixed_mask
+                return grid, psi, fixed_dat, warped, warped_mask, mask
+
+            sample = self._voxel_sample(loss)
+            grid, psi, fixed_dat, warped, warped_mask, mask = forward(sample)
 
             if do_print:
                 has_printed = True
+                if sample is None:
+                    ppsi, pwarped, pwarped_mask, pmask = \
+                        psi, warped, warped_mask, mask
+                else:  # the plot shows all voxels
+                    _, ppsi, _, pwarped, pwarped_mask, pmask = forward(None)
                 lam = None
                 if hasattr(loss.loss, 'irls'):
                     # lam estimated by the last evaluation: no IRLS loop
-                    lam = loss.loss.weighted_lam(warped, fixed.dat, mask,
-                                                 warped.dim()-1)
-                    if mask is not None:
-                        lam *= mask
+                    lam = loss.loss.weighted_lam(pwarped, fixed.dat, pmask,
+                                                 pwarped.dim()-1)
+                    if pmask is not None:
+                        lam *= pmask
                 if moving.previewed:
-                    preview = moving.pull(psi, preview=True, dat=False)
+                    preview = moving.pull(ppsi, preview=True, dat=False)
                 else:
-                    preview = warped
+                    preview = pwarped
                 init = spatial.affine_lmdiv(moving.affine, fixed.affine)
                 if _almost_identity(init) and moving.shape == fixed.shape:
                     init = moving.dat
@@ -1391,15 +1496,16 @@ class PairwiseRegisterStep:
                     if initmask is not None:
                         init = init * initmask
                 dat = fixed.preview * fixed.mask if fixed.masked else fixed.preview
-                preview = preview * warped_mask if warped_mask is not None else preview
+                preview = preview * pwarped_mask if pwarped_mask is not None else preview
                 self.mov2fix(dat, init, preview, lam=lam,
                              title=f'(affine) {self.n_iter:03d}')
+                del ppsi, pwarped, pwarped_mask, pmask
 
             # ----------------------------------------------------------
             # derivatives wrt moving
             # ----------------------------------------------------------
             g = h = None
-            loss_args = (warped, fixed.dat)
+            loss_args = (warped, fixed_dat)
             loss_kwargs = dict(dim=fixed.dim, mask=mask)
             state = loss.loss.get_state()
             if not grad and not hess:
@@ -1416,11 +1522,13 @@ class PairwiseRegisterStep:
             # chain rule -> derivatives wrt Lie parameters
             # ----------------------------------------------------------
 
-            def compose_grad(g, h, g_mu, g_aff):
+            def compose_grad(g, h, g_mu, g_aff, grid=None):
                 """
                 g, h : gradient/Hessian of loss wrt moving image
                 g_mu : spatial gradients of moving image
                 g_aff : gradient of affine matrix wrt Lie parameters
+                grid : coordinates the affine is applied to
+                       (default: the identity grid of the fixed lattice)
                 returns g, h: gradient/Hessian of loss wrt Lie parameters
                 """
                 # Note that `h` can be `None`, but the functions I
@@ -1428,7 +1536,7 @@ class PairwiseRegisterStep:
                 dim = g_mu.shape[-1]
                 g = regutils.jg(g_mu, g)
                 h = regutils.jhj(g_mu, h)
-                g, h = regutils.affine_grid_backward(g, h)
+                g, h = regutils.affine_grid_backward(g, h, grid=grid)
                 dim2 = dim * (dim + 1)
                 g = g.reshape([*g.shape[:-2], dim2])
                 g_aff = g_aff[..., :-1, :]
@@ -1443,7 +1551,7 @@ class PairwiseRegisterStep:
             # compose with spatial gradients
             if grad or hess:
                 mugrad = moving.pull_grad(psi, rotate=False)
-                g, h = compose_grad(g, h, mugrad, gaff)
+                g, h = compose_grad(g, h, mugrad, gaff, grid=grid)
 
                 if loss.backward:
                     g = g.neg_()

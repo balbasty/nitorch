@@ -124,7 +124,8 @@ def make_image(dat, mask=None, affine=None,
     return image
 
 
-def make_affine(basis='rigid', position='symmetric', penalty=None, init=None):
+def make_affine(basis='rigid', position='symmetric', penalty=None, init=None,
+                samples=None):
     """Build an AffineModel object
 
     Parameters
@@ -144,6 +145,9 @@ def make_affine(basis='rigid', position='symmetric', penalty=None, init=None):
         1/2 lambda ||q||^2. None or 0: no penalty.
     init : str | MappedAffine | (4, 4) tensor
         Initial affine
+    samples : int, optional
+        Number of fixed voxels on which the data terms of an affine-only
+        fit are evaluated (see `objects.AffineModel`). None: all voxels.
 
     Returns
     -------
@@ -162,11 +166,11 @@ def make_affine(basis='rigid', position='symmetric', penalty=None, init=None):
         if init.dim() > 1:
             init, _ = spatial.affine_parameters(init, basis)
     return objects.AffineModel(basis, position=position, penalty=penalty,
-                               dat=init)
+                               dat=init, samples=samples)
 
 
 def make_affine_2d(plane, affine_ref, basis='rigid', position='symmetric',
-                   penalty=None, init=None):
+                   penalty=None, init=None, samples=None):
     """Build an Affine2dModel object
 
     An Affine2dModel represents an in-plane affine within a 3D space.
@@ -190,6 +194,10 @@ def make_affine_2d(plane, affine_ref, basis='rigid', position='symmetric',
         The loss is always computed in fixed space (and also in moving
         space if the loss is symmetric), whatever the position.
 
+    samples : int, optional
+        Number of fixed voxels on which the data terms of an affine-only
+        fit are evaluated (see `objects.AffineModel`). None: all voxels.
+
     Returns
     -------
     affine : objects.AffineModel
@@ -200,7 +208,8 @@ def make_affine_2d(plane, affine_ref, basis='rigid', position='symmetric',
     if basis is True:
         basis = 'rigid'
     obj = objects.Affine2dModel(basis, plane=plane, ref_affine=affine_ref,
-                                position=position, penalty=penalty)
+                                position=position, penalty=penalty,
+                                samples=samples)
     if init is not None:
         if isinstance(init, str):
             init = io.map(init)

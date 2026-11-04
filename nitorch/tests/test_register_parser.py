@@ -45,3 +45,14 @@ def test_register_affine_penalty_factors(args, factor, groups):
     assert options.affine.factor == factor
     assert (options.affine.translation, options.affine.rotation,
             options.affine.zoom, options.affine.shear) == groups
+
+
+@pytest.mark.parametrize('args, expected', [
+    ([], 0),                              # all voxels by default
+    (['--samples', '100000'], 100000),
+    (['--samples', '1e5'], 100000),       # scientific notation
+    (['rigid', '--samples', '4096'], 4096),
+])
+def test_register_affine_samples_option(args, expected):
+    options = parser.parse(['@loss', 'mse'] + IMAGES + ['@affine'] + args)
+    assert options.affine.samples == expected
