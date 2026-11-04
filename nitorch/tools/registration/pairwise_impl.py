@@ -273,6 +273,29 @@ def _backward_position(pos):
     return {'m': 'f', 'f': 'm'}.get(pos, pos)
 
 
+def _rescale2d(x):
+    """Map the [0.5%, 99.5%] quantiles of a (*batch, H, W) slice to
+    [0, 1]. Quantiles are computed over the pixels that are nonzero
+    and finite in all batch elements (zeros are background)."""
+    if not x.dtype.is_floating_point:
+        x = x.float()
+    mask = (x != 0) & torch.isfinite(x)
+    # NB: `Tensor.all(dim=[])` reduces over all dimensions,
+    # so only reduce if there are batch dimensions
+    if x.ndim > 2:
+        mask = mask.all(dim=list(range(x.ndim-2)))
+    if not mask.any():
+        # empty slice (e.g., outside of the field of view)
+        return torch.zeros_like(x)
+    xmasked = x[..., mask]
+    mn, mx = utils.quantile(xmasked, [0.005, 0.995],
+                            dim=-1, bins=1024).unbind(-1)
+    mx = mx.max(mn + 1e-8)
+    mn, mx = mn[..., None, None], mx[..., None, None]
+    x = x.sub(mn).div_(mx-mn).clamp_(0, 1)
+    return x
+
+
 class PairwiseRegisterStep:
     """Forward pass of Diffeo+Affine registration, with derivatives"""
     # We use a class so that we can have a state to keep track of
@@ -346,31 +369,19 @@ class PairwiseRegisterStep:
         if lam is not None:
             lam = lam[0]
 
-        def rescale2d(x):
-            if not x.dtype.is_floating_point:
-                x = x.float()
-            mask = (x == 0).any(dim=list(range(x.ndim-2)))
-            xmasked = x[~mask]
-            mn, mx = utils.quantile(xmasked, [0.005, 0.995],
-                                    dim=range(-2, 0), bins=1024).unbind(-1)
-            mx = mx.max(mn + 1e-8)
-            mn, mx = mn[..., None, None], mx[..., None, None]
-            x = x.sub(mn).div_(mx-mn).clamp_(0, 1)
-            return x
-
         if dim == 3:
             fixed = [fixed[:, :, fixed.shape[-1] // 2],
                      fixed[:, fixed.shape[-2] // 2, :],
                      fixed[fixed.shape[-3] // 2, :, :]]
-            fixed = [rescale2d(f) for f in fixed]
+            fixed = [_rescale2d(f) for f in fixed]
             moving = [moving[:, :, moving.shape[-1] // 2],
                       moving[:, moving.shape[-2] // 2, :],
                       moving[moving.shape[-3] // 2, :, :]]
-            moving = [rescale2d(f) for f in moving]
+            moving = [_rescale2d(f) for f in moving]
             warped = [warped[:, :, warped.shape[-1] // 2],
                       warped[:, warped.shape[-2] // 2, :],
                       warped[warped.shape[-3] // 2, :, :]]
-            warped = [rescale2d(f) for f in warped]
+            warped = [_rescale2d(f) for f in warped]
             if vel is not None:
                 vel = [vel[:, :, vel.shape[-2] // 2, :],
                        vel[:, vel.shape[-3] // 2, :, :],
@@ -380,13 +391,13 @@ class PairwiseRegisterStep:
                 lam = [lam[:, :, lam.shape[-1] // 2],
                        lam[:, lam.shape[-2] // 2, :],
                        lam[lam.shape[-3] // 2, :, :]]
-                lam = [rescale2d(f) for f in lam]
+                lam = [_rescale2d(f) for f in lam]
         else:
-            fixed = [rescale2d(fixed)]
-            moving = [rescale2d(moving)]
-            warped = [rescale2d(warped)]
+            fixed = [_rescale2d(fixed)]
+            moving = [_rescale2d(moving)]
+            warped = [_rescale2d(warped)]
             vel = [vel.square().sum(-1).sqrt()] if vel is not None else []
-            lam = [rescale2d(lam)] if lam is not None else []
+            lam = [_rescale2d(lam)] if lam is not None else []
 
         if vel:
             vmax = max(v.max().item() for v in vel)
