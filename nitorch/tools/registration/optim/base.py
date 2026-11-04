@@ -37,6 +37,19 @@ def _all_finite(x):
     return math.isfinite(x)
 
 
+def rms_step(prev, new):
+    """Default size of an update: RMS of the change of the parameters
+    (in their own units), over all of them."""
+    prev = prev if isinstance(prev, (list, tuple)) else [prev]
+    new = new if isinstance(new, (list, tuple)) else [new]
+    ss, n = 0., 0
+    for x0, x1 in zip(prev, new):
+        x0, x1 = getattr(x0, 'dat', x0), getattr(x1, 'dat', x1)
+        ss += (x1 - x0).double().square().sum().item()
+        n += x1.numel()
+    return (ss / max(n, 1)) ** 0.5
+
+
 def _clone(x):
     if isinstance(x, (list, tuple)):
         return [x1.clone() for x1 in x]
@@ -279,7 +292,7 @@ class OptimIterator(OptimWrapper):
     """
 
     def __init__(self, optim=None, max_iter=20, tol=1e-9, stop='diff',
-                 keep_state=True, **kwargs):
+                 keep_state=True, disp_tol=0, step_size=None, **kwargs):
         """
 
         Parameters
@@ -289,15 +302,27 @@ class OptimIterator(OptimWrapper):
         max_iter : int, default=20
             Maximum number of iterations
         tol : float, default=1e-9
-            Tolerance for early stopping
+            Tolerance for early stopping (on the loss)
         stop : {'diff', 'gain', 'grad'}, default='diff'
             Stopping criterion. Can be a combination.
+        disp_tol : float, default=0
+            Tolerance for early stopping on the size of the accepted
+            update, as measured by `step_size`. 0 disables it.
+        step_size : callable(param_prev, param_new) -> float, optional
+            Size of an update (e.g., the RMS displacement it causes, in
+            voxels). Set by whoever knows what the parameters mean (e.g.,
+            `PairwiseRegister`). Default: RMS of the change of the
+            parameters (`rms_step`).
 
+        Iterations stop as soon as either criterion is met.
         """
         super().__init__(optim, **kwargs)
         self.max_iter = max_iter
         self.tol = tol
         self.stop = stop
+        self.disp_tol = disp_tol
+        self.step_size = step_size
+        self.last_step_size = None
         self.keep_state = keep_state
         self.loss_max = -float('inf')
         self.loss_prev = float('inf')
@@ -341,15 +366,26 @@ class OptimIterator(OptimWrapper):
         loss, *derivatives = self._get_loss(param, closure, **kwargs)
 
         loss_prev = loss_max = loss
+        track_step = bool(self.disp_tol)
+        step_size = self.step_size if callable(self.step_size) else rms_step
+        self.last_step_size = None
         for n_iter in range(1, self.max_iter+1):
 
             # perform step
+            param_prev = _clone(param) if track_step else None
             step = optim.step if optim.iter is self else optim.iter
             param, loss, *derivatives = step(
                 param, closure,
                 **self.derivatives_to_dict(loss, *derivatives))
 
-            # check convergence
+            # check convergence: size of the update
+            if track_step:
+                self.last_step_size = float(step_size(param_prev, param))
+                del param_prev
+                if self.last_step_size < self.disp_tol:
+                    break
+
+            # check convergence: loss
             stop = abs(loss_prev-loss)
             if self.stop == 'gain':
                 denom = abs(loss_max-loss)
@@ -378,7 +414,7 @@ class OptimIterator(OptimWrapper):
             closure(param)
 
     def repr_keys(self):
-        return ['max_iter', 'tol', 'stop']
+        return ['max_iter', 'tol', 'stop', 'disp_tol']
 
 
 class InterleavedOptimIterator(OptimIterator):

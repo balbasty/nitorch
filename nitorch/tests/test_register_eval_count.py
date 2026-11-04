@@ -191,7 +191,7 @@ def _trace(kind, loss='mse', max_iter=3, outer=2):
         orig[name] = getattr(PairwiseRegisterStep, name)
     sim, affine, nonlin, optim = _setup(kind, loss, max_iter=max_iter)
     for opt in (optim if kind == 'joint' else [optim]):
-        opt.iter.tol = 0                # exactly `max_iter` steps
+        opt.iter.tol = opt.iter.disp_tol = 0    # exactly `max_iter` steps
     if kind == 'joint':
         optim.max_iter = outer
     try:

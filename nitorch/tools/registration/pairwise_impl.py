@@ -115,6 +115,29 @@ class PairwiseRegister:
     def __call__(self):
         return self.fit()
 
+    def _set_step_sizes(self):
+        """Give each optimiser that stops on the size of its updates
+        (`disp_tol`) the function that measures them."""
+        targets = _step_targets(self.losses)
+        affine = self.affine if not getattr(self.affine, 'frozen', False) else None
+        nonlin = self.nonlin if not getattr(self.nonlin, 'frozen', False) else None
+        if affine and nonlin:
+            pairs = [(self.optim[0], 'affine'), (self.optim[1], 'nonlin')]
+        elif affine:
+            pairs = [(self.optim, 'affine')]
+        elif nonlin:
+            pairs = [(self.optim, 'nonlin')]
+        else:
+            pairs = []
+        for opt, kind in pairs:
+            it = getattr(opt, 'iter', None)
+            if not isinstance(it, optm.OptimIterator) or not it.disp_tol:
+                continue
+            if kind == 'affine':
+                it.step_size = _affine_step_size(self.affine, targets)
+            else:
+                it.step_size = _nonlin_step_size(self.nonlin, targets)
+
     def fit(self):
         # Transformation parameters must be floating point, even when
         # the images are not (e.g., discretized images are integers).
@@ -184,6 +207,7 @@ class PairwiseRegister:
             step.init_penalties()
 
         step.framerate = self.framerate
+        self._set_step_sizes()
         if self.affine and self.nonlin:
             if getattr(self.affine, 'frozen', False):
                 nonlin_optim = self.optim
@@ -257,6 +281,144 @@ class PairwiseRegister:
                 step.verbose = verbose
 
         return step.ll
+
+
+# ----------------------------------------------------------------------
+#   Size of an accepted update, for displacement-based early stopping
+#   (#266): RMS of the displacement that the update causes, over the
+#   voxels of the images on which the losses are evaluated, each measured
+#   in the voxel coordinates of its own image (current pyramid level).
+#
+#   The "targets" are the (image, direction) pairs on whose grid a loss is
+#   computed: each loss's `fixed` image, warped by the forward transform,
+#   or by the inverse one if `loss.backward` (the reversed half of a
+#   symmetric loss, whose `fixed` is the original moving image).
+# ----------------------------------------------------------------------
+
+def _image_weights(image):
+    """Weights of an image's voxels: its mask if any, else ones."""
+    dat = image.dat
+    if image.masked:
+        w = image.mask.to(device=dat.device, dtype=torch.double)
+        while w.dim() > image.dim:      # channels: valid in any channel
+            w = w.amax(0)
+        return (w > 0).double()
+    return torch.ones(image.shape, dtype=torch.double, device=dat.device)
+
+
+def _step_targets(losses):
+    """Distinct (image, backward) pairs on whose grid the losses are
+    evaluated."""
+    targets, seen = [], set()
+    for loss in losses:
+        key = (id(loss.fixed), bool(loss.backward))
+        if key not in seen:
+            seen.add(key)
+            targets.append((loss.fixed, bool(loss.backward)))
+    return targets
+
+
+def _affine_step_size(affine, targets):
+    """Exact RMS displacement of an affine update, in closed form.
+
+    For a target image with voxel-to-world matrix `F` (linear part `F3`)
+    and homogeneous world coordinates `x~` of its (masked) voxels, the
+    displacement of a voxel, in that image's voxel coordinates, is
+    `F3^-1 (A1 - A0) x~` (A = forward transform, or its inverse for a
+    backward target), so that its mean square is `tr(R E[x~ x~'] R')`,
+    with `R = F3^-1 (A1 - A0)`. The second moments of each target grid
+    are computed once.
+    """
+    if not isinstance(targets, (list, tuple)):
+        targets = [(targets, False)]
+    stats = []
+    for image, backward in targets:
+        w = _image_weights(image)
+        dim = w.dim()
+        total = w.sum()
+        coords = [torch.arange(n, dtype=torch.double, device=w.device).reshape(
+                  [n if d == i else 1 for i in range(dim)])
+                  for d, n in enumerate(w.shape)]
+        mom = torch.zeros([dim + 1, dim + 1], dtype=torch.double,
+                          device=w.device)
+        mom[-1, -1] = 1
+        for d in range(dim):
+            wd = w * coords[d]
+            mom[d, -1] = mom[-1, d] = wd.sum() / total
+            for e in range(d, dim):
+                mom[d, e] = mom[e, d] = (wd * coords[e]).sum() / total
+            del wd
+        vox2world = image.affine.to(mom)
+        mom = vox2world.matmul(mom).matmul(vox2world.T)       # world moments
+        world2vox = torch.linalg.inv(vox2world[:dim, :dim])
+        stats.append((backward, total, mom, world2vox))
+    total = sum(t for _, t, _, _ in stats)
+
+    def step_size(prev, new):
+        q0 = getattr(prev, 'dat', prev)
+        q1 = getattr(new, 'dat', new)
+        rms2 = 0
+        for backward, count, mom, world2vox in stats:
+            exp = affine.dat.iexp if backward else affine.dat.exp
+            delta = exp(q1).to(mom) - exp(q0).to(mom)
+            delta = world2vox.matmul(delta[..., :dim, :])
+            ms = delta.matmul(mom).matmul(delta.transpose(-1, -2))
+            rms2 += count * ms.diagonal(0, -1, -2).sum(-1).mean()
+        return (rms2 / total).clamp_min(0).sqrt().item()
+    return step_size
+
+
+def _nonlin_step_size(nonlin, targets):
+    """RMS of the update of the nonlinear parameters, over the target
+    images, in each image's voxel coordinates.
+
+    The parameters live on the nonlinear lattice (voxel-to-world `L`), in
+    lattice voxels: an update `dv` is `L3 dv` in world units and
+    `F3^-1 L3 dv` in the voxels of a target image (voxel-to-world `F`).
+    Each lattice voxel is weighted by the number of (masked) target voxels
+    it covers.
+
+    smalldef: the parameter is the displacement: exact.
+    svf, shoot: the parameter is a velocity; the change of the displacement
+    is `exp(v + dv) - exp(v) ~= dv`, transported and stretched by the flow,
+    to first order (and `-dv` for the inverse, for backward targets). The
+    RMS of `dv` is used.
+    """
+    if not isinstance(targets, (list, tuple)):
+        targets = [(targets, False)]
+    lattice = list(nonlin.shape)
+    lat2world = nonlin.affine.double()
+    dim = len(lattice)
+    stats = []
+    for image, _ in targets:
+        w = _image_weights(image)
+        vox2world = image.affine.double().to(w.device)
+        lat2world = lat2world.to(w.device)
+        if list(w.shape) == lattice and torch.allclose(vox2world, lat2world):
+            weights = w
+        else:
+            # fraction of each lattice voxel that falls in the target image
+            lat2vox = torch.linalg.inv(vox2world).matmul(lat2world)
+            grid = spatial.affine_grid(lat2vox.to(w), lattice)
+            weights = spatial.grid_pull(w[None], grid, bound='zero',
+                                        extrapolate=False, interpolation=1)[0]
+        # number of target voxels per lattice voxel
+        weights = weights * (lat2world[:dim, :dim].det().abs()
+                             / vox2world[:dim, :dim].det().abs())
+        # lattice voxels -> target voxels
+        lat2tgt = torch.linalg.inv(vox2world[:dim, :dim]).matmul(
+            lat2world[:dim, :dim])
+        stats.append((weights, lat2tgt))
+    total = sum(w.sum() for w, _ in stats)
+
+    def step_size(prev, new):
+        delta = (new - prev).reshape([-1, *lattice, dim])
+        rms2 = 0
+        for weights, lat2tgt in stats:
+            d = delta.matmul(lat2tgt.T.to(delta)).square_().sum(-1)
+            rms2 += (d * weights.to(d)).sum() / len(d)
+        return (rms2 / total).clamp_min(0).sqrt().item()
+    return step_size
 
 
 def _almost_identity(aff):
