@@ -18,6 +18,7 @@ import torch
 from nitorch import core, spatial
 from nitorch.core import utils
 from nitorch.core.py import make_list
+from nitorch.spatial._affine import _resize_shape_single
 from nitorch.nn.base import Module
 
 
@@ -876,12 +877,12 @@ class Resize(Module):
                     return f'Downsample({factor}, anchor={self.anchor})'
             return f'Resize({self.factor}, anchor={self.anchor})'
         else:
-            return f'ResizeTo({self.shape}, anchor={self.anchor})'
+            return f'ResizeTo({self.output_shape}, anchor={self.anchor})'
 
     __repr__ = __str__
 
     def shape(self, image, affine=None, output_shape=None):
-        output_shape = output_shape or self.shape
+        output_shape = output_shape or self.output_shape
 
         # read parameters
         if torch.is_tensor(image):
@@ -893,10 +894,12 @@ class Resize(Module):
         inshape = inshape[2:]
         factor = utils.make_vector(self.factor or 0., nb_dim).tolist()
         output_shape = make_list(output_shape or [None], nb_dim)
+        anchor = make_list(self.anchor, nb_dim)
 
-        # compute output shape
-        output_shape = [int(inshp * f) if outshp is None else outshp
-                        for inshp, outshp, f in zip(inshape, output_shape, factor)]
+        # compute output shape (same rule as `spatial.resize`)
+        output_shape = [_resize_shape_single(inshp, f, a) if outshp is None
+                        else outshp for inshp, outshp, f, a
+                        in zip(inshape, output_shape, factor, anchor)]
         return (*batch, *output_shape)
 
 
