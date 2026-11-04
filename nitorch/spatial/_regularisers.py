@@ -272,13 +272,29 @@ def bending(field, voxel_size=1, bound='dct2', dim=None, weights=None):
     else:
         bufi = bufij = bufjj = None
 
+    # Same-axis terms: exact second differences of the (bound-extended)
+    # field, not compositions of first differences. Composing first
+    # differences applies the boundary condition of the field to its
+    # first derivative, whose symmetry differs (e.g., dct2: the field is
+    # even about the border, its derivative is odd), which made the
+    # operator wrong at the borders (bending != membrane^2 under dct2).
     mom = 0
+    for i in range(dim):
+        opti = dict(dim=dims[i], bound=bound[i], side='c', order=2,
+                    voxel_size=voxel_size[i])
+        dii = diff1d(field, **opti, out=bufi)
+        dii = _mul_(dii, weights)
+        mom += div1d(dii, **opti, out=bufij)
+    # Cross terms (i != j): derivatives along different axes keep the
+    # symmetry of the field about the other axis' borders, so composing
+    # one-sided differences is exact (averaged over the four sides).
+    cross = 0
     for i in range(dim):
         for side_i in ('f', 'b'):
             opti = dict(dim=dims[i], bound=bound[i], side=side_i,
                         voxel_size=voxel_size[i])
             di = diff1d(field, **opti, out=bufi)
-            for j in range(i, dim):
+            for j in range(i + 1, dim):
                 for side_j in ('f', 'b'):
                     optj = dict(dim=dims[j], bound=bound[j], side=side_j,
                                 voxel_size=voxel_size[j])
@@ -286,11 +302,10 @@ def bending(field, voxel_size=1, bound='dct2', dim=None, weights=None):
                     dj = _mul_(dj, weights)
                     dj = div1d(dj, **optj, out=bufjj)
                     dj = div1d(dj, **opti, out=bufij)
-                    if i != j:
-                        # off diagonal -> x2  (upper + lower element)
-                        dj.mul_(2)
-                    mom += dj
-    mom.div_(4.)
+                    # off diagonal -> x2  (upper + lower element)
+                    cross += dj.mul_(2)
+    if torch.is_tensor(cross):
+        mom += cross.div_(4.)
     return mom
 
 
@@ -312,24 +327,31 @@ def _bending_l2(field, voxel_size=1, bound='dct2', dim=None):
     else:
         bufi = bufij = bufjj = None
 
+    # same-axis terms: exact second differences (see `bending`)
     mom = 0
+    for i in range(dim):
+        opti = dict(dim=dims[i], bound=bound[i], side='c', order=2,
+                    voxel_size=voxel_size[i])
+        dii = diff1d(field, **opti, out=bufi)
+        mom += div1d(dii, **opti, out=bufij)
+    # cross terms, averaged over the four sides
+    cross = 0
     for i in range(dim):
         for side_i in ('f', 'b'):
             opti = dict(dim=dims[i], bound=bound[i], side=side_i,
                         voxel_size=voxel_size[i])
             di = diff1d(field, **opti, out=bufi)
-            for j in range(i, dim):
+            for j in range(i + 1, dim):
                 for side_j in ('f', 'b'):
                     optj = dict(dim=dims[j], bound=bound[j], side=side_j,
                                 voxel_size=voxel_size[j])
                     dj = diff1d(di, **optj, out=bufij)
                     dj = div1d(dj, **optj, out=bufjj)
                     dj = div1d(dj, **opti, out=bufij)
-                    if i != j:
-                        # off diagonal -> x2  (upper + lower element)
-                        dj = dj.mul_(2)
-                    mom += dj
-    mom = mom.div_(4.)
+                    # off diagonal -> x2  (upper + lower element)
+                    cross = cross + dj.mul_(2)
+    if torch.is_tensor(cross):
+        mom = mom + cross.div_(4.)
     return mom
 
 
