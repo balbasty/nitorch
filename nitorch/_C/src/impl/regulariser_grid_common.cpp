@@ -455,6 +455,9 @@ NI_DEVICE void matvec(const scalar_t *, const scalar_t *, scalar_t *) const;
   DEFINE_MATVEC_DIM(2)
   DEFINE_MATVEC_DIM(3)
 
+  NI_DEVICE void finish(offset_t x, offset_t y, offset_t z,
+    scalar_t * out0, const scalar_t * inp0, const scalar_t * hes0) const;
+
   /* ~~~ OPTIONS ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ */
   offset_t          dim;            // dimensionality (2 or 3)
   uint8_t           mode;
@@ -755,6 +758,38 @@ void RegulariserGridImpl<scalar_t,offset_t,reduce_t>::matvec_none(
 /* ========================================================================== */
 /*                               MACRO HELPERS                                */
 /* ========================================================================== */
+// ~~~ Exact operator at the borders (see `row_weight` and
+//     `replicate_inward` in bounds_common.h) ~~~
+template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
+void RegulariserGridImpl<scalar_t,offset_t,reduce_t>::finish(
+    offset_t x, offset_t y, offset_t z,
+    scalar_t * out0, const scalar_t * inp0, const scalar_t * hes0) const
+{
+  reduce_t w = bound::row_weight<reduce_t>(bound0, x, X)
+             * bound::row_weight<reduce_t>(bound1, y, Y)
+             * bound::row_weight<reduce_t>(bound2, z, Z);
+  int8_t rx = 0, ry = 0, rz = 0;
+  if (bending) {
+    rx = bound::replicate_inward(bound0, x, X);
+    ry = bound::replicate_inward(bound1, y, Y);
+    rz = bound::replicate_inward(bound2, z, Z);
+  }
+  const reduce_t vx[3] = {vx0, vx1, vx2};
+  if (rx || ry || rz)
+    for (offset_t c = 0; c < dim; ++c) {
+      const scalar_t * i = inp0 + c * inp_sC;
+      reduce_t center = static_cast<reduce_t>(*i), corr = 0;
+      if (rx) corr += w200 * (static_cast<reduce_t>(i[rx * inp_sX]) - center);
+      if (ry) corr += w020 * (static_cast<reduce_t>(i[ry * inp_sY]) - center);
+      if (rz) corr += w002 * (static_cast<reduce_t>(i[rz * inp_sZ]) - center);
+      out0[c * out_sC] += static_cast<scalar_t>(corr / vx[c]);
+    }
+  if (w != static_cast<reduce_t>(1))
+    for (offset_t c = 0; c < dim; ++c)
+      out0[c * out_sC] = static_cast<scalar_t>(w * out0[c * out_sC]);
+  matvec(hes0, inp0, out0);
+}
+
 #define GET_COORD1_(x) offset_t x##0  = x - 1, x##1 = x + 1;
 #define GET_COORD2_(x) offset_t x##00  = x - 2, x##11 = x + 2;
 #define GET_SIGN1_(x, X, i)  \
@@ -919,7 +954,7 @@ void RegulariserGridImpl<scalar_t,offset_t,reduce_t>::vel2mom3d_all(
       );
   }
 
-  matvec(hes0, inp0, out0);
+  finish(x, y, z, out0, inp0, hes0);
 }
 
  
@@ -990,7 +1025,7 @@ void RegulariserGridImpl<scalar_t,offset_t,reduce_t>::vel2mom3d_lame(
       );
   }
 
-  matvec(hes0, inp0, out0);
+  finish(x, y, z, out0, inp0, hes0);
 }
 
 
@@ -1080,7 +1115,7 @@ void RegulariserGridImpl<scalar_t,offset_t,reduce_t>::vel2mom3d_bending(
       );
   }
 
-  matvec(hes0, inp0, out0);
+  finish(x, y, z, out0, inp0, hes0);
 }
 
 
@@ -1139,7 +1174,7 @@ void RegulariserGridImpl<scalar_t,offset_t,reduce_t>::vel2mom3d_membrane(
       );
   }
 
-  matvec(hes0, inp0, out0);
+  finish(x, y, z, out0, inp0, hes0);
 }
 
 
@@ -1162,7 +1197,7 @@ void RegulariserGridImpl<scalar_t,offset_t,reduce_t>::vel2mom3d_absolute(
     *out2 = static_cast<scalar_t>(  absolute * c / vx2 );
   }
 
-  matvec(hes0, inp0, out0);
+  finish(x, y, z, out0, inp0, hes0);
 }
 
 
@@ -1181,12 +1216,12 @@ void RegulariserGridImpl<scalar_t,offset_t,reduce_t>::vel2mom3d_rls_membrane(
 
   // In `grid` mode, the weight map is single channel
   scalar_t wcenter = *wgt;
-  reduce_t w1m00 = w100 * (wcenter + bound::get(wgt, wx0, sx0));
-  reduce_t w1p00 = w100 * (wcenter + bound::get(wgt, wx1, sx1));
-  reduce_t w01m0 = w010 * (wcenter + bound::get(wgt, wy0, sy0));
-  reduce_t w01p0 = w010 * (wcenter + bound::get(wgt, wy1, sy1));
-  reduce_t w001m = w001 * (wcenter + bound::get(wgt, wz0, sz0));
-  reduce_t w001p = w001 * (wcenter + bound::get(wgt, wz1, sz1));
+  reduce_t w1m00 = w100 * (wcenter + bound::get_weight(wgt, wx0, sx0, wcenter));
+  reduce_t w1p00 = w100 * (wcenter + bound::get_weight(wgt, wx1, sx1, wcenter));
+  reduce_t w01m0 = w010 * (wcenter + bound::get_weight(wgt, wy0, sy0, wcenter));
+  reduce_t w01p0 = w010 * (wcenter + bound::get_weight(wgt, wy1, sy1, wcenter));
+  reduce_t w001m = w001 * (wcenter + bound::get_weight(wgt, wz0, sz0, wcenter));
+  reduce_t w001p = w001 * (wcenter + bound::get_weight(wgt, wz1, sz1, wcenter));
 
   {
     scalar_t c = *inp0;  // no need to use `get` -> we know we are in the FOV
@@ -1243,7 +1278,7 @@ void RegulariserGridImpl<scalar_t,offset_t,reduce_t>::vel2mom3d_rls_membrane(
     );
   }
 
-  matvec(hes0, inp0, out0);
+  finish(x, y, z, out0, inp0, hes0);
 }
 
 
@@ -1267,7 +1302,7 @@ void RegulariserGridImpl<scalar_t,offset_t,reduce_t>::vel2mom3d_rls_absolute(
     *out2 = static_cast<scalar_t>( c * w  / vx2 );
   }
 
-  matvec(hes0, inp0, out0);
+  finish(x, y, z, out0, inp0, hes0);
 }
 
 
@@ -1370,7 +1405,7 @@ void RegulariserGridImpl<scalar_t,offset_t,reduce_t>::vel2mom2d_all(
     );
   }
 
-  matvec(hes0, inp0, out0);
+  finish(x, y, z, out0, inp0, hes0);
 }
 
  
@@ -1416,7 +1451,7 @@ void RegulariserGridImpl<scalar_t,offset_t,reduce_t>::vel2mom2d_lame(
     );
   }
 
-  matvec(hes0, inp0, out0);
+  finish(x, y, z, out0, inp0, hes0);
 }
 
 
@@ -1470,7 +1505,7 @@ void RegulariserGridImpl<scalar_t,offset_t,reduce_t>::vel2mom2d_bending(
     );
   }
 
-  matvec(hes0, inp0, out0);
+  finish(x, y, z, out0, inp0, hes0);
 }
 
 
@@ -1512,7 +1547,7 @@ void RegulariserGridImpl<scalar_t,offset_t,reduce_t>::vel2mom2d_membrane(
     );
   }
 
-  matvec(hes0, inp0, out0);
+  finish(x, y, z, out0, inp0, hes0);
 }
 
 
@@ -1531,7 +1566,7 @@ void RegulariserGridImpl<scalar_t,offset_t,reduce_t>::vel2mom2d_absolute(
     *out1 = static_cast<scalar_t>(  absolute * c / vx1 );
   }
 
-  matvec(hes0, inp0, out0);
+  finish(x, y, z, out0, inp0, hes0);
 }
 
 
@@ -1550,10 +1585,10 @@ void RegulariserGridImpl<scalar_t,offset_t,reduce_t>::vel2mom2d_rls_membrane(
 
   // In `grid` mode, the weight map is single channel
   scalar_t wcenter = *wgt;
-  reduce_t w1m00 = w100 * (wcenter + bound::get(wgt, wx0, sx0));
-  reduce_t w1p00 = w100 * (wcenter + bound::get(wgt, wx1, sx1));
-  reduce_t w01m0 = w010 * (wcenter + bound::get(wgt, wy0, sy0));
-  reduce_t w01p0 = w010 * (wcenter + bound::get(wgt, wy1, sy1));
+  reduce_t w1m00 = w100 * (wcenter + bound::get_weight(wgt, wx0, sx0, wcenter));
+  reduce_t w1p00 = w100 * (wcenter + bound::get_weight(wgt, wx1, sx1, wcenter));
+  reduce_t w01m0 = w010 * (wcenter + bound::get_weight(wgt, wy0, sy0, wcenter));
+  reduce_t w01p0 = w010 * (wcenter + bound::get_weight(wgt, wy1, sy1, wcenter));
 
   {
     scalar_t c = *inp0;  // no need to use `get` -> we know we are in the FOV
@@ -1588,7 +1623,7 @@ void RegulariserGridImpl<scalar_t,offset_t,reduce_t>::vel2mom2d_rls_membrane(
     );
   }
 
-  matvec(hes0, inp0, out0);
+  finish(x, y, z, out0, inp0, hes0);
 }
 
 
@@ -1608,7 +1643,7 @@ void RegulariserGridImpl<scalar_t,offset_t,reduce_t>::vel2mom2d_rls_absolute(
     *out1 = static_cast<scalar_t>( c * w  / vx1 );
   }
 
-  matvec(hes0, inp0, out0);
+  finish(x, y, z, out0, inp0, hes0);
 }
 
 
@@ -1668,7 +1703,7 @@ void RegulariserGridImpl<scalar_t,offset_t,reduce_t>::vel2mom1d_all(
     );
   }
 
-  matvec(hes0, inp0, out0);
+  finish(x, y, z, out0, inp0, hes0);
 }
 
  
@@ -1695,7 +1730,7 @@ void RegulariserGridImpl<scalar_t,offset_t,reduce_t>::vel2mom1d_lame(
     );
   }
 
-  matvec(hes0, inp0, out0);
+  finish(x, y, z, out0, inp0, hes0);
 }
 
 
@@ -1727,7 +1762,7 @@ void RegulariserGridImpl<scalar_t,offset_t,reduce_t>::vel2mom1d_bending(
     );
   }
 
-  matvec(hes0, inp0, out0);
+  finish(x, y, z, out0, inp0, hes0);
 }
 
 
@@ -1754,7 +1789,7 @@ void RegulariserGridImpl<scalar_t,offset_t,reduce_t>::vel2mom1d_membrane(
     );
   }
 
-  matvec(hes0, inp0, out0);
+  finish(x, y, z, out0, inp0, hes0);
 }
 
 
@@ -1769,7 +1804,7 @@ void RegulariserGridImpl<scalar_t,offset_t,reduce_t>::vel2mom1d_absolute(
     *out0 = static_cast<scalar_t>(  absolute * c / vx0 );
   }
 
-  matvec(hes0, inp0, out0);
+  finish(x, y, z, out0, inp0, hes0);
 }
 
 
@@ -1788,8 +1823,8 @@ void RegulariserGridImpl<scalar_t,offset_t,reduce_t>::vel2mom1d_rls_membrane(
 
   // In `grid` mode, the weight map is single channel
   scalar_t wcenter = *wgt;
-  reduce_t w1m00 = w100 * (wcenter + bound::get(wgt, wx0, sx0));
-  reduce_t w1p00 = w100 * (wcenter + bound::get(wgt, wx1, sx1));
+  reduce_t w1m00 = w100 * (wcenter + bound::get_weight(wgt, wx0, sx0, wcenter));
+  reduce_t w1p00 = w100 * (wcenter + bound::get_weight(wgt, wx1, sx1, wcenter));
 
   {
     scalar_t c = *inp0;  // no need to use `get` -> we know we are in the FOV
@@ -1806,7 +1841,7 @@ void RegulariserGridImpl<scalar_t,offset_t,reduce_t>::vel2mom1d_rls_membrane(
     );
   }
 
-  matvec(hes0, inp0, out0);
+  finish(x, y, z, out0, inp0, hes0);
 }
 
 
@@ -1822,7 +1857,7 @@ void RegulariserGridImpl<scalar_t,offset_t,reduce_t>::vel2mom1d_rls_absolute(
     *out0 = static_cast<scalar_t>( c * w / vx0 );
   }
 
-  matvec(hes0, inp0, out0);
+  finish(x, y, z, out0, inp0, hes0);
 }
 
 /* ========================================================================== */
@@ -1842,7 +1877,7 @@ void RegulariserGridImpl<scalar_t,offset_t,reduce_t>::zeros(offset_t x, offset_t
 {
   GET_POINTERS
   *out0 = *out1 = *out2 = static_cast<scalar_t>(0);
-  matvec(hes0, inp0, out0);
+  finish(x, y, z, out0, inp0, hes0);
 }
 
 

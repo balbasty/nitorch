@@ -466,8 +466,8 @@ public:
     else {
       // index of the fold (lin2sub)
       fx = i/(Fy*Fz);
-      fy = (i/Fz)  % Y;
-      fz = i % Z;
+      fy = (i/Fz)  % Fy;
+      fz = i % Fz;
 
       Xf = 1 + (X - fx - 1) / Fx;
       Yf = 1 + (Y - fy - 1) / Fy;
@@ -527,6 +527,11 @@ private:
   offset_t Fx; // Fold window
   offset_t Fy;
   offset_t Fz;
+
+  NI_DEVICE void finish(offset_t x, offset_t y, offset_t z, offset_t n,
+    const scalar_t * hes, scalar_t * sol0,
+    reduce_t val0, reduce_t val1, reduce_t val2,
+    reduce_t d0, reduce_t d1, reduce_t d2) const;
 
   /* ~~~ OPTIONS ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ */
   offset_t          dim;            // dimensionality (2 or 3)
@@ -997,6 +1002,49 @@ void RelaxGridImpl<scalar_t,offset_t,reduce_t>::invert1d_none(
 /* ========================================================================== */
 /*                               MACRO HELPERS                                */
 /* ========================================================================== */
+// ~~~ Exact operator at the borders (see `row_weight` and
+//     `replicate_inward` in bounds_common.h) ~~~
+// `val` holds the residual g - L x of this voxel and `d` the diagonal
+// used to update it: the residual must be that of the exact operator.
+template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
+void RelaxGridImpl<scalar_t,offset_t,reduce_t>::finish(
+    offset_t x, offset_t y, offset_t z, offset_t n,
+    const scalar_t * hes, scalar_t * sol0,
+    reduce_t val0, reduce_t val1, reduce_t val2,
+    reduce_t d0, reduce_t d1, reduce_t d2) const
+{
+  reduce_t w = bound::row_weight<reduce_t>(bound0, x, X)
+             * bound::row_weight<reduce_t>(bound1, y, Y)
+             * bound::row_weight<reduce_t>(bound2, z, Z);
+  int8_t rx = 0, ry = 0, rz = 0;
+  if (bending) {
+    rx = bound::replicate_inward(bound0, x, X);
+    ry = bound::replicate_inward(bound1, y, Y);
+    rz = bound::replicate_inward(bound2, z, Z);
+  }
+  if (w == static_cast<reduce_t>(1) && !(rx || ry || rz))
+    return invert(hes, sol0, val0, val1, val2, d0, d1, d2);
+  const scalar_t * grd0 = grd_ptr + (x*grd_sX + y*grd_sY + z*grd_sZ + n*grd_sN);
+  const reduce_t vx[3] = {vx0, vx1, vx2};
+  reduce_t val[3] = {val0, val1, val2}, d[3] = {d0, d1, d2};
+  for (offset_t c = 0; c < dim; ++c) {
+    reduce_t g = static_cast<reduce_t>(grd0[c * grd_sC]);
+    reduce_t lx = g - val[c];
+    if (rx || ry || rz) {
+      const scalar_t * s = sol0 + c * sol_sC;
+      reduce_t center = static_cast<reduce_t>(*s), corr = 0, cdiag = 0;
+      if (rx) { corr += w200 * (static_cast<reduce_t>(s[rx * sol_sX]) - center); cdiag += w200; }
+      if (ry) { corr += w020 * (static_cast<reduce_t>(s[ry * sol_sY]) - center); cdiag += w020; }
+      if (rz) { corr += w002 * (static_cast<reduce_t>(s[rz * sol_sZ]) - center); cdiag += w002; }
+      lx   += corr / vx[c];
+      d[c] -= cdiag / vx[c];
+    }
+    val[c] = g - w * lx;
+    d[c]  *= w;
+  }
+  invert(hes, sol0, val[0], val[1], val[2], d[0], d[1], d[2]);
+}
+
 #define GET_COORD1_(x) offset_t x##0  = x - 1, x##1 = x + 1;
 #define GET_COORD2_(x) offset_t x##00  = x - 2, x##11 = x + 2;
 #define GET_SIGN1_(x, X, i)  \
@@ -1162,7 +1210,7 @@ void RelaxGridImpl<scalar_t,offset_t,reduce_t>::relax3d_all(
       );
   }
 
-  invert(hes, sol0, val0, val1, val2, wx000, wy000, wz000);
+  finish(x, y, z, n, hes, sol0, val0, val1, val2, wx000, wy000, wz000);
 }
 
  
@@ -1233,7 +1281,7 @@ void RelaxGridImpl<scalar_t,offset_t,reduce_t>::relax3d_lame(
       );
   }
 
-  invert(hes, sol0, val0, val1, val2, wx000, wy000, wz000);
+  finish(x, y, z, n, hes, sol0, val0, val1, val2, wx000, wy000, wz000);
 }
 
 
@@ -1323,7 +1371,7 @@ void RelaxGridImpl<scalar_t,offset_t,reduce_t>::relax3d_bending(
       );
   }
 
-  invert(hes, sol0, val0, val1, val2, w000/vx0, w000/vx1, w000/vx2);
+  finish(x, y, z, n, hes, sol0, val0, val1, val2, w000/vx0, w000/vx1, w000/vx2);
 }
 
 
@@ -1382,7 +1430,7 @@ void RelaxGridImpl<scalar_t,offset_t,reduce_t>::relax3d_membrane(
       );
   }
 
-  invert(hes, sol0, val0, val1, val2, w000/vx0, w000/vx1, w000/vx2);
+  finish(x, y, z, n, hes, sol0, val0, val1, val2, w000/vx0, w000/vx1, w000/vx2);
 }
 
 
@@ -1406,7 +1454,7 @@ void RelaxGridImpl<scalar_t,offset_t,reduce_t>::relax3d_absolute(
     val2 = (*grd2) - ( absolute * c / vx2 );
   }
 
-  invert(hes, sol0, val0, val1, val2, w000/vx0, w000/vx1, w000/vx2);
+  finish(x, y, z, n, hes, sol0, val0, val1, val2, w000/vx0, w000/vx1, w000/vx2);
 }
 
 
@@ -1426,12 +1474,12 @@ void RelaxGridImpl<scalar_t,offset_t,reduce_t>::relax3d_rls_membrane(
 
   // In `grid` mode, the weight map is single channel
   scalar_t wcenter = *wgt;
-  reduce_t w1m00 = w100 * (wcenter + bound::get(wgt, wx0, sx0));
-  reduce_t w1p00 = w100 * (wcenter + bound::get(wgt, wx1, sx1));
-  reduce_t w01m0 = w010 * (wcenter + bound::get(wgt, wy0, sy0));
-  reduce_t w01p0 = w010 * (wcenter + bound::get(wgt, wy1, sy1));
-  reduce_t w001m = w001 * (wcenter + bound::get(wgt, wz0, sz0));
-  reduce_t w001p = w001 * (wcenter + bound::get(wgt, wz1, sz1));
+  reduce_t w1m00 = w100 * (wcenter + bound::get_weight(wgt, wx0, sx0, wcenter));
+  reduce_t w1p00 = w100 * (wcenter + bound::get_weight(wgt, wx1, sx1, wcenter));
+  reduce_t w01m0 = w010 * (wcenter + bound::get_weight(wgt, wy0, sy0, wcenter));
+  reduce_t w01p0 = w010 * (wcenter + bound::get_weight(wgt, wy1, sy1, wcenter));
+  reduce_t w001m = w001 * (wcenter + bound::get_weight(wgt, wz0, sz0, wcenter));
+  reduce_t w001p = w001 * (wcenter + bound::get_weight(wgt, wz1, sz1, wcenter));
 
   {
     scalar_t c = *sol0;  // no need to use `get` -> we know we are in the FOV
@@ -1490,7 +1538,7 @@ void RelaxGridImpl<scalar_t,offset_t,reduce_t>::relax3d_rls_membrane(
 
   reduce_t w = (absolute * wcenter -  
                 0.5 * (w1m00 + w1p00 + w01m0 + w01p0 + w001m + w001p));
-  invert(hes, sol0, val0, val1, val2, w/vx0, w/vx1, w/vx2);
+  finish(x, y, z, n, hes, sol0, val0, val1, val2, w/vx0, w/vx1, w/vx2);
 }
 
 
@@ -1516,7 +1564,7 @@ void RelaxGridImpl<scalar_t,offset_t,reduce_t>::relax3d_rls_absolute(
   }
 
   reduce_t wd = absolute * w;
-  invert(hes, sol0, val0, val1, val2, wd/vx0, wd/vx1, wd/vx2);
+  finish(x, y, z, n, hes, sol0, val0, val1, val2, wd/vx0, wd/vx1, wd/vx2);
 }
 
 
@@ -1620,7 +1668,7 @@ void RelaxGridImpl<scalar_t,offset_t,reduce_t>::relax2d_all(
     );
   }
 
-  invert(hes, sol0, val0, val1, 0, wx000, wy000, 0);
+  finish(x, y, z, n, hes, sol0, val0, val1, 0, wx000, wy000, 0);
 }
 
  
@@ -1666,7 +1714,7 @@ void RelaxGridImpl<scalar_t,offset_t,reduce_t>::relax2d_lame(
     );
   }
 
-  invert(hes, sol0, val0, val1, 0, wx000, wy000, 0);
+  finish(x, y, z, n, hes, sol0, val0, val1, 0, wx000, wy000, 0);
 }
 
 
@@ -1720,7 +1768,7 @@ void RelaxGridImpl<scalar_t,offset_t,reduce_t>::relax2d_bending(
     );
   }
 
-  invert(hes, sol0, val0, val1, 0, w000/vx0, w000/vx1, 0);
+  finish(x, y, z, n, hes, sol0, val0, val1, 0, w000/vx0, w000/vx1, 0);
 }
 
 
@@ -1762,7 +1810,7 @@ void RelaxGridImpl<scalar_t,offset_t,reduce_t>::relax2d_membrane(
     );
   }
 
-  invert(hes, sol0, val0, val1, 0, w000/vx0, w000/vx1, 0);
+  finish(x, y, z, n, hes, sol0, val0, val1, 0, w000/vx0, w000/vx1, 0);
 }
 
 
@@ -1782,7 +1830,7 @@ void RelaxGridImpl<scalar_t,offset_t,reduce_t>::relax2d_absolute(
     val1 = (*grd1) - ( absolute * c / vx1 );
   }
 
-  invert(hes, sol0, val0, val1, 0, w000/vx0, w000/vx1, 0);
+  finish(x, y, z, n, hes, sol0, val0, val1, 0, w000/vx0, w000/vx1, 0);
 }
 
 
@@ -1802,10 +1850,10 @@ void RelaxGridImpl<scalar_t,offset_t,reduce_t>::relax2d_rls_membrane(
 
   // In `grid` mode, the weight map is single channel
   scalar_t wcenter = *wgt;
-  reduce_t w1m00 = w100 * (wcenter + bound::get(wgt, wx0, sx0));
-  reduce_t w1p00 = w100 * (wcenter + bound::get(wgt, wx1, sx1));
-  reduce_t w01m0 = w010 * (wcenter + bound::get(wgt, wy0, sy0));
-  reduce_t w01p0 = w010 * (wcenter + bound::get(wgt, wy1, sy1));
+  reduce_t w1m00 = w100 * (wcenter + bound::get_weight(wgt, wx0, sx0, wcenter));
+  reduce_t w1p00 = w100 * (wcenter + bound::get_weight(wgt, wx1, sx1, wcenter));
+  reduce_t w01m0 = w010 * (wcenter + bound::get_weight(wgt, wy0, sy0, wcenter));
+  reduce_t w01p0 = w010 * (wcenter + bound::get_weight(wgt, wy1, sy1, wcenter));
 
   {
     scalar_t c = *sol0;  // no need to use `get` -> we know we are in the FOV
@@ -1841,7 +1889,7 @@ void RelaxGridImpl<scalar_t,offset_t,reduce_t>::relax2d_rls_membrane(
   }
 
   reduce_t w = (absolute * wcenter - 0.5 * (w1m00 + w1p00 + w01m0 + w01p0));
-  invert(hes, sol0, val0, val1, 0, w/vx0, w/vx1, 0);
+  finish(x, y, z, n, hes, sol0, val0, val1, 0, w/vx0, w/vx1, 0);
 }
 
 
@@ -1863,7 +1911,7 @@ void RelaxGridImpl<scalar_t,offset_t,reduce_t>::relax2d_rls_absolute(
   }
 
   reduce_t wd = absolute * w;
-  invert(hes, sol0, val0, val1, 0, wd/vx0, wd/vx1, 0);
+  finish(x, y, z, n, hes, sol0, val0, val1, 0, wd/vx0, wd/vx1, 0);
 }
 
 /* ========================================================================== */
@@ -1923,7 +1971,7 @@ void RelaxGridImpl<scalar_t,offset_t,reduce_t>::relax1d_all(
     );
   }
 
-  invert(hes, sol0, val0, 0, 0, wx000, 0, 0);
+  finish(x, y, z, n, hes, sol0, val0, 0, 0, wx000, 0, 0);
 }
 
  
@@ -1950,7 +1998,7 @@ void RelaxGridImpl<scalar_t,offset_t,reduce_t>::relax1d_lame(
     );
   }
 
-  invert(hes, sol0, val0, 0, 0, wx000, 0, 0);
+  finish(x, y, z, n, hes, sol0, val0, 0, 0, wx000, 0, 0);
 }
 
 
@@ -1982,7 +2030,7 @@ void RelaxGridImpl<scalar_t,offset_t,reduce_t>::relax1d_bending(
     );
   }
 
-  invert(hes, sol0, val0, 0, 0, w000/vx0, 0, 0);
+  finish(x, y, z, n, hes, sol0, val0, 0, 0, w000/vx0, 0, 0);
 }
 
 
@@ -2009,7 +2057,7 @@ void RelaxGridImpl<scalar_t,offset_t,reduce_t>::relax1d_membrane(
     );
   }
 
-  invert(hes, sol0, val0, 0, 0, w000/vx0, 0, 0);
+  finish(x, y, z, n, hes, sol0, val0, 0, 0, w000/vx0, 0, 0);
 }
 
 
@@ -2025,7 +2073,7 @@ void RelaxGridImpl<scalar_t,offset_t,reduce_t>::relax1d_absolute(
     val0 = (*grd0) - ( absolute * c / vx0 );
   }
 
-  invert(hes, sol0, val0, 0, 0, w000/vx0, 0, 0);
+  finish(x, y, z, n, hes, sol0, val0, 0, 0, w000/vx0, 0, 0);
 }
 
 
@@ -2045,8 +2093,8 @@ void RelaxGridImpl<scalar_t,offset_t,reduce_t>::relax1d_rls_membrane(
 
   // In `grid` mode, the weight map is single channel
   scalar_t wcenter = *wgt;
-  reduce_t w1m00 = w100 * (wcenter + bound::get(wgt, wx0, sx0));
-  reduce_t w1p00 = w100 * (wcenter + bound::get(wgt, wx1, sx1));
+  reduce_t w1m00 = w100 * (wcenter + bound::get_weight(wgt, wx0, sx0, wcenter));
+  reduce_t w1p00 = w100 * (wcenter + bound::get_weight(wgt, wx1, sx1, wcenter));
 
   {
     scalar_t c = *sol0;  // no need to use `get` -> we know we are in the FOV
@@ -2064,7 +2112,7 @@ void RelaxGridImpl<scalar_t,offset_t,reduce_t>::relax1d_rls_membrane(
   }
 
   reduce_t w = (absolute * wcenter - 0.5 * (w1m00 + w1p00));
-  invert(hes, sol0, val0, 0, 0, w/vx0, 0, 0);
+  finish(x, y, z, n, hes, sol0, val0, 0, 0, w/vx0, 0, 0);
 }
 
 
@@ -2082,7 +2130,7 @@ void RelaxGridImpl<scalar_t,offset_t,reduce_t>::relax1d_rls_absolute(
   }
 
   reduce_t wd = absolute * w;
-  invert(hes, sol0, val0, 0, 0, wd/vx0, 0, 0);
+  finish(x, y, z, n, hes, sol0, val0, 0, 0, wd/vx0, 0, 0);
 }
 
 

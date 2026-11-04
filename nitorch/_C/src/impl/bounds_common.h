@@ -218,5 +218,50 @@ static NI_INLINE NI_DEVICE int8_t sign(BoundType bound_type, size_t coord, size_
   }
 }
 
+// ---------------------------------------------------------------------
+//   Boundary handling of the quadratic regularisers
+// ---------------------------------------------------------------------
+// The regularisers apply their stencil `L = K'K` to the bound-extended
+// field and read it at the voxels. This equals the exact operator
+// `E' K' diag(omega) K E` (see nitorch/spatial/_quadform.py) for dft,
+// dct2, dst2, dst1 and zero, but not for:
+// - dct1, which mirrors the field about its border voxels: they appear
+//   once per period and the other voxels twice, so that their rows must
+//   be weighted by 1/2 (`row_weight`);
+// - replicate, where the central second difference of a border voxel
+//   folds its ghost sample back onto it, which the stencil does not:
+//   the bending energy must add `(x[inward] - x[border]) / h^4`
+//   (`replicate_inward`).
+
+// Weight of the row (equation) of a voxel along one axis
+template <typename reduce_t, typename offset_t>
+static NI_INLINE NI_DEVICE reduce_t
+row_weight(BoundType bound_type, offset_t coord, offset_t size) {
+  return (bound_type == BoundType::DCT1 && size > 1 &&
+          (coord == 0 || coord == size - 1))
+         ? static_cast<reduce_t>(0.5) : static_cast<reduce_t>(1);
+}
+
+// Direction (+1/-1) of the inward neighbour of a border voxel of a
+// replicate axis, or 0 if no bending correction is needed
+template <typename offset_t>
+static NI_INLINE NI_DEVICE int8_t
+replicate_inward(BoundType bound_type, offset_t coord, offset_t size) {
+  if (bound_type != BoundType::Replicate || size < 2) return 0;
+  if (coord == 0)        return  1;
+  if (coord == size - 1) return -1;
+  return 0;
+}
+
+// Weights (RLS) are always even: ignore the sign of the boundary
+// condition of the field and, where the field is zero (dst1, zero),
+// take the weight of the centre voxel.
+template <typename scalar_t, typename offset_t>
+static NI_INLINE NI_DEVICE scalar_t
+get_weight(const scalar_t * ptr, offset_t offset, int8_t sign,
+           scalar_t center) {
+  return sign ? ptr[offset] : center;
+}
+
 } // namespace bound
 } // namespace ni

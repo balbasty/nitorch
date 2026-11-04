@@ -428,6 +428,9 @@ private:
   NI_DEVICE void matvec_none(
     scalar_t *, const scalar_t *, const scalar_t *) const;
 
+  NI_DEVICE void finish(offset_t x, offset_t y, offset_t z,
+    scalar_t * out, const scalar_t * inp, const scalar_t * hes) const;
+
   /* ~~~ OPTIONS ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ */
   offset_t          dim;            // dimensionality (1 or 2 or 3)
   BoundType         bound0;         // boundary condition  // x|W
@@ -672,6 +675,37 @@ void RegulariserImpl<scalar_t,offset_t,reduce_t>::matvec_none(
 /* ========================================================================== */
 /*                               MACRO HELPERS                                */
 /* ========================================================================== */
+// ~~~ Exact operator at the borders (see `row_weight` and
+//     `replicate_inward` in bounds_common.h) ~~~
+template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
+void RegulariserImpl<scalar_t,offset_t,reduce_t>::finish(
+    offset_t x, offset_t y, offset_t z,
+    scalar_t * out, const scalar_t * inp, const scalar_t * hes) const
+{
+  reduce_t w = bound::row_weight<reduce_t>(bound0, x, X)
+             * bound::row_weight<reduce_t>(bound1, y, Y)
+             * bound::row_weight<reduce_t>(bound2, z, Z);
+  int8_t rx = 0, ry = 0, rz = 0;
+  if (has_bending) {
+    rx = bound::replicate_inward(bound0, x, X);
+    ry = bound::replicate_inward(bound1, y, Y);
+    rz = bound::replicate_inward(bound2, z, Z);
+  }
+  if (rx || ry || rz)
+    for (offset_t c = 0; c < C; ++c) {
+      const scalar_t * i = inp + c * inp_sC;
+      reduce_t center = static_cast<reduce_t>(*i), corr = 0;
+      if (rx) corr += b200 * (static_cast<reduce_t>(i[rx * inp_sX]) - center);
+      if (ry) corr += b020 * (static_cast<reduce_t>(i[ry * inp_sY]) - center);
+      if (rz) corr += b002 * (static_cast<reduce_t>(i[rz * inp_sZ]) - center);
+      out[c * out_sC] += static_cast<scalar_t>(bending[c] * corr);
+    }
+  if (w != static_cast<reduce_t>(1))
+    for (offset_t c = 0; c < C; ++c)
+      out[c * out_sC] = static_cast<scalar_t>(w * out[c * out_sC]);
+  matvec(out, hes, inp);
+}
+
 #define GET_COORD1_(x) offset_t x##0  = x - 1, x##1 = x + 1;
 #define GET_COORD2_(x) offset_t x##00  = x - 2, x##11 = x + 2;
 #define GET_SIGN1_(x, X, i)  \
@@ -744,7 +778,7 @@ void RegulariserImpl<scalar_t,offset_t,reduce_t>::zeros(offset_t x, offset_t y, 
     *out = static_cast<scalar_t>(0);
 
   out -= C*out_sC;
-  matvec(out, hes, inp);
+  finish(x, y, z, out, inp, hes);
 }
 
 
@@ -801,7 +835,7 @@ void RegulariserImpl<scalar_t,offset_t,reduce_t>::vel2mom3d_bending(
 
   inp -= C*inp_sC;
   out -= C*out_sC;
-  matvec(out, hes, inp);
+  finish(x, y, z, out, inp, hes);
 }
 
 template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
@@ -835,7 +869,7 @@ void RegulariserImpl<scalar_t,offset_t,reduce_t>::vel2mom3d_membrane(
 
   inp -= C*inp_sC;
   out -= C*out_sC;
-  matvec(out, hes, inp);
+  finish(x, y, z, out, inp, hes);
 }
 
 
@@ -851,7 +885,7 @@ void RegulariserImpl<scalar_t,offset_t,reduce_t>::vel2mom3d_absolute(
 
   inp -= C*inp_sC;
   out -= C*out_sC;
-  matvec(out, hes, inp);
+  finish(x, y, z, out, inp, hes);
 }
 
 
@@ -872,12 +906,12 @@ void RegulariserImpl<scalar_t,offset_t,reduce_t>::vel2mom3d_rls_membrane(
        ++c, inp += inp_sC, out += out_sC, wgt += wgt_sC)
   {
     scalar_t wcenter = *wgt;
-    reduce_t w1m00 = m100 * (wcenter + bound::get(wgt, wx0, sx0));
-    reduce_t w1p00 = m100 * (wcenter + bound::get(wgt, wx1, sx1));
-    reduce_t w01m0 = m010 * (wcenter + bound::get(wgt, wy0, sy0));
-    reduce_t w01p0 = m010 * (wcenter + bound::get(wgt, wy1, sy1));
-    reduce_t w001m = m001 * (wcenter + bound::get(wgt, wz0, sz0));
-    reduce_t w001p = m001 * (wcenter + bound::get(wgt, wz1, sz1));
+    reduce_t w1m00 = m100 * (wcenter + bound::get_weight(wgt, wx0, sx0, wcenter));
+    reduce_t w1p00 = m100 * (wcenter + bound::get_weight(wgt, wx1, sx1, wcenter));
+    reduce_t w01m0 = m010 * (wcenter + bound::get_weight(wgt, wy0, sy0, wcenter));
+    reduce_t w01p0 = m010 * (wcenter + bound::get_weight(wgt, wy1, sy1, wcenter));
+    reduce_t w001m = m001 * (wcenter + bound::get_weight(wgt, wz0, sz0, wcenter));
+    reduce_t w001p = m001 * (wcenter + bound::get_weight(wgt, wz1, sz1, wcenter));
 
     scalar_t center = *inp;  // no need to use `get` -> we know we are in the FOV
     auto get = [center](const scalar_t * x, offset_t o, int8_t s)
@@ -899,7 +933,7 @@ void RegulariserImpl<scalar_t,offset_t,reduce_t>::vel2mom3d_rls_membrane(
 
   inp -= C*inp_sC;
   out -= C*out_sC;
-  matvec(out, hes, inp);
+  finish(x, y, z, out, inp, hes);
 }
 
 
@@ -917,7 +951,7 @@ void RegulariserImpl<scalar_t,offset_t,reduce_t>::vel2mom3d_rls_absolute(
 
   inp -= C*inp_sC;
   out -= C*out_sC;
-  matvec(out, hes, inp);
+  finish(x, y, z, out, inp, hes);
 }
 
 
@@ -1007,7 +1041,7 @@ void RegulariserImpl<scalar_t,offset_t,reduce_t>::vel2mom2d_bending(
 
   inp -= C*inp_sC;
   out -= C*out_sC;
-  matvec(out, hes, inp);
+  finish(x, y, z, out, inp, hes);
 }
 
 template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
@@ -1040,7 +1074,7 @@ void RegulariserImpl<scalar_t,offset_t,reduce_t>::vel2mom2d_membrane(
 
   inp -= C*inp_sC;
   out -= C*out_sC;
-  matvec(out, hes, inp);
+  finish(x, y, z, out, inp, hes);
 }
 
 
@@ -1056,7 +1090,7 @@ void RegulariserImpl<scalar_t,offset_t,reduce_t>::vel2mom2d_absolute(
 
   inp -= C*inp_sC;
   out -= C*out_sC;
-  matvec(out, hes, inp);
+  finish(x, y, z, out, inp, hes);
 }
 
 
@@ -1077,10 +1111,10 @@ void RegulariserImpl<scalar_t,offset_t,reduce_t>::vel2mom2d_rls_membrane(
        ++c, inp += inp_sC, out += out_sC, wgt += wgt_sC)
   {
     scalar_t wcenter = *wgt;
-    reduce_t w1m00 = m100 * (wcenter + bound::get(wgt, wx0, sx0));
-    reduce_t w1p00 = m100 * (wcenter + bound::get(wgt, wx1, sx1));
-    reduce_t w01m0 = m010 * (wcenter + bound::get(wgt, wy0, sy0));
-    reduce_t w01p0 = m010 * (wcenter + bound::get(wgt, wy1, sy1));
+    reduce_t w1m00 = m100 * (wcenter + bound::get_weight(wgt, wx0, sx0, wcenter));
+    reduce_t w1p00 = m100 * (wcenter + bound::get_weight(wgt, wx1, sx1, wcenter));
+    reduce_t w01m0 = m010 * (wcenter + bound::get_weight(wgt, wy0, sy0, wcenter));
+    reduce_t w01p0 = m010 * (wcenter + bound::get_weight(wgt, wy1, sy1, wcenter));
 
     scalar_t center = *inp;  // no need to use `get` -> we know we are in the FOV
     auto get = [center](const scalar_t * x, offset_t o, int8_t s)
@@ -1100,7 +1134,7 @@ void RegulariserImpl<scalar_t,offset_t,reduce_t>::vel2mom2d_rls_membrane(
 
   inp -= C*inp_sC;
   out -= C*out_sC;
-  matvec(out, hes, inp);
+  finish(x, y, z, out, inp, hes);
 }
 
 
@@ -1118,7 +1152,7 @@ void RegulariserImpl<scalar_t,offset_t,reduce_t>::vel2mom2d_rls_absolute(
 
   inp -= C*inp_sC;
   out -= C*out_sC;
-  matvec(out, hes, inp);
+  finish(x, y, z, out, inp, hes);
 }
 
 /* ========================================================================== */
@@ -1187,7 +1221,7 @@ void RegulariserImpl<scalar_t,offset_t,reduce_t>::vel2mom1d_bending(
 
   inp -= C*inp_sC;
   out -= C*out_sC;
-  matvec(out, hes, inp);
+  finish(x, y, z, out, inp, hes);
 }
 
 template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
@@ -1219,7 +1253,7 @@ void RegulariserImpl<scalar_t,offset_t,reduce_t>::vel2mom1d_membrane(
 
   inp -= C*inp_sC;
   out -= C*out_sC;
-  matvec(out, hes, inp);
+  finish(x, y, z, out, inp, hes);
 }
 
 
@@ -1235,7 +1269,7 @@ void RegulariserImpl<scalar_t,offset_t,reduce_t>::vel2mom1d_absolute(
 
   inp -= C*inp_sC;
   out -= C*out_sC;
-  matvec(out, hes, inp);
+  finish(x, y, z, out, inp, hes);
 }
 
 
@@ -1256,8 +1290,8 @@ void RegulariserImpl<scalar_t,offset_t,reduce_t>::vel2mom1d_rls_membrane(
        ++c, inp += inp_sC, out += out_sC, wgt += wgt_sC)
   {
     scalar_t wcenter = *wgt;
-    reduce_t w1m00 = m100 * (wcenter + bound::get(wgt, wx0, sx0));
-    reduce_t w1p00 = m100 * (wcenter + bound::get(wgt, wx1, sx1));
+    reduce_t w1m00 = m100 * (wcenter + bound::get_weight(wgt, wx0, sx0, wcenter));
+    reduce_t w1p00 = m100 * (wcenter + bound::get_weight(wgt, wx1, sx1, wcenter));
 
     scalar_t center = *inp;  // no need to use `get` -> we know we are in the FOV
     auto get = [center](const scalar_t * x, offset_t o, int8_t s)
@@ -1275,7 +1309,7 @@ void RegulariserImpl<scalar_t,offset_t,reduce_t>::vel2mom1d_rls_membrane(
 
   inp -= C*inp_sC;
   out -= C*out_sC;
-  matvec(out, hes, inp);
+  finish(x, y, z, out, inp, hes);
 }
 
 
@@ -1293,7 +1327,7 @@ void RegulariserImpl<scalar_t,offset_t,reduce_t>::vel2mom1d_rls_absolute(
 
   inp -= C*inp_sC;
   out -= C*out_sC;
-  matvec(out, hes, inp);
+  finish(x, y, z, out, inp, hes);
 }
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

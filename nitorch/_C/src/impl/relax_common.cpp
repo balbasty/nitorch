@@ -494,6 +494,9 @@ private:
   offset_t Fy;
   offset_t Fz;
 
+  NI_DEVICE void finish(offset_t x, offset_t y, offset_t z, offset_t n,
+    scalar_t * sol, const scalar_t * hes, reduce_t * val, const reduce_t * diag) const;
+
   /* ~~~ OPTIONS ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ */
   offset_t          dim;
   uint8_t           mode;
@@ -725,6 +728,46 @@ void RelaxImpl<scalar_t,offset_t,reduce_t,hessian_t>::loop_band()
 /* ========================================================================== */
 /*                               MACRO HELPERS                                */
 /* ========================================================================== */
+// ~~~ Exact operator at the borders (see `row_weight` and
+//     `replicate_inward` in bounds_common.h) ~~~
+// `val` holds the residual g - L x of this voxel and `diag` the diagonal
+// used to update it: the residual must be that of the exact operator.
+template <typename scalar_t, typename offset_t, typename reduce_t, typename hessian_t> NI_DEVICE
+void RelaxImpl<scalar_t,offset_t,reduce_t,hessian_t>::finish(
+    offset_t x, offset_t y, offset_t z, offset_t n,
+    scalar_t * sol, const scalar_t * hes, reduce_t * val, const reduce_t * diag) const
+{
+  reduce_t w = bound::row_weight<reduce_t>(bound0, x, X)
+             * bound::row_weight<reduce_t>(bound1, y, Y)
+             * bound::row_weight<reduce_t>(bound2, z, Z);
+  int8_t rx = 0, ry = 0, rz = 0;
+  if (has_bending) {
+    rx = bound::replicate_inward(bound0, x, X);
+    ry = bound::replicate_inward(bound1, y, Y);
+    rz = bound::replicate_inward(bound2, z, Z);
+  }
+  if (w == static_cast<reduce_t>(1) && !(rx || ry || rz))
+    return hessian_t::addinvert(C, sol, sol_sC, hes, hes_sC, val, diag);
+  const scalar_t * grd = grd_ptr + (x*grd_sX + y*grd_sY + z*grd_sZ + n*grd_sN);
+  reduce_t wdiag[MaxC];
+  for (offset_t c = 0; c < C; ++c) {
+    reduce_t g = static_cast<reduce_t>(grd[c * grd_sC]);
+    reduce_t lx = g - val[c], d = diag[c];
+    if (rx || ry || rz) {
+      const scalar_t * s = sol + c * sol_sC;
+      reduce_t center = static_cast<reduce_t>(*s), corr = 0, cdiag = 0;
+      if (rx) { corr += b200 * (static_cast<reduce_t>(s[rx * sol_sX]) - center); cdiag += b200; }
+      if (ry) { corr += b020 * (static_cast<reduce_t>(s[ry * sol_sY]) - center); cdiag += b020; }
+      if (rz) { corr += b002 * (static_cast<reduce_t>(s[rz * sol_sZ]) - center); cdiag += b002; }
+      lx += bending[c] * corr;
+      d  -= bending[c] * cdiag;
+    }
+    val[c]   = g - w * lx;
+    wdiag[c] = w * d;
+  }
+  hessian_t::addinvert(C, sol, sol_sC, hes, hes_sC, val, wdiag);
+}
+
 #define GET_COORD1_(x) offset_t x##0  = x - 1, x##1  = x + 1;
 #define GET_COORD2_(x) offset_t x##00 = x - 2, x##11 = x + 2;
 #define GET_SIGN1_(x, X, i)  \
@@ -845,7 +888,7 @@ void RelaxImpl<scalar_t,offset_t,reduce_t,hessian_t>::relax3d_bending(
 
   sol -= C*sol_sC;
   GET_HES_POINTER
-  hessian_t::addinvert(C, sol, sol_sC, hes, hes_sC, val, w000);
+  finish(x, y, z, n, sol, hes, val, w000);
 }
 
 
@@ -883,7 +926,7 @@ void RelaxImpl<scalar_t,offset_t,reduce_t,hessian_t>::relax3d_membrane(
 
   sol -= C*sol_sC;
   GET_HES_POINTER
-  hessian_t::addinvert(C, sol, sol_sC, hes, hes_sC, val, w000);
+  finish(x, y, z, n, sol, hes, val, w000);
 }
 
 
@@ -901,7 +944,7 @@ void RelaxImpl<scalar_t,offset_t,reduce_t,hessian_t>::relax3d_absolute(
 
   sol -= C*sol_sC;
   GET_HES_POINTER
-  hessian_t::addinvert(C, sol, sol_sC, hes, hes_sC, val, w000);
+  finish(x, y, z, n, sol, hes, val, w000);
 }
 
 
@@ -959,12 +1002,12 @@ void RelaxImpl<scalar_t,offset_t,reduce_t,hessian_t>::relax3d_rls_membrane(
          ++c, sol += sol_sC, grd += grd_sC, wgt += wgt_sC)
     {
       scalar_t wcenter = *wgt;
-      reduce_t w1m00 = m100 * (wcenter + bound::get(wgt, wx0, sx0));
-      reduce_t w1p00 = m100 * (wcenter + bound::get(wgt, wx1, sx1));
-      reduce_t w01m0 = m010 * (wcenter + bound::get(wgt, wy0, sy0));
-      reduce_t w01p0 = m010 * (wcenter + bound::get(wgt, wy1, sy1));
-      reduce_t w001m = m001 * (wcenter + bound::get(wgt, wz0, sz0));
-      reduce_t w001p = m001 * (wcenter + bound::get(wgt, wz1, sz1));
+      reduce_t w1m00 = m100 * (wcenter + bound::get_weight(wgt, wx0, sx0, wcenter));
+      reduce_t w1p00 = m100 * (wcenter + bound::get_weight(wgt, wx1, sx1, wcenter));
+      reduce_t w01m0 = m010 * (wcenter + bound::get_weight(wgt, wy0, sy0, wcenter));
+      reduce_t w01p0 = m010 * (wcenter + bound::get_weight(wgt, wy1, sy1, wcenter));
+      reduce_t w001m = m001 * (wcenter + bound::get_weight(wgt, wz0, sz0, wcenter));
+      reduce_t w001p = m001 * (wcenter + bound::get_weight(wgt, wz1, sz1, wcenter));
 
       scalar_t center = *sol;  // no need to use `get` -> we know we are in the FOV
       auto get = [center](const scalar_t * x, offset_t o, int8_t s)
@@ -993,7 +1036,7 @@ void RelaxImpl<scalar_t,offset_t,reduce_t,hessian_t>::relax3d_rls_membrane(
   
   sol -= C*sol_sC;
   GET_HES_POINTER
-  hessian_t::addinvert(C, sol, sol_sC, hes, hes_sC, val, wval);
+  finish(x, y, z, n, sol, hes, val, wval);
 }
 
 
@@ -1017,7 +1060,7 @@ void RelaxImpl<scalar_t,offset_t,reduce_t,hessian_t>::relax3d_rls_absolute(
 
   sol -= C*sol_sC;
   GET_HES_POINTER
-  hessian_t::addinvert(C, sol, sol_sC, hes, hes_sC, val, wval);
+  finish(x, y, z, n, sol, hes, val, wval);
 }
 
 /* ========================================================================== */
@@ -1114,7 +1157,7 @@ void RelaxImpl<scalar_t,offset_t,reduce_t,hessian_t>::relax2d_bending(
 
   sol -= C*sol_sC;
   GET_HES_POINTER
-  hessian_t::addinvert(C, sol, sol_sC, hes, hes_sC, val, w000);
+  finish(x, y, z, n, sol, hes, val, w000);
 }
 
 
@@ -1151,8 +1194,7 @@ void RelaxImpl<scalar_t,offset_t,reduce_t,hessian_t>::relax2d_membrane(
 
   sol -= C*sol_sC;
   GET_HES_POINTER
-  hessian_t::addinvert(C, sol, sol_sC, hes, hes_sC, val, w000);
-
+  finish(x, y, z, n, sol, hes, val, w000);
 }
 
 
@@ -1170,7 +1212,7 @@ void RelaxImpl<scalar_t,offset_t,reduce_t,hessian_t>::relax2d_absolute(
 
   sol -= C*sol_sC;
   GET_HES_POINTER
-  hessian_t::addinvert(C, sol, sol_sC, hes, hes_sC, val, w000);
+  finish(x, y, z, n, sol, hes, val, w000);
 }
 
 
@@ -1195,10 +1237,10 @@ void RelaxImpl<scalar_t,offset_t,reduce_t,hessian_t>::relax2d_rls_membrane(
          ++c, sol += sol_sC, grd += grd_sC, wgt += wgt_sC)
     {
       scalar_t wcenter = *wgt;
-      reduce_t w1m00 = m100 * (wcenter + bound::get(wgt, wx0, sx0));
-      reduce_t w1p00 = m100 * (wcenter + bound::get(wgt, wx1, sx1));
-      reduce_t w01m0 = m010 * (wcenter + bound::get(wgt, wy0, sy0));
-      reduce_t w01p0 = m010 * (wcenter + bound::get(wgt, wy1, sy1));
+      reduce_t w1m00 = m100 * (wcenter + bound::get_weight(wgt, wx0, sx0, wcenter));
+      reduce_t w1p00 = m100 * (wcenter + bound::get_weight(wgt, wx1, sx1, wcenter));
+      reduce_t w01m0 = m010 * (wcenter + bound::get_weight(wgt, wy0, sy0, wcenter));
+      reduce_t w01p0 = m010 * (wcenter + bound::get_weight(wgt, wy1, sy1, wcenter));
 
       scalar_t center = *sol;  // no need to use `get` -> we know we are in the FOV
       auto get = [center](const scalar_t * x, offset_t o, int8_t s)
@@ -1225,7 +1267,7 @@ void RelaxImpl<scalar_t,offset_t,reduce_t,hessian_t>::relax2d_rls_membrane(
 
   sol -= C*sol_sC;
   GET_HES_POINTER
-  hessian_t::addinvert(C, sol, sol_sC, hes, hes_sC, val, wval);
+  finish(x, y, z, n, sol, hes, val, wval);
 }
 
 
@@ -1249,7 +1291,7 @@ void RelaxImpl<scalar_t,offset_t,reduce_t,hessian_t>::relax2d_rls_absolute(
 
   sol -= C*sol_sC;
   GET_HES_POINTER
-  hessian_t::addinvert(C, sol, sol_sC, hes, hes_sC, val, wval);
+  finish(x, y, z, n, sol, hes, val, wval);
 }
 
 /* ========================================================================== */
@@ -1328,7 +1370,7 @@ void RelaxImpl<scalar_t,offset_t,reduce_t,hessian_t>::relax1d_bending(
 
   sol -= C*sol_sC;
   GET_HES_POINTER
-  hessian_t::addinvert(C, sol, sol_sC, hes, hes_sC, val, w000);
+  finish(x, y, z, n, sol, hes, val, w000);
 }
 
 
@@ -1364,8 +1406,7 @@ void RelaxImpl<scalar_t,offset_t,reduce_t,hessian_t>::relax1d_membrane(
 
   sol -= C*sol_sC;
   GET_HES_POINTER
-  hessian_t::addinvert(C, sol, sol_sC, hes, hes_sC, val, w000);
-
+  finish(x, y, z, n, sol, hes, val, w000);
 }
 
 
@@ -1383,7 +1424,7 @@ void RelaxImpl<scalar_t,offset_t,reduce_t,hessian_t>::relax1d_absolute(
 
   sol -= C*sol_sC;
   GET_HES_POINTER
-  hessian_t::addinvert(C, sol, sol_sC, hes, hes_sC, val, w000);
+  finish(x, y, z, n, sol, hes, val, w000);
 }
 
 
@@ -1408,8 +1449,8 @@ void RelaxImpl<scalar_t,offset_t,reduce_t,hessian_t>::relax1d_rls_membrane(
          ++c, sol += sol_sC, grd += grd_sC, wgt += wgt_sC)
     {
       scalar_t wcenter = *wgt;
-      reduce_t w1m00 = m100 * (wcenter + bound::get(wgt, wx0, sx0));
-      reduce_t w1p00 = m100 * (wcenter + bound::get(wgt, wx1, sx1));
+      reduce_t w1m00 = m100 * (wcenter + bound::get_weight(wgt, wx0, sx0, wcenter));
+      reduce_t w1p00 = m100 * (wcenter + bound::get_weight(wgt, wx1, sx1, wcenter));
 
       scalar_t center = *sol;  // no need to use `get` -> we know we are in the FOV
       auto get = [center](const scalar_t * x, offset_t o, int8_t s)
@@ -1434,7 +1475,7 @@ void RelaxImpl<scalar_t,offset_t,reduce_t,hessian_t>::relax1d_rls_membrane(
 
   sol -= C*sol_sC;
   GET_HES_POINTER
-  hessian_t::addinvert(C, sol, sol_sC, hes, hes_sC, val, wval);
+  finish(x, y, z, n, sol, hes, val, wval);
 }
 
 
@@ -1458,7 +1499,7 @@ void RelaxImpl<scalar_t,offset_t,reduce_t,hessian_t>::relax1d_rls_absolute(
 
   sol -= C*sol_sC;
   GET_HES_POINTER
-  hessian_t::addinvert(C, sol, sol_sC, hes, hes_sC, val, wval);
+  finish(x, y, z, n, sol, hes, val, wval);
 }
 
 /* ========================================================================== */

@@ -418,6 +418,10 @@ private:
   DEFINE_INVERT_DIM(2)
   DEFINE_INVERT_DIM(3)
 
+  NI_DEVICE void finish(offset_t x, offset_t y, offset_t z,
+    const scalar_t * hes, scalar_t * sol, const scalar_t * grd,
+    reduce_t d0, reduce_t d1, reduce_t d2) const;
+
   /* ~~~ OPTIONS ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ */
   offset_t          dim;
   uint8_t           mode;
@@ -730,6 +734,20 @@ void PrecondGridImpl<scalar_t,offset_t,reduce_t>::invert1d_none(
 /* ========================================================================== */
 /*                               MACRO HELPERS                                */
 /* ========================================================================== */
+// ~~~ Exact operator at the borders (see `row_weight` and
+//     `replicate_inward` in bounds_common.h) ~~~
+template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
+void PrecondGridImpl<scalar_t,offset_t,reduce_t>::finish(
+    offset_t x, offset_t y, offset_t z,
+    const scalar_t * hes, scalar_t * sol, const scalar_t * grd,
+    reduce_t d0, reduce_t d1, reduce_t d2) const
+{
+  reduce_t w = bound::row_weight<reduce_t>(bound0, x, X)
+             * bound::row_weight<reduce_t>(bound1, y, Y)
+             * bound::row_weight<reduce_t>(bound2, z, Z);
+  invert(hes, sol, grd, w * d0, w * d1, w * d2);
+}
+
 #define GET_COORD1_(x) offset_t x##0  = x - 1, x##1  = x + 1;
 #define GET_COORD2_(x) offset_t x##00 = x - 2, x##11 = x + 2;
 #define GET_SIGN1_(x, X, i)  \
@@ -798,7 +816,7 @@ void PrecondGridImpl<scalar_t,offset_t,reduce_t>::precond3d(
 {
   GET_POINTERS
 
-  invert(hes, sol, grd, wx000, wy000, wz000);
+  finish(x, y, z, hes, sol, grd, wx000, wy000, wz000);
 }
 
 
@@ -813,16 +831,16 @@ void PrecondGridImpl<scalar_t,offset_t,reduce_t>::precond3d_rls_membrane(
   scalar_t * wgt = wgt_ptr + (x*wgt_sX + y*wgt_sY + z*wgt_sZ);
 
   scalar_t wcenter = *wgt;
-  reduce_t w1m00 = m100 * (wcenter + bound::get(wgt, wx0, sx0));
-  reduce_t w1p00 = m100 * (wcenter + bound::get(wgt, wx1, sx1));
-  reduce_t w01m0 = m010 * (wcenter + bound::get(wgt, wy0, sy0));
-  reduce_t w01p0 = m010 * (wcenter + bound::get(wgt, wy1, sy1));
-  reduce_t w001m = m001 * (wcenter + bound::get(wgt, wz0, sz0));
-  reduce_t w001p = m001 * (wcenter + bound::get(wgt, wz1, sz1));
+  reduce_t w1m00 = m100 * (wcenter + bound::get_weight(wgt, wx0, sx0, wcenter));
+  reduce_t w1p00 = m100 * (wcenter + bound::get_weight(wgt, wx1, sx1, wcenter));
+  reduce_t w01m0 = m010 * (wcenter + bound::get_weight(wgt, wy0, sy0, wcenter));
+  reduce_t w01p0 = m010 * (wcenter + bound::get_weight(wgt, wy1, sy1, wcenter));
+  reduce_t w001m = m001 * (wcenter + bound::get_weight(wgt, wz0, sz0, wcenter));
+  reduce_t w001p = m001 * (wcenter + bound::get_weight(wgt, wz1, sz1, wcenter));
 
   reduce_t w = absolute * wcenter 
              - 0.5 * membrane * (w1m00 + w1p00 + w01m0 + w01p0 + w001m + w001p);
-  invert(hes, sol, grd, w/vx0, w/vx1, w/vx2);
+  finish(x, y, z, hes, sol, grd, w/vx0, w/vx1, w/vx2);
 }
 
 
@@ -834,7 +852,7 @@ void PrecondGridImpl<scalar_t,offset_t,reduce_t>::precond3d_rls_absolute(
   scalar_t * wgt = wgt_ptr + (x*wgt_sX + y*wgt_sY + z*wgt_sZ);
 
   reduce_t w = absolute * (*wgt);
-  invert(hes, sol, grd, w/vx0, w/vx1, w/vx2);
+  finish(x, y, z, hes, sol, grd, w/vx0, w/vx1, w/vx2);
 }
 
 
@@ -886,7 +904,7 @@ void PrecondGridImpl<scalar_t,offset_t,reduce_t>::precond2d(
 {
   GET_POINTERS
 
-  invert(hes, sol, grd, wx000, wy000, 0);
+  finish(x, y, z, hes, sol, grd, wx000, wy000, 0);
 }
 
 
@@ -901,14 +919,14 @@ void PrecondGridImpl<scalar_t,offset_t,reduce_t>::precond2d_rls_membrane(
   scalar_t * wgt = wgt_ptr + (x*wgt_sX + y*wgt_sY);
 
   scalar_t wcenter = *wgt;
-  reduce_t w1m00 = m100 * (wcenter + bound::get(wgt, wx0, sx0));
-  reduce_t w1p00 = m100 * (wcenter + bound::get(wgt, wx1, sx1));
-  reduce_t w01m0 = m010 * (wcenter + bound::get(wgt, wy0, sy0));
-  reduce_t w01p0 = m010 * (wcenter + bound::get(wgt, wy1, sy1));
+  reduce_t w1m00 = m100 * (wcenter + bound::get_weight(wgt, wx0, sx0, wcenter));
+  reduce_t w1p00 = m100 * (wcenter + bound::get_weight(wgt, wx1, sx1, wcenter));
+  reduce_t w01m0 = m010 * (wcenter + bound::get_weight(wgt, wy0, sy0, wcenter));
+  reduce_t w01p0 = m010 * (wcenter + bound::get_weight(wgt, wy1, sy1, wcenter));
 
   reduce_t w = absolute * wcenter 
              - 0.5 * membrane * (w1m00 + w1p00 + w01m0 + w01p0);
-  invert(hes, sol, grd, w/vx0, w/vx1, 0);
+  finish(x, y, z, hes, sol, grd, w/vx0, w/vx1, 0);
 }
 
 
@@ -920,7 +938,7 @@ void PrecondGridImpl<scalar_t,offset_t,reduce_t>::precond2d_rls_absolute(
   scalar_t * wgt = wgt_ptr + (x*wgt_sX + y*wgt_sY);
 
   reduce_t w = absolute * (*wgt);
-  invert(hes, sol, grd, w/vx0, w/vx1, 0);
+  finish(x, y, z, hes, sol, grd, w/vx0, w/vx1, 0);
 }
 
 /* ========================================================================== */
@@ -962,7 +980,7 @@ void PrecondGridImpl<scalar_t,offset_t,reduce_t>::precond1d(
 {
   GET_POINTERS
 
-  invert(hes, sol, grd, wx000, 0, 0);
+  finish(x, y, z, hes, sol, grd, wx000, 0, 0);
 }
 
 
@@ -977,12 +995,12 @@ void PrecondGridImpl<scalar_t,offset_t,reduce_t>::precond1d_rls_membrane(
   scalar_t * wgt = wgt_ptr + (x*wgt_sX + y*wgt_sY);
 
   scalar_t wcenter = *wgt;
-  reduce_t w1m00 = m100 * (wcenter + bound::get(wgt, wx0, sx0));
-  reduce_t w1p00 = m100 * (wcenter + bound::get(wgt, wx1, sx1));
+  reduce_t w1m00 = m100 * (wcenter + bound::get_weight(wgt, wx0, sx0, wcenter));
+  reduce_t w1p00 = m100 * (wcenter + bound::get_weight(wgt, wx1, sx1, wcenter));
 
   reduce_t w = absolute * wcenter 
              - 0.5 * membrane * (w1m00 + w1p00);
-  invert(hes, sol, grd, w/vx0, 0, 0);
+  finish(x, y, z, hes, sol, grd, w/vx0, 0, 0);
 }
 
 
@@ -994,7 +1012,7 @@ void PrecondGridImpl<scalar_t,offset_t,reduce_t>::precond1d_rls_absolute(
   scalar_t * wgt = wgt_ptr + (x*wgt_sX);
 
   reduce_t w = absolute * (*wgt);
-  invert(hes, sol, grd, w/vx0, 0, 0);
+  finish(x, y, z, hes, sol, grd, w/vx0, 0, 0);
 }
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

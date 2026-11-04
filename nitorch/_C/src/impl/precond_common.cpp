@@ -387,6 +387,9 @@ private:
   DEFINE_PRECOND_DIM(2)
   DEFINE_PRECOND_DIM(3)
 
+  NI_DEVICE void finish(offset_t x, offset_t y, offset_t z,
+    scalar_t * sol, const scalar_t * hes, reduce_t * val, const reduce_t * diag) const;
+
   /* ~~~ OPTIONS ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ */
   offset_t          dim;
   uint8_t           mode;
@@ -532,6 +535,24 @@ void PrecondImpl<scalar_t,offset_t,reduce_t,hessian_t>::loop() const
 /* ========================================================================== */
 /*                               MACRO HELPERS                                */
 /* ========================================================================== */
+// ~~~ Exact operator at the borders (see `row_weight` and
+//     `replicate_inward` in bounds_common.h) ~~~
+template <typename scalar_t, typename offset_t, typename reduce_t, typename hessian_t> NI_DEVICE
+void PrecondImpl<scalar_t,offset_t,reduce_t,hessian_t>::finish(
+    offset_t x, offset_t y, offset_t z,
+    scalar_t * sol, const scalar_t * hes, reduce_t * val, const reduce_t * diag) const
+{
+  reduce_t w = bound::row_weight<reduce_t>(bound0, x, X)
+             * bound::row_weight<reduce_t>(bound1, y, Y)
+             * bound::row_weight<reduce_t>(bound2, z, Z);
+  if (w == static_cast<reduce_t>(1))
+    return hessian_t::invert(C, sol, sol_sC, hes, hes_sC, val, diag);
+  reduce_t wdiag[MaxC];
+  for (offset_t c = 0; c < C; ++c)
+    wdiag[c] = w * diag[c];
+  hessian_t::invert(C, sol, sol_sC, hes, hes_sC, val, wdiag);
+}
+
 #define GET_COORD1_(x) offset_t x##0  = x - 1, x##1  = x + 1;
 #define GET_COORD2_(x) offset_t x##00 = x - 2, x##11 = x + 2;
 #define GET_SIGN1_(x, X, i)  \
@@ -591,7 +612,7 @@ void PrecondImpl<scalar_t,offset_t,reduce_t,hessian_t>::precond3d(
   const scalar_t *hes = hes_ptr + (x*hes_sX + y*hes_sY + z*hes_sZ + n*hes_sN);
         scalar_t *sol = sol_ptr + (x*sol_sX + y*sol_sY + z*sol_sZ + n*sol_sN);
 
-  hessian_t::invert(C, sol, sol_sC, hes, hes_sC, val, w000);
+  finish(x, y, z, sol, hes, val, w000);
 }
 
 
@@ -611,12 +632,12 @@ void PrecondImpl<scalar_t,offset_t,reduce_t,hessian_t>::precond3d_rls_membrane(
     for (int32_t c = 0; c < C; ++c, grd += grd_sC, wgt += wgt_sC)
     {
       scalar_t wcenter = *wgt;
-      reduce_t wm = m100 * (wcenter + bound::get(wgt, x0, sx0))
-                  + m100 * (wcenter + bound::get(wgt, x1, sx1))
-                  + m010 * (wcenter + bound::get(wgt, y0, sy0))
-                  + m010 * (wcenter + bound::get(wgt, y1, sy1))
-                  + m001 * (wcenter + bound::get(wgt, z0, sz0))
-                  + m001 * (wcenter + bound::get(wgt, z1, sz1));
+      reduce_t wm = m100 * (wcenter + bound::get_weight(wgt, x0, sx0, wcenter))
+                  + m100 * (wcenter + bound::get_weight(wgt, x1, sx1, wcenter))
+                  + m010 * (wcenter + bound::get_weight(wgt, y0, sy0, wcenter))
+                  + m010 * (wcenter + bound::get_weight(wgt, y1, sy1, wcenter))
+                  + m001 * (wcenter + bound::get_weight(wgt, z0, sz0, wcenter))
+                  + m001 * (wcenter + bound::get_weight(wgt, z1, sz1, wcenter));
       val[c] = *grd;
       wval[c] = ( (*(a++)) * wcenter - 0.5 * (*(m++)) * wm );
     }
@@ -625,7 +646,7 @@ void PrecondImpl<scalar_t,offset_t,reduce_t,hessian_t>::precond3d_rls_membrane(
   const scalar_t *hes = hes_ptr + (x*hes_sX + y*hes_sY + z*hes_sZ + n*hes_sN);
         scalar_t *sol = sol_ptr + (x*sol_sX + y*sol_sY + z*sol_sZ + n*sol_sN);
 
-  hessian_t::invert(C, sol, sol_sC, hes, hes_sC, val, wval);
+  finish(x, y, z, sol, hes, val, wval);
 }
 
 
@@ -648,7 +669,7 @@ void PrecondImpl<scalar_t,offset_t,reduce_t,hessian_t>::precond3d_rls_absolute(
   const scalar_t *hes = hes_ptr + (x*hes_sX + y*hes_sY + z*hes_sZ + n*hes_sN);
         scalar_t *sol = sol_ptr + (x*sol_sX + y*sol_sY + z*sol_sZ + n*sol_sN);
 
-  hessian_t::invert(C, sol, sol_sC, hes, hes_sC, val, wval);
+  finish(x, y, z, sol, hes, val, wval);
 }
 
 
@@ -696,7 +717,7 @@ void PrecondImpl<scalar_t,offset_t,reduce_t,hessian_t>::precond2d(
   const scalar_t *hes = hes_ptr + (x*hes_sX + y*hes_sY + z*hes_sZ + n*hes_sN);
         scalar_t *sol = sol_ptr + (x*sol_sX + y*sol_sY + z*sol_sZ + n*sol_sN);
 
-  hessian_t::invert(C, sol, sol_sC, hes, hes_sC, val, w000);
+  finish(x, y, z, sol, hes, val, w000);
 }
 
 
@@ -716,10 +737,10 @@ void PrecondImpl<scalar_t,offset_t,reduce_t,hessian_t>::precond2d_rls_membrane(
     for (int32_t c = 0; c < C; ++c, grd += grd_sC, wgt += wgt_sC)
     {
       scalar_t wcenter = *wgt;
-      reduce_t wm = m100 * (wcenter + bound::get(wgt, x0, sx0))
-                  + m100 * (wcenter + bound::get(wgt, x1, sx1))
-                  + m010 * (wcenter + bound::get(wgt, y0, sy0))
-                  + m010 * (wcenter + bound::get(wgt, y1, sy1));
+      reduce_t wm = m100 * (wcenter + bound::get_weight(wgt, x0, sx0, wcenter))
+                  + m100 * (wcenter + bound::get_weight(wgt, x1, sx1, wcenter))
+                  + m010 * (wcenter + bound::get_weight(wgt, y0, sy0, wcenter))
+                  + m010 * (wcenter + bound::get_weight(wgt, y1, sy1, wcenter));
       val[c] = *grd;
       wval[c] = ( (*(a++)) * wcenter - 0.5 * (*(m++)) * wm );
     }
@@ -728,7 +749,7 @@ void PrecondImpl<scalar_t,offset_t,reduce_t,hessian_t>::precond2d_rls_membrane(
   const scalar_t *hes = hes_ptr + (x*hes_sX + y*hes_sY + n*hes_sN);
         scalar_t *sol = sol_ptr + (x*sol_sX + y*sol_sY + n*sol_sN);
 
-  hessian_t::invert(C, sol, sol_sC, hes, hes_sC, val, wval);
+  finish(x, y, z, sol, hes, val, wval);
 }
 
 
@@ -751,7 +772,7 @@ void PrecondImpl<scalar_t,offset_t,reduce_t,hessian_t>::precond2d_rls_absolute(
   const scalar_t *hes = hes_ptr + (x*hes_sX + y*hes_sY + n*hes_sN);
         scalar_t *sol = sol_ptr + (x*sol_sX + y*sol_sY + n*sol_sN);
 
-  hessian_t::invert(C, sol, sol_sC, hes, hes_sC, val, wval);
+  finish(x, y, z, sol, hes, val, wval);
 }
 
 /* ========================================================================== */
@@ -785,7 +806,7 @@ void PrecondImpl<scalar_t,offset_t,reduce_t,hessian_t>::precond1d(
   const scalar_t *hes = hes_ptr + (x*hes_sX + n*hes_sN);
         scalar_t *sol = sol_ptr + (x*sol_sX + n*sol_sN);
 
-  hessian_t::invert(C, sol, sol_sC, hes, hes_sC, val, w000);
+  finish(x, y, z, sol, hes, val, w000);
 }
 
 
@@ -805,8 +826,8 @@ void PrecondImpl<scalar_t,offset_t,reduce_t,hessian_t>::precond1d_rls_membrane(
     for (int32_t c = 0; c < C; ++c, grd += grd_sC, wgt += wgt_sC)
     {
       scalar_t wcenter = *wgt;
-      reduce_t wm = m100 * (wcenter + bound::get(wgt, x0, sx0))
-                  + m100 * (wcenter + bound::get(wgt, x1, sx1));
+      reduce_t wm = m100 * (wcenter + bound::get_weight(wgt, x0, sx0, wcenter))
+                  + m100 * (wcenter + bound::get_weight(wgt, x1, sx1, wcenter));
       val[c] = *grd;
       wval[c] = ( (*(a++)) * wcenter - 0.5 * (*(m++)) * wm );
     }
@@ -815,7 +836,7 @@ void PrecondImpl<scalar_t,offset_t,reduce_t,hessian_t>::precond1d_rls_membrane(
   const scalar_t *hes = hes_ptr + (x*hes_sX + n*hes_sN);
         scalar_t *sol = sol_ptr + (x*sol_sX + n*sol_sN);
 
-  hessian_t::invert(C, sol, sol_sC, hes, hes_sC, val, wval);
+  finish(x, y, z, sol, hes, val, wval);
 }
 
 
@@ -838,7 +859,7 @@ void PrecondImpl<scalar_t,offset_t,reduce_t,hessian_t>::precond1d_rls_absolute(
   const scalar_t *hes = hes_ptr + (x*hes_sX + n*hes_sN);
         scalar_t *sol = sol_ptr + (x*sol_sX + n*sol_sN);
 
-  hessian_t::invert(C, sol, sol_sC, hes, hes_sC, val, wval);
+  finish(x, y, z, sol, hes, val, wval);
 }
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
