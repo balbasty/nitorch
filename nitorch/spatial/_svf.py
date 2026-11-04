@@ -295,7 +295,11 @@ def exp_backward(vel, *gradhess, inverse=False, steps=8,
             # (rather than composing the Jacobians, which requires pulling
             # all D*D components: same quantity, cheaper)
             jac = _disp_jacobian(vel, bound, out=jacbuf)
-        det = linalg.small_det(jac)
+        # Volume change of the push forward: |det|. The Jacobian is that of
+        # the squared field (finite differences), whose determinant is
+        # negative where the field folds; a signed weight would make the
+        # Hessian indefinite there.
+        det = linalg.small_det(jac).abs_()
         jac = jac.transpose(-1, -2)
         grid = id + vel
         grad0 = grad
