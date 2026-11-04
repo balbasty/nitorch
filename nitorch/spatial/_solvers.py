@@ -1411,7 +1411,7 @@ def solve_grid(hessian, gradient, absolute=0, membrane=0, bending=0,
     absolute = absolute * factor
     membrane = membrane * factor
     bending = bending * factor
-    lame = [l*factor for l in utils.make_vector(lame, 2).tolist()]
+    lame = [l*factor for l in utils.make_vector(lame, 2, dtype=torch.double).tolist()]
     no_reg = not (membrane or bending or any(lame))
 
     # regulariser

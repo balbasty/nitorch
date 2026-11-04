@@ -1093,7 +1093,7 @@ def regulariser_grid(v, absolute=0, membrane=0, bending=0, lame=0,
     absolute = absolute * factor
     membrane = membrane * factor
     bending = bending * factor
-    lame = make_vector(lame, 2).tolist()
+    lame = make_vector(lame, 2, dtype=torch.double).tolist()  # no float32 rounding
     lame = [l*factor for l in lame]
     fdopt = dict(bound=bound, voxel_size=voxel_size)
     if isinstance(weights, dict):
@@ -1204,7 +1204,7 @@ def regulariser_grid_diag(dim, absolute=0, membrane=0, bending=0, lame=0,
     vx = make_vector(voxel_size, dim, **backend)
     vx2 = vx.square()
     ivx2 = vx2.reciprocal()
-    lame = make_vector(lame, 2).tolist()
+    lame = make_vector(lame, 2, dtype=torch.double).tolist()  # no float32 rounding
     opt = dict(voxel_size=vx, bound=bound, dim=dim)
 
     def mul(w, x):
