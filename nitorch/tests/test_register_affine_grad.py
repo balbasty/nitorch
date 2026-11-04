@@ -57,8 +57,8 @@ def make_affine(pos, basis='rigid', seed=5):
     return affine
 
 
-def make_svf(fix, lattice='same', scale=1., seed=1):
-    """SVF with a zero band along its borders.
+def make_svf(fix, lattice='same', scale=1., seed=1, border=True):
+    """SVF with a zero band along its borders (unless `border=False`).
 
     lattice: 'same' (the fixed lattice) or 'coarse' (2 mm, shifted)
     """
@@ -73,7 +73,9 @@ def make_svf(fix, lattice='same', scale=1., seed=1):
     band = 2 if lattice == 'same' else 1
     window = torch.zeros(shape, dtype=dt)
     window[tuple(slice(band, -band) for _ in shape)] = 1
-    vel = (vel * window).movedim(0, -1)
+    if border:
+        vel = vel * window
+    vel = vel.movedim(0, -1)
     nonlin = objects.SVFModel(steps=8, penalty=dict(
         absolute=0, membrane=0, bending=0, lame=(0, 0), factor=0))
     nonlin.set_dat(shape, affine=aff, dtype=dt)
@@ -101,10 +103,10 @@ def fd_grad(fn, x, eps=1e-6):
     return fd.view_as(x)
 
 
-def setup(pos, kind, lattice='same', scale=1., basis='rigid'):
+def setup(pos, kind, lattice='same', scale=1., basis='rigid', border=True):
     fix, mov = make_images([12, 12, 12])
     affine = make_affine(pos, basis)
-    nonlin = make_svf(fix, lattice, scale)
+    nonlin = make_svf(fix, lattice, scale, border=border)
     sim = make_sim(mov, fix, kind)
     step = PairwiseRegisterStep(sim, affine, nonlin, verbose=0)
     return step, affine, nonlin, sim
@@ -176,11 +178,9 @@ def test_affine_grad(pos, kind, lattice):
     """Affine gradient vs central finite differences, with a deformation.
 
     Backward terms put the affine on the other side (`-p fix` backward
-    goes through the moving-side branch). The fixed-side branch samples
-    a finite-difference Jacobian of the displacement, which is not the
-    derivative of its linear interpolant when the field is not sampled
-    at its nodes: that branch (unchanged here) is ~1e-5 off with the
-    coarse field. Everything else is exact to FD precision."""
+    goes through the moving-side branch). The fixed-side branch is
+    ~1e-5 off with the coarse field (residual of unidentified origin,
+    kept as is). Everything else is exact to FD precision."""
     step, affine, *_ = setup(pos, kind, lattice, 1., 'affine')
     x = affine.dat.dat.clone()
     _, g = step.do_affine(x, grad=True, in_line_search=True)
@@ -188,6 +188,22 @@ def test_affine_grad(pos, kind, lattice):
     err = (fd - g).norm() / fd.norm()
     fixed_side_jac = (lattice == 'coarse' and kind != 'bwd' and pos == 'f')
     assert err < (1e-4 if fixed_side_jac else 1e-6), err
+
+
+@pytest.mark.parametrize('pos', ['s', 'f'])
+@pytest.mark.parametrize('kind', ['fwd', 'sym'])
+def test_affine_grad_deformed_border(pos, kind):
+    """Displacement that does not vanish at the field's border, on the
+    coarse field. The fixed-side Jacobian must sample the displacement
+    with the forward pass's boundary condition (`bound='zero'`,
+    `extrapolate=True`); with `grid_jacobian`'s defaults (`dft`, no
+    extrapolation) it differs near the border."""
+    step, affine, *_ = setup(pos, kind, 'coarse', 1., 'affine', border=False)
+    x = affine.dat.dat.clone()
+    _, g = step.do_affine(x, grad=True, in_line_search=True)
+    fd = fd_grad(step.do_affine, x)
+    err = (fd - g).norm() / fd.norm()
+    assert err < 1e-4, err
 
 
 @pytest.mark.parametrize('pos', ['m', 's'])
