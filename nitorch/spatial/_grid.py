@@ -70,8 +70,9 @@ r"""`bound` can be an int, a string or a BoundType.
     See https://en.wikipedia.org/wiki/Discrete_cosine_transform
         https://en.wikipedia.org/wiki/Discrete_sine_transform
 
-    /!\ Only 'dct1', 'dct2' and 'dft' are implemented for interpolation
-        orders >= 6."""
+    The coefficients are exact for all boundary conditions: sampling
+    them at the integer coordinates with the same order and boundary
+    gives back the input."""
 
 
 _ref_coeff = \

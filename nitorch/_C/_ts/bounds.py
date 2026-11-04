@@ -64,17 +64,20 @@ class Bound:
                 return None
             one = torch.ones([1], dtype=torch.int8, device=i.device)
             zero = torch.zeros([1], dtype=torch.int8, device=i.device)
+            # (as `periodic1` in `src/impl/bounds_common.h`)
             n2 = 2 * (n + 1)
             i = torch.where(i < 0, -i + (n-1), i)
             i = i.remainder(n2)
-            x = torch.where(i == 0, zero, one)
-            x = torch.where(i.remainder(n + 1) == n, zero, x)
-            x = torch.where((i / (n+1)).remainder_(2) > 0, -x, x)
+            x = torch.where(i.remainder(n + 1) == n, zero, one)
+            x = torch.where(torch.div(i, n + 1, rounding_mode='floor')
+                            .remainder(2) > 0, -x, x)
             return x
         elif self.type == 5:  # dst2
+            # (as `periodic2` in `src/impl/bounds_common.h`)
             i = torch.where(i < 0, n - 1 - i, i)
             x = torch.ones([1], dtype=torch.int8, device=i.device)
-            x = torch.where((i / n).remainder_(2) > 0, -x, x)
+            x = torch.where(torch.div(i, n, rounding_mode='floor')
+                            .remainder(2) > 0, -x, x)
             return x
         elif self.type == 0:  # zero
             one = torch.ones([1], dtype=torch.int8, device=i.device)

@@ -23,7 +23,7 @@ from nitorch.tools.registration.pairwise_run import _sync_nonlin_optim
 
 dt = torch.double
 SHAPE = (10, 10, 10)
-BOUNDS = ['dft', 'dct2', 'dct1', 'zero']  # those offered by the CLI
+BOUNDS = ['dft', 'dct2', 'dct1', 'dst2', 'dst1', 'zero']
 PENALTY = dict(absolute=1e-2, membrane=1e-1, bending=1.,
                lame=(0.05, 0.2), factor=1.)
 
@@ -87,8 +87,8 @@ def directional_error(step, x):
 
 # SVF gradients go through the (approximate) scaling-and-squaring
 # backward pass, whose error is concentrated in the voxels at the edges
-# of the field (for all boundary conditions, about twice as large with
-# non-circulant ones). Small-deformation gradients are exact.
+# of the field (for all boundary conditions, two to four times as large
+# with non-circulant ones). Small-deformation gradients are exact.
 TOL = dict(svf=0.02, smalldef=1e-6)
 SUB_ITER, RATIO = 64, 0.1  # see test_gauss_newton_bound_solves_model_system
 

@@ -1,7 +1,7 @@
 """AutoGrad version of pull/push/count/grad"""
 import torch
 import os
-from interpol.coeff import spline_coeff_nd, spline_coeff
+from .coeff import spline_coeff_nd, spline_coeff
 from interpol.pushpull import grid_push as ts_grid_push
 from interpol.bounds import BoundType as _TSBoundType
 from interpol.splines import InterpolationType as _TSInterpolationType
@@ -351,10 +351,11 @@ class SplineCoeff(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx, grad):
-        # symmetric filter -> backward == forward
-        # (I don't know if I can write into grad, so inplace=False to be safe)
-        grad = spline_coeff(grad, *ctx.opt[:-1], inplace=False)
-        return [grad] + [None] * 4
+        # transposed filter (the filter is not symmetric for dct1 and
+        # replicate)
+        grad = spline_coeff(grad, *ctx.opt[:-1], inplace=False,
+                            transpose=True)
+        return grad, None, None, None, None
 
 
 class SplineCoeffND(torch.autograd.Function):
@@ -377,7 +378,8 @@ class SplineCoeffND(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx, grad):
-        # symmetric filter -> backward == forward
-        # (I don't know if I can write into grad, so inplace=False to be safe)
-        grad = spline_coeff_nd(grad, *ctx.opt[:-1], inplace=False)
+        # transposed filter (the filter is not symmetric for dct1 and
+        # replicate)
+        grad = spline_coeff_nd(grad, *ctx.opt[:-1], inplace=False,
+                               transpose=True)
         return grad, None, None, None, None
