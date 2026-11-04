@@ -1266,7 +1266,8 @@ class PairwiseRegisterStep:
                 del phi_right
                 if pos in 'fs':
                     g_right, h_right = g0, h0
-                    jac = spatial.grid_jacobian(phi00, right, type='disp', extrapolate=False)
+                    jac = spatial.grid_jacobian(phi00, right, type='disp',
+                                              bound='zero', extrapolate=True)
                     jac = torch.matmul(aff_left[:-1, :-1], jac)
                     mugrad = linalg.matvec(jac.transpose(-1, -2), mugrad)
                     g_right, h_right = compose_grad(g_right, h_right, mugrad, gaff_right)
