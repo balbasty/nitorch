@@ -66,17 +66,27 @@ def test_either_criterion_stops():
     assert len(_gd(disp_tol=1e-6, tol=1e-2)) == n_loss
 
 
-def test_no_hook_no_stop():
+def test_no_hook_falls_back_to_rms_of_parameters():
+    from nitorch.tools.registration.optim.base import rms_step
     gd = GradientDescent(lr=0.5)
-    gd.iter = OptimIterator(max_iter=5, tol=0, disp_tol=1e3)
-    calls = []
+    gd.iter = OptimIterator(max_iter=50, tol=0, disp_tol=1e-3)
 
     def closure(x, grad=False):
-        calls.append(1)
         f = 0.5 * x.square().sum()
         return (f, x.clone()) if grad else f
-    gd.iter(torch.ones(1, dtype=dt), closure)
-    assert gd.iter.last_step_size is None and len(calls) > 5
+    x0 = torch.full([4], 2., dtype=dt)
+    gd.iter(x0.clone(), closure)
+    assert gd.iter.last_step_size < 1e-3
+    # rms over all parameters, of lists and of parameter wrappers
+    a, b = torch.zeros(3, dtype=dt), torch.full([3], 2., dtype=dt)
+    assert rms_step(a, b) == 2.
+    assert rms_step([a, a[:1]], [b, b[:1]]) == 2.
+    assert abs(rms_step([a, a[:1]], [b, b[:1] + 2]) - 7 ** 0.5) < 1e-12
+
+    class Wrapped:
+        def __init__(self, dat):
+            self.dat = dat
+    assert rms_step(Wrapped(a), Wrapped(b)) == 2.
 
 
 # ----------------------------------------------------------------------

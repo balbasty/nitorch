@@ -37,6 +37,19 @@ def _all_finite(x):
     return math.isfinite(x)
 
 
+def rms_step(prev, new):
+    """Default size of an update: RMS of the change of the parameters
+    (in their own units), over all of them."""
+    prev = prev if isinstance(prev, (list, tuple)) else [prev]
+    new = new if isinstance(new, (list, tuple)) else [new]
+    ss, n = 0., 0
+    for x0, x1 in zip(prev, new):
+        x0, x1 = getattr(x0, 'dat', x0), getattr(x1, 'dat', x1)
+        ss += (x1 - x0).double().square().sum().item()
+        n += x1.numel()
+    return (ss / max(n, 1)) ** 0.5
+
+
 def _clone(x):
     if isinstance(x, (list, tuple)):
         return [x1.clone() for x1 in x]
@@ -298,7 +311,8 @@ class OptimIterator(OptimWrapper):
         step_size : callable(param_prev, param_new) -> float, optional
             Size of an update (e.g., the RMS displacement it causes, in
             voxels). Set by whoever knows what the parameters mean (e.g.,
-            `PairwiseRegister`). If None, `disp_tol` is not used.
+            `PairwiseRegister`). Default: RMS of the change of the
+            parameters (`rms_step`).
 
         Iterations stop as soon as either criterion is met.
         """
@@ -352,7 +366,8 @@ class OptimIterator(OptimWrapper):
         loss, *derivatives = self._get_loss(param, closure, **kwargs)
 
         loss_prev = loss_max = loss
-        track_step = bool(self.disp_tol) and callable(self.step_size)
+        track_step = bool(self.disp_tol)
+        step_size = self.step_size if callable(self.step_size) else rms_step
         self.last_step_size = None
         for n_iter in range(1, self.max_iter+1):
 
@@ -365,7 +380,7 @@ class OptimIterator(OptimWrapper):
 
             # check convergence: size of the update
             if track_step:
-                self.last_step_size = float(self.step_size(param_prev, param))
+                self.last_step_size = float(step_size(param_prev, param))
                 del param_prev
                 if self.last_step_size < self.disp_tol:
                     break

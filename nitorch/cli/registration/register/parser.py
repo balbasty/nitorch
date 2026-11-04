@@ -264,13 +264,8 @@ usage:
         -s, --line-search               Number of backtracking line search [wolfe]
         -t, --tolerance                 Tolerance for early stopping [1e-4]
         -c, --crit                      Stopping criterion: [diff], gain
-        -d, --disp-tolerance            Tolerance for early stopping on the size of an update:
-                                        RMS displacement over the voxels of the images the
-                                        losses are evaluated on (fixed; both if symmetric), in
-                                        their own voxels at the current pyramid level
-                                        (svf/shoot: velocity update, ~ displacement change).
-                                        Stops when either tolerance is met. 0 = off.
-                                        [affine: 1e-3, nonlin: 1e-2]
+        -d, --disp-tolerance            Tolerance for early stopping on the RMS displacement of
+                                        an update, in voxels [affine: 1e-3, nonlin: 1e-2]
         -n, --max-iter                  Maximum number of iterations
                                         [interleaved: affine=50,  nonlin=10,
                                          sequential:  affine=100, nonlin=50]
