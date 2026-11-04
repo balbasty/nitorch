@@ -265,3 +265,51 @@ def test_cli_option():
     assert opt.nonlin.optim.disp_tolerance == 0.05
     opt = parser.parse(base + ['@affine', '@@optim', 'gn'])
     assert opt.affine.optim.disp_tolerance is None     # model default
+
+
+# ----------------------------------------------------------------------
+#   printed table: `disp (vox)` column
+# ----------------------------------------------------------------------
+
+def _printed_fit(kind, disp_tol, capsys):
+    fix, mov = _pair()
+    sim = objects.Similarity(MSE(lam=1, dim=3), mov, fix)
+    affine = nonlin = None
+    if kind == 'affine':
+        affine = objects.AffineModel('rigid', position='sym')
+        affine.frozen = False
+        optim = make_affine_optim('gn', 2, max_iter=5, tolerance=0,
+                                  disp_tolerance=disp_tol)
+    else:
+        nonlin = objects.SmallDefModel()
+        nonlin.set_dat(fix.shape, affine=fix.affine, dtype=dt)
+        nonlin.frozen = False
+        optim = make_nonlin_optim('gn', 2, max_iter=3, tolerance=0,
+                                  disp_tolerance=disp_tol, nonlin=nonlin)
+    PairwiseRegister([sim], affine, nonlin, optim, verbose=1).fit()
+    out = capsys.readouterr().out.replace('\r', '\n').split('\n')
+    header = [l for l in out if l.startswith('step')]
+    rows = [l for l in out if l.startswith('(')]
+    return header[0], rows, optim.iter
+
+
+@pytest.mark.parametrize('kind', ['affine', 'nonlin'])
+def test_disp_column_printed_when_used(kind, capsys):
+    header, rows, it = _printed_fit(kind, 1e-12, capsys)
+    assert header.rstrip().endswith('disp (vox)')
+    cols = [r.split('|') for r in rows]
+    assert all(len(c) == len(header.split('|')) for c in cols), rows
+    assert cols[0][-1].strip() == ''                 # no previous iterate
+    disp = [float(c[-1]) for c in cols[1:]]
+    assert len(disp) >= 2 and all(d >= 0 for d in disp)
+    # the last row is the last accepted iterate: its update is the one the
+    # stopping criterion measured
+    last = it.last_step_size
+    assert abs(disp[-1] - last) <= 1e-5 * max(abs(last), 1e-12), (disp, last)
+
+
+@pytest.mark.parametrize('kind', ['affine', 'nonlin'])
+def test_no_disp_column_when_unused(kind, capsys):
+    header, rows, _ = _printed_fit(kind, 0, capsys)
+    assert 'disp' not in header
+    assert len(rows[1].split('|')) == len(header.split('|'))
