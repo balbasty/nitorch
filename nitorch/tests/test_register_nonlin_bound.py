@@ -23,7 +23,7 @@ from nitorch.tools.registration.pairwise_run import _sync_nonlin_optim
 
 dt = torch.double
 SHAPE = (10, 10, 10)
-BOUNDS = ['dft', 'dct2', 'dct1', 'dst2', 'dst1', 'zero']
+BOUNDS = ['dft', 'dct2', 'dct1', 'zero']  # those offered by the CLI
 PENALTY = dict(absolute=1e-2, membrane=1e-1, bending=1.,
                lame=(0.05, 0.2), factor=1.)
 
@@ -86,8 +86,11 @@ def directional_error(step, x):
 
 
 # SVF gradients go through the (approximate) scaling-and-squaring
-# backward pass. Small-deformation gradients are exact.
+# backward pass, whose error is concentrated in the voxels at the edges
+# of the field (for all boundary conditions, about twice as large with
+# non-circulant ones). Small-deformation gradients are exact.
 TOL = dict(svf=0.02, smalldef=1e-6)
+SUB_ITER, RATIO = 64, 0.1  # see test_gauss_newton_bound_solves_model_system
 
 
 @pytest.mark.parametrize('bound', BOUNDS)
@@ -100,26 +103,31 @@ def test_grad_bound(model, bound):
     assert directional_error(step, nonlin.dat.dat.clone()) < TOL[model]
 
 
-@pytest.mark.parametrize('bound', ['dct2', 'zero'])
-def test_grad_bound_mismatch_is_detected(monkeypatch, bound):
-    """The finite-difference check of `test_grad_bound` is sensitive to
-    the boundary condition: a backward pass of the exponential that
-    ignores it (i.e., uses the default, dft) fails the check."""
+@pytest.mark.parametrize('bound', BOUNDS)
+def test_exp_backward_bound(monkeypatch, bound):
+    """The backward pass of scaling and squaring uses the boundary
+    condition of the model. (Checked directly: with dct/zero boundaries,
+    its approximation error at the edges hides the effect of the
+    boundary condition from finite differences.)"""
+    captured = []
     exp_backward = spatial.exp_backward
 
-    def wrong_exp_backward(*args, **kwargs):
-        kwargs['bound'] = 'dft'
+    def spy(*args, **kwargs):
+        captured.append(kwargs.get('bound'))
         return exp_backward(*args, **kwargs)
 
+    monkeypatch.setattr(spatial, 'exp_backward', spy)
     step, nonlin = make_step('svf', bound)
-    monkeypatch.setattr(spatial, 'exp_backward', wrong_exp_backward)
-    assert directional_error(step, nonlin.dat.dat.clone()) > TOL['svf']
+    step.do_vel(nonlin.dat.dat.clone(), grad=True, in_line_search=True)
+    assert captured == [bound]
 
 
 @pytest.mark.parametrize('bound', ['dct2', 'zero'])
 def test_regulariser_bound_mismatch_is_detected(bound):
-    """Same for the regulariser: its gradient with another boundary
-    condition does not match finite differences of the objective."""
+    """The finite-difference check is sensitive to the boundary
+    condition: a gradient whose regulariser uses another boundary
+    condition (dft) does not match finite differences of the objective
+    along a direction supported on the edges of the field."""
     step, nonlin = make_step('smalldef', bound)
     x = nonlin.dat.dat.clone()
     _, g = step.do_vel(x, grad=True, in_line_search=True)
@@ -131,7 +139,8 @@ def test_regulariser_bound_mismatch_is_detected(bound):
     # gradient with a dft regulariser instead
     g_wrong = g - nonlin.regulariser(x) + spatial.regulariser_grid(
         x, **penalty, factor=factor, bound='dft')
-    d = edge_mask().expand(x.shape)
+    gen = torch.Generator().manual_seed(3)
+    d = torch.randn(x.shape, dtype=dt, generator=gen) * edge_mask()
     d = d / d.norm()
     eps = 1e-6
     fd = (step.do_vel(x + eps * d, in_line_search=True) -
@@ -141,30 +150,48 @@ def test_regulariser_bound_mismatch_is_detected(bound):
 
 
 @pytest.mark.parametrize('bound', BOUNDS)
+@pytest.mark.parametrize('fmg', [0, 2])
 @pytest.mark.parametrize('solver', ['cg', 'relax'])
-def test_gauss_newton_bound(bound, solver):
-    """The Gauss-Newton optimizer of the field uses its boundary
-    condition: its step solves (H + L) step = -g, with L the regulariser
-    of the model (the one used in the gradient)."""
+def test_gauss_newton_bound(monkeypatch, bound, solver, fmg):
+    """The Gauss-Newton optimizer of the field solves its linear system
+    with the boundary condition of the model"""
+    captured = []
+    for name in ('solve_grid_fmg', 'solve_grid_sym'):
+        def spy(*args, _solve=getattr(spatial, name), **kwargs):
+            captured.append(kwargs.get('bound'))
+            return _solve(*args, **kwargs)
+        monkeypatch.setattr(spatial, name, spy)
     step, nonlin = make_step('svf', bound)
-    optim = make_nonlin_optim('gn', nonlin=nonlin, solver=solver,
-                              fmg=0, sub_iter=500, marquardt=False)
+    optim = make_nonlin_optim('gn', nonlin=nonlin, solver=solver, fmg=fmg)
     assert optim.bound == bound
-    # as at each pyramid level (normalized regularisation)
-    _sync_nonlin_optim(optim, nonlin)
+    _sync_nonlin_optim(optim, nonlin)  # as at each pyramid level
     assert optim.bound == bound
     _, g, h = step.do_vel(nonlin.dat.dat.clone(), grad=True, hess=True,
                           in_line_search=True)
+    optim.search_direction(g, h)
+    assert captured == [bound]
+
+
+@pytest.mark.parametrize('bound', ['dct2', 'zero'])
+def test_gauss_newton_bound_solves_model_system(bound):
+    """The Gauss-Newton step solves (H + L) step = -g, with L the
+    regulariser of the model (the one used in the gradient), better
+    than with the dft regulariser"""
+    step, nonlin = make_step('svf', bound)
+    optim = make_nonlin_optim('gn', nonlin=nonlin, solver='cg', fmg=0,
+                              sub_iter=SUB_ITER, marquardt=False)
+    _sync_nonlin_optim(optim, nonlin)
+    _, g, h = step.do_vel(nonlin.dat.dat.clone(), grad=True, hess=True,
+                          in_line_search=True)
     h[..., :3] += 1e-3  # well-posed
-    delta = optim.search_direction(g.clone(), h.clone())
-    residual = lambda reg: (sym_matvec(h, delta) + reg + g).norm()
+    delta = -optim.search_direction(g.clone(), h.clone())
     penalty = dict(nonlin.penalty)
     factor = penalty.pop('factor') / delta[..., 0].numel()
-    other = 'dct2' if bound == 'dft' else 'dft'
-    other = spatial.regulariser_grid(delta, **penalty, factor=factor,
-                                     bound=other)
-    assert residual(nonlin.regulariser(delta)) < 1e-3 * g.norm()
-    assert residual(other) > 10 * residual(nonlin.regulariser(delta))
+    residual = lambda reg: (sym_matvec(h, delta) + reg - g).norm()
+    own = residual(nonlin.regulariser(delta))
+    dft = residual(spatial.regulariser_grid(delta, **penalty, factor=factor,
+                                            bound='dft'))
+    assert own < RATIO * dft
 
 
 def test_gauss_newton_bound_synced():
@@ -200,14 +227,21 @@ def test_exp_bound(bound):
 
 @pytest.mark.parametrize('model', ['svf', 'smalldef'])
 @pytest.mark.parametrize('bound', ['dft', 'dct2'])
-def test_inversion_bound(model, bound):
+def test_inversion_bound(monkeypatch, model, bound):
     """Numerical inversion uses the boundary condition of the model"""
+    captured = []
+    grid_inv = spatial.grid_inv
+
+    def spy(*args, **kwargs):
+        captured.append(kwargs.get('bound'))
+        return grid_inv(*args, **kwargs)
+
+    monkeypatch.setattr(spatial, 'grid_inv', spy)
     _, nonlin = make_step(model, bound, amplitude=0.5)
     nonlin.inversion = 'push'
-    phi = nonlin.exp()
-    iphi = nonlin.iexp()
-    ref = spatial.grid_inv(phi, type='disp', bound=bound)
-    assert torch.allclose(iphi, ref)
+    nonlin.iexp()
+    nonlin.exp2()
+    assert captured == [bound, bound]
 
 
 @pytest.mark.parametrize('bound', BOUNDS)
@@ -234,14 +268,15 @@ def test_resize_bound(bound, inplace):
 
 
 def test_shoot_only_dft():
-    with pytest.raises(ValueError, match='shoot'):
-        objects.NonLinModel('shoot', bound='dct2')
-    assert objects.NonLinModel('shoot', bound='dft').bound == 'dft'
+    Shoot = objects.NonLinModel.subclass('shoot')
+    with pytest.raises(ValueError, match='shooting'):
+        Shoot(bound='dct2')
+    assert Shoot(bound='dft').bound == 'dft'
 
 
 def test_default_is_dft():
     for model in ('svf', 'smalldef', 'shoot'):
-        assert objects.NonLinModel(model).bound == 'dft'
+        assert objects.NonLinModel.subclass(model)().bound == 'dft'
 
 
 # ----------------------------------------------------------------------

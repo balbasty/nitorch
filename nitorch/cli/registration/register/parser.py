@@ -218,8 +218,8 @@ usage:
                                         Newton steps, most inverse-consistent, slowest.
         --bound BND                     Boundary conditions of the field, used by
                                         the regulariser, solver and exponentiation:
-                                        [dft] (circulant), dct2 (free), dct1, dst2,
-                                        dst1, zero (identity at the edges).
+                                        [dft] (circulant), dct2 (free), dct1,
+                                        zero (identity at the edges).
                                         shoot only supports dft.
 
 @optim options:
@@ -717,7 +717,9 @@ nonlin_aliases = {'v': 'svf',
                   'g': 'shoot',
                   'd': 'smalldef'}
 nonlin_choices = list(nonlin_aliases.values()) + ['unset']
-nonlin_bounds = ['dft', 'dct2', 'dct1', 'dst2', 'dst1', 'zero']
+# (dst1/dst2 are not offered: the spline prefilter used to resample the
+# field across pyramid levels does not support them)
+nonlin_bounds = ['dft', 'dct2', 'dct1', 'zero']
 nonlin_choices = cli.Positional('name', nargs='?', default='svf',
                                 validation=cli.Validations.choice(nonlin_choices),
                                 convert=lambda x: nonlin_aliases.get(x, x),
