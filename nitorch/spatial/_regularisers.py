@@ -42,6 +42,9 @@ from nitorch.core.utils import movedim, make_vector, unsqueeze, fast_movedim
 from nitorch.core.py import ensure_list
 from ._finite_differences import diff, div, diff1d, div1d
 from ._spconv import spconv
+from ._quadform import (Lattice, quadform, terms_absolute, terms_membrane,
+                        terms_bending, terms_lame_shear, terms_lame_div,
+                        needs_correction, correct_stencil, weight_bound)
 import itertools
 if compiled_backend == 'C':
     import nitorch._C.solve as c_solvers
@@ -50,25 +53,99 @@ else:
 
 
 def _c_supports(weights=None, bending=0, lame=0, bound=None):
-    """Whether the compiled solvers implement this problem correctly.
+    """Whether the compiled solvers implement this problem.
 
     They do not implement per-penalty weight maps (dict), nor weighted
-    (RLS) bending or linear-elastic energies; and with `dct1` or
-    `replicate` boundaries their regularisers are not symmetric (they
-    apply the stencil to the extended field, which is self-adjoint for
-    dct2, dst2 and dft only). The TorchScript implementations are used
-    instead.
+    (RLS) bending or linear-elastic energies. Their linear-elastic
+    stencil is only exact for dft, dst1 and zero boundaries (at the
+    borders of the other ones, its cross-component terms are not those
+    of `nitorch.spatial._quadform`). The TorchScript implementations are
+    used instead.
     """
-    if bound is not None:
+    if any(core.py.ensure_list(lame)) and bound is not None:
         from nitorch._C.grid import bound_to_nitorch
         names = bound_to_nitorch(core.py.make_list(bound), as_type='str')
-        if any(b in ('dct1', 'replicate') for b in names):
+        if any(b not in ('dft', 'dst1', 'zero') for b in names):
             return False
     if weights is None:
         return True
     if isinstance(weights, dict):
         return False
     return not (any(core.py.ensure_list(bending)) or any(core.py.ensure_list(lame)))
+
+
+def _voxel_size_list(voxel_size, dim):
+    if torch.is_tensor(voxel_size):
+        voxel_size = voxel_size.reshape(-1).tolist()
+    return [float(v) for v in core.py.ensure_list(voxel_size, dim)]
+
+
+def _field_op(field, terms, bound, dim, weights=None):
+    """Apply a quadratic regulariser to a (..., *spatial) field"""
+    lattice = Lattice(field.shape[-dim:], bound, device=field.device)
+    return quadform([field], terms, lattice, weights)[0]
+
+
+def _grid_op(grid, terms, bound, weights=None):
+    """Apply a quadratic regulariser to a (..., *spatial, dim) grid"""
+    dim = grid.shape[-1]
+    lattice = Lattice(grid.shape[-dim-1:-1], bound, device=grid.device)
+    ys = quadform(list(grid.unbind(-1)), terms, lattice, weights)
+    return torch.stack(ys, -1)
+
+
+def _per_component(dim, terms_fn, voxel_size):
+    """Terms of a per-component energy of a grid (in voxels), scaled by
+    the squared voxel size of each component"""
+    terms = []
+    for k in range(dim):
+        for coef, parts in terms_fn():
+            terms.append((coef * voxel_size[k] ** 2,
+                          [(k, kinds, scale) for _, kinds, scale in parts]))
+    return terms
+
+
+def _kernel_supports(lame, bound, dim):
+    """Whether a convolution (stencil) implements the linear-elastic
+    energy exactly with these boundary conditions (see `_c_supports`)"""
+    if not any(core.py.ensure_list(lame)):
+        return True
+    return all(b in ('dft', 'dst1', 'zero')
+               for b in Lattice.normalise_bound(bound, dim))
+
+
+def _correct_grid_stencil(v, y, bending, voxel_size, bound, dim,
+                          subset=None):
+    """Exact borders for the output `y` (at `v[subset]`) of a stencil
+    applied to the grid `v`, both laid out as (..., dim, *spatial).
+    `bending` is the (global) bending factor."""
+    if not needs_correction(bound, dim, bending):
+        return y
+    vx = _voxel_size_list(voxel_size, dim)
+    lattice = Lattice(v.shape[-dim:], bound, device=v.device)
+    coef = None
+    if bending:
+        # component k of a grid energy is scaled by vx[k]**2
+        vx2 = torch.as_tensor([h * h for h in vx], dtype=y.dtype,
+                              device=y.device)
+        coef = [vx2 * (bending / vx[d] ** 4) for d in range(dim)]
+    return correct_stencil(v, y, lattice, coef, subset)
+
+
+def _correct_field_stencil(x, y, bending, voxel_size, bound, dim,
+                           subset=None):
+    """Exact borders for the output `y` (at `x[subset]`) of a stencil
+    applied to the field `x`, both laid out as (..., K, *spatial).
+    `bending` is the bending factor of each channel (times `factor`)."""
+    if not needs_correction(bound, dim, bending):
+        return y
+    vx = _voxel_size_list(voxel_size, dim)
+    lattice = Lattice(x.shape[-dim:], bound, device=x.device)
+    coef = None
+    if torch.is_tensor(bending) or any(core.py.ensure_list(bending)):
+        bending = torch.as_tensor(bending, dtype=y.dtype, device=y.device)
+        coef = [bending / vx[d] ** 4 for d in range(dim)]
+    return correct_stencil(x, y, lattice, coef, subset)
 
 
 def _mul_(x, y):
@@ -87,19 +164,26 @@ def _div_(x, y):
         return x.div_(y)
 
 
-def absolute(field, weights=None):
+def absolute(field, weights=None, bound='dct2', dim=None):
     """Precision matrix for the Absolute energy
 
     Parameters
     ----------
     field : (..., *spatial) tensor
     weights : (..., *spatial) tensor, optional
+    bound : str, default='dct2'
+        Only matters for 'dct1', whose border voxels have weight 1/2
+        (see `nitorch.spatial._quadform`).
+    dim : int, default=field.dim()
 
     Returns
     -------
     field : tensor
 
     """
+    dim = dim or field.dim()
+    if 'dct1' in Lattice.normalise_bound(bound, dim):
+        return _field_op(field, terms_absolute(dim), bound, dim, weights)
     if weights is not None:
         backend = dict(dtype=field.dtype, device=field.device)
         weights = torch.as_tensor(weights, **backend)
@@ -108,7 +192,7 @@ def absolute(field, weights=None):
         return field
 
 
-def absolute_grid(grid, voxel_size=1, weights=None):
+def absolute_grid(grid, voxel_size=1, weights=None, bound='dft'):
     """Precision matrix for the Absolute energy of a deformation grid
 
     Parameters
@@ -116,6 +200,9 @@ def absolute_grid(grid, voxel_size=1, weights=None):
     grid : (..., *spatial, dim) tensor
     voxel_size : float or sequence[float], default=1
     weights : (..., *spatial) tensor, optional
+    bound : str, default='dft'
+        Only matters for 'dct1', whose border voxels have weight 1/2
+        (see `nitorch.spatial._quadform`).
 
     Returns
     -------
@@ -124,6 +211,10 @@ def absolute_grid(grid, voxel_size=1, weights=None):
     """
     backend = dict(dtype=grid.dtype, device=grid.device)
     dim = grid.shape[-1]
+    if 'dct1' in Lattice.normalise_bound(bound, dim):
+        vx = _voxel_size_list(voxel_size, dim)
+        terms = _per_component(dim, lambda: terms_absolute(dim), vx)
+        return _grid_op(grid, terms, bound, weights)
     voxel_size = make_vector(voxel_size, dim, **backend)
     grid = grid * voxel_size.square()
     if weights is not None:
@@ -142,6 +233,8 @@ def membrane(field, voxel_size=1, bound='dct2', dim=None, weights=None):
     Note
     ----
     .. This is exactly equivalent to SPM's membrane energy
+    .. The boundary conditions are handled exactly
+       (see `nitorch.spatial._quadform`).
 
     Parameters
     ----------
@@ -156,64 +249,9 @@ def membrane(field, voxel_size=1, bound='dct2', dim=None, weights=None):
     field : (..., *spatial) tensor
 
     """
-    if weights is None:
-        return _membrane_l2(field, voxel_size, bound, dim)
-
-    backend = dict(dtype=field.dtype, device=field.device)
     dim = dim or field.dim()
-    if torch.is_tensor(voxel_size):
-        voxel_size = make_vector(voxel_size, dim, **backend)
-    else:
-        voxel_size = core.py.ensure_list(voxel_size, dim)
-    bound = ensure_list(bound, dim)
-    dims = list(range(field.dim()-dim, field.dim()))
-    weights = torch.as_tensor(weights, **backend)
-
-    # dims = list(range(field.dim()-dim, field.dim()))
-    # fieldb = diff(field, dim=dims, voxel_size=voxel_size, side='b', bound=bound)
-    # fieldb = mul_(fieldb, weights[..., None])
-    # dims = list(range(fieldb.dim() - 1 - dim, fieldb.dim() - 1))
-    # fieldb = div(fieldb, dim=dims, voxel_size=voxel_size, side='b', bound=bound)
-    #
-    # dims = list(range(field.dim()-dim, field.dim()))
-    # field = diff(field, dim=dims, voxel_size=voxel_size, side='f', bound=bound)
-    # field = mul_(field, weights[..., None])
-    # dims = list(range(field.dim()-1-dim, field.dim()-1))
-    # field = div(field, dim=dims, voxel_size=voxel_size, side='f', bound=bound)
-    # field += fieldb
-    # field *= 0.5
-
-    if not field.requires_grad:
-        buf1 = torch.empty_like(field)
-        buf2 = torch.empty_like(field)
-    else:
-        buf1 = buf2 = None
-
-    mom = 0
-    for i in range(dim):
-        for side in ('f', 'b'):
-            g = diff1d(field, dim=dims[i], bound=bound[i],
-                       voxel_size=voxel_size[i], side=side, out=buf1)
-            g = _mul_(g, weights)
-            mom += div1d(g, dim=dims[i], bound=bound[i],
-                         voxel_size=voxel_size[i], side=side, out=buf2)
-
-    mom *= 0.5
-    return mom
-
-
-def _membrane_l2(field, voxel_size=1, bound='dct2', dim=None):
-    backend = dict(dtype=field.dtype, device=field.device)
-    dim = dim or field.dim()
-    if torch.is_tensor(voxel_size):
-        voxel_size = make_vector(voxel_size, dim, **backend)
-
-    dims = list(range(field.dim()-dim, field.dim()))
-    fieldf = diff(field, dim=dims, voxel_size=voxel_size, side='f', bound=bound)
-    dims = list(range(fieldf.dim()-1-dim, fieldf.dim()-1))
-    field = div(fieldf, dim=dims, voxel_size=voxel_size, side='f', bound=bound)
-
-    return field
+    vx = _voxel_size_list(voxel_size, dim)
+    return _field_op(field, terms_membrane(dim, vx), bound, dim, weights)
 
 
 def membrane_grid(grid, voxel_size=1, bound='dft', weights=None):
@@ -231,16 +269,10 @@ def membrane_grid(grid, voxel_size=1, bound='dft', weights=None):
     field : (..., *spatial, dim) tensor
 
     """
-    backend = dict(dtype=grid.dtype, device=grid.device)
     dim = grid.shape[-1]
-    voxel_size = make_vector(voxel_size, dim, **backend)
-    grid = fast_movedim(grid, -1, -(dim + 1))
-    grid = membrane(grid, weights=weights, voxel_size=voxel_size,
-                    bound=bound, dim=dim)
-    grid = fast_movedim(grid, -(dim + 1), -1)
-    if (voxel_size != 1).any():
-        grid.mul_(voxel_size.square())
-    return grid
+    vx = _voxel_size_list(voxel_size, dim)
+    terms = _per_component(dim, lambda: terms_membrane(dim, vx), vx)
+    return _grid_op(grid, terms, bound, weights)
 
 
 def bending(field, voxel_size=1, bound='dct2', dim=None, weights=None):
@@ -249,6 +281,11 @@ def bending(field, voxel_size=1, bound='dct2', dim=None, weights=None):
     Note
     ----
     .. This is exactly equivalent to SPM's bending energy
+    .. It is the squared Frobenius norm of the Hessian, with central
+       second differences on its diagonal and one-sided first
+       differences (averaged over the four sides) off its diagonal.
+    .. The boundary conditions are handled exactly
+       (see `nitorch.spatial._quadform`).
 
     Parameters
     ----------
@@ -263,107 +300,9 @@ def bending(field, voxel_size=1, bound='dct2', dim=None, weights=None):
     field : (..., *spatial) tensor
 
     """
-    if weights is None:
-        return _bending_l2(field, voxel_size, bound, dim)
-
-    backend = dict(dtype=field.dtype, device=field.device)
     dim = dim or field.dim()
-    if torch.is_tensor(voxel_size):
-        voxel_size = make_vector(voxel_size, dim, **backend)
-    else:
-        voxel_size = core.py.ensure_list(voxel_size, dim)
-    bound = ensure_list(bound, dim)
-    dims = list(range(field.dim()-dim, field.dim()))
-    weights = torch.as_tensor(weights, **backend)
-
-    if not field.requires_grad:
-        bufi = torch.empty_like(field)
-        bufij = torch.empty_like(field)
-        bufjj = torch.empty_like(field)
-    else:
-        bufi = bufij = bufjj = None
-
-    # Same-axis terms: exact second differences of the (bound-extended)
-    # field, not compositions of first differences. Composing first
-    # differences applies the boundary condition of the field to its
-    # first derivative, whose symmetry differs (e.g., dct2: the field is
-    # even about the border, its derivative is odd), which made the
-    # operator wrong at the borders (bending != membrane^2 under dct2).
-    mom = 0
-    for i in range(dim):
-        opti = dict(dim=dims[i], bound=bound[i], side='c', order=2,
-                    voxel_size=voxel_size[i])
-        dii = diff1d(field, **opti, out=bufi)
-        dii = _mul_(dii, weights)
-        mom += div1d(dii, **opti, out=bufij)
-    # Cross terms (i != j): derivatives along different axes keep the
-    # symmetry of the field about the other axis' borders, so composing
-    # one-sided differences is exact (averaged over the four sides).
-    cross = 0
-    for i in range(dim):
-        for side_i in ('f', 'b'):
-            opti = dict(dim=dims[i], bound=bound[i], side=side_i,
-                        voxel_size=voxel_size[i])
-            di = diff1d(field, **opti, out=bufi)
-            for j in range(i + 1, dim):
-                for side_j in ('f', 'b'):
-                    optj = dict(dim=dims[j], bound=bound[j], side=side_j,
-                                voxel_size=voxel_size[j])
-                    dj = diff1d(di, **optj, out=bufij)
-                    dj = _mul_(dj, weights)
-                    dj = div1d(dj, **optj, out=bufjj)
-                    dj = div1d(dj, **opti, out=bufij)
-                    # off diagonal -> x2  (upper + lower element)
-                    cross += dj.mul_(2)
-    if torch.is_tensor(cross):
-        mom += cross.div_(4.)
-    return mom
-
-
-def _bending_l2(field, voxel_size=1, bound='dct2', dim=None):
-    backend = dict(dtype=field.dtype, device=field.device)
-    dim = dim or field.dim()
-    if torch.is_tensor(voxel_size):
-        voxel_size = make_vector(voxel_size, dim, **backend)
-    else:
-        voxel_size = core.py.ensure_list(voxel_size, dim)
-    bound = ensure_list(bound, dim)
-    dims = list(range(field.dim()-dim, field.dim()))
-
-    # allocate buffers
-    if not field.requires_grad:
-        bufi = torch.empty_like(field)
-        bufij = torch.empty_like(field)
-        bufjj = torch.empty_like(field)
-    else:
-        bufi = bufij = bufjj = None
-
-    # same-axis terms: exact second differences (see `bending`)
-    mom = 0
-    for i in range(dim):
-        opti = dict(dim=dims[i], bound=bound[i], side='c', order=2,
-                    voxel_size=voxel_size[i])
-        dii = diff1d(field, **opti, out=bufi)
-        mom += div1d(dii, **opti, out=bufij)
-    # cross terms, averaged over the four sides
-    cross = 0
-    for i in range(dim):
-        for side_i in ('f', 'b'):
-            opti = dict(dim=dims[i], bound=bound[i], side=side_i,
-                        voxel_size=voxel_size[i])
-            di = diff1d(field, **opti, out=bufi)
-            for j in range(i + 1, dim):
-                for side_j in ('f', 'b'):
-                    optj = dict(dim=dims[j], bound=bound[j], side=side_j,
-                                voxel_size=voxel_size[j])
-                    dj = diff1d(di, **optj, out=bufij)
-                    dj = div1d(dj, **optj, out=bufjj)
-                    dj = div1d(dj, **opti, out=bufij)
-                    # off diagonal -> x2  (upper + lower element)
-                    cross = cross + dj.mul_(2)
-    if torch.is_tensor(cross):
-        mom = mom + cross.div_(4.)
-    return mom
+    vx = _voxel_size_list(voxel_size, dim)
+    return _field_op(field, terms_bending(dim, vx), bound, dim, weights)
 
 
 def bending_grid(grid, voxel_size=1, bound='dft', weights=None):
@@ -381,16 +320,10 @@ def bending_grid(grid, voxel_size=1, bound='dft', weights=None):
     field : (..., *spatial, dim) tensor
 
     """
-    backend = dict(dtype=grid.dtype, device=grid.device)
     dim = grid.shape[-1]
-    voxel_size = make_vector(voxel_size, dim, **backend)
-    grid = fast_movedim(grid, -1, -(dim + 1))
-    grid = bending(grid, weights=weights, voxel_size=voxel_size,
-                   bound=bound, dim=dim)
-    grid = fast_movedim(grid, -(dim + 1), -1)
-    if (voxel_size != 1).any():
-        grid.mul_(voxel_size.square())
-    return grid
+    vx = _voxel_size_list(voxel_size, dim)
+    terms = _per_component(dim, lambda: terms_bending(dim, vx), vx)
+    return _grid_op(grid, terms, bound, weights)
 
 
 def lame_shear(grid, voxel_size=1, bound='dft', weights=None):
@@ -406,6 +339,9 @@ def lame_shear(grid, voxel_size=1, bound='dft', weights=None):
        diagonal).
     .. Formaly: `<f, Lf> = \int \sum_i (df_i/dx_i)^2
                                 + \sum_{j > i} (df_j/dx_i + df_i/dx_j)^2 dx
+    .. All components share the boundary condition of each axis, and
+       the energy is that of the rows centred on the voxels (and ghost
+       voxels), with the row weights of `nitorch.spatial._quadform`.
 
     Parameters
     ----------
@@ -419,98 +355,9 @@ def lame_shear(grid, voxel_size=1, bound='dft', weights=None):
     grid : (..., *spatial, dim) tensor
 
     """
-    if weights is None:
-        return _lame_shear_l2(grid, voxel_size, bound)
-
-    backend = dict(dtype=grid.dtype, device=grid.device)
     dim = grid.shape[-1]
-    voxel_size = core.utils.make_vector(voxel_size, dim, **backend)
-    bound = ensure_list(bound, dim)
-    dims = list(range(grid.dim() - 1 - dim, grid.dim() - 1))
-    if weights is not None:
-        backend = dict(dtype=grid.dtype, device=grid.device)
-        weights = torch.as_tensor(weights, **backend)
-
-    mom = torch.zeros_like(grid)
-    for i in range(dim):
-        # symmetric part
-        x_i = grid[..., i]
-        for j in range(i, dim):
-            for side_i in ('f', 'b'):
-                opt_ij = dict(dim=dims[j], side=side_i, bound=bound[j],
-                              voxel_size=voxel_size[j])
-                diff_ij = diff1d(x_i, **opt_ij).mul_(voxel_size[i])
-                if i == j:
-                    # diagonal elements
-                    diff_ij_w = diff_ij if weights is None else diff_ij * weights
-                    mom[..., i].add_(div1d(diff_ij_w, **opt_ij), alpha=0.5)
-                else:
-                    # off diagonal elements
-                    x_j = grid[..., j]
-                    for side_j in ('f', 'b'):
-                        opt_ji = dict(dim=dims[i], side=side_j, bound=bound[i],
-                                      voxel_size=voxel_size[i])
-                        diff_ji = diff1d(x_j, **opt_ji).mul_(voxel_size[j])
-                        diff_ji = diff_ji.add_(diff_ij).mul_(0.5)
-                        if weights is not None:
-                            diff_ji = diff_ji * weights
-                        mom[..., j].add_(div1d(diff_ji, **opt_ji), alpha=0.25)
-                        mom[..., i].add_(div1d(diff_ji, **opt_ij), alpha=0.25)
-                    del x_j
-        del x_i
-    del grid
-
-    mom *= 2 * voxel_size  # JA added an additional factor 2 to the kernel
-    return mom
-
-
-def _lame_shear_l2(grid, voxel_size=1, bound='dft'):
-    backend = dict(dtype=grid.dtype, device=grid.device)
-    dim = grid.shape[-1]
-    voxel_size = make_vector(voxel_size, dim, **backend)
-    bound = ensure_list(bound, dim)
-    dims = list(range(grid.dim() - 1 - dim, grid.dim() - 1))
-
-    # allocate buffers
-    if not grid.requires_grad:
-        buf1 = torch.empty_like(grid[..., 0])
-        buf2 = torch.empty_like(buf1)
-        buf3 = torch.empty_like(buf1)
-    else:
-        buf1 = buf2 = buf3 = None
-
-    mom = torch.zeros_like(grid)
-    for i in range(dim):
-        # symmetric part
-        x_i = grid[..., i]
-        for j in range(i, dim):
-            for side_i in ('f', 'b'):
-                opt_ij = dict(dim=dims[j], side=side_i, bound=bound[j],
-                              voxel_size=voxel_size[j])
-                diff_ij = diff1d(x_i, **opt_ij, out=buf1).mul_(voxel_size[i])
-                if i == j:
-                    # diagonal elements
-                    mom[..., i].add_(div1d(diff_ij, **opt_ij, out=buf2), alpha=0.5)
-                else:
-                    # off diagonal elements
-                    x_j = grid[..., j]
-                    for side_j in ('f', 'b'):
-                        opt_ji = dict(dim=dims[i], side=side_j, bound=bound[i],
-                                      voxel_size=voxel_size[i])
-                        diff_ji = diff1d(x_j, **opt_ji, out=buf2).mul_(voxel_size[j])
-                        # symmetric strain: (d_i x_j + d_j x_i) / 2
-                        # (this used to be d_i x_j + d_j x_i / 2, which is
-                        # not the weighted implementation, and not
-                        # self-adjoint)
-                        diff_ji.add_(diff_ij).mul_(0.5)
-                        mom[..., j].add_(div1d(diff_ji, **opt_ji, out=buf3), alpha=0.25)
-                        mom[..., i].add_(div1d(diff_ji, **opt_ij, out=buf3), alpha=0.25)
-                    del x_j
-        del x_i
-    del grid
-
-    mom.mul_(2 * voxel_size)  # JA added an additional factor 2 to the kernel
-    return mom
+    vx = _voxel_size_list(voxel_size, dim)
+    return _grid_op(grid, terms_lame_shear(dim, vx), bound, weights)
 
 
 def lame_div(grid, voxel_size=1, bound='dft', weights=None):
@@ -524,6 +371,9 @@ def lame_div(grid, voxel_size=1, bound='dft', weights=None):
     .. It penalizes the square of the trace of the Jacobian
        (i.e., volume changes)
     .. Formally: `<f, Lf> = \int [(\sum_i df_i/dx_i)^2 - \sum_i (df_i/dx_i)^2] dx
+    .. All components share the boundary condition of each axis, and
+       the energy is that of the rows centred on the voxels (and ghost
+       voxels), with the row weights of `nitorch.spatial._quadform`.
 
     Parameters
     ----------
@@ -537,75 +387,8 @@ def lame_div(grid, voxel_size=1, bound='dft', weights=None):
     grid : (..., *spatial, dim) tensor
 
     """
-    if weights is None:
-        return _lame_div_l2(grid, voxel_size, bound)
-
     dim = grid.shape[-1]
-    bound = ensure_list(bound, dim)
-    dims = list(range(grid.dim() - 1 - dim, grid.dim() - 1))
-    if weights is not None:
-        backend = dict(dtype=grid.dtype, device=grid.device)
-        weights = torch.as_tensor(weights, **backend)
-
-    # precompute gradients
-    grad = [dict(f={}, b={}) for _ in range(dim)]
-    opt = [dict(f={}, b={}) for _ in range(dim)]
-    for i in range(dim):
-        x_i = grid[..., i]
-        for side in ('f', 'b'):
-            opt_i = dict(dim=dims[i], side=side, bound=bound[i])
-            grad[i][side] = diff1d(x_i, **opt_i)
-            opt[i][side] = opt_i
-
-    # compute divergence
-    mom = torch.zeros_like(grid)
-    all_sides = list(itertools.product(['f', 'b'], repeat=dim))
-    for sides in all_sides:
-        div = 0
-        for i, side in enumerate(sides):
-            div += grad[i][side]
-        if weights is not None:
-            div = div * weights
-        for i, side in enumerate(sides):
-            mom[..., i] += div1d(div, **(opt[i][side]))
-
-    mom /= float(2 ** dim)  # weight sides combinations
-    return mom
-
-
-def _lame_div_l2(grid, voxel_size=1, bound='dft'):
-    dim = grid.shape[-1]
-    bound = ensure_list(bound, dim)
-    dims = list(range(grid.dim() - 1 - dim, grid.dim() - 1))
-
-    # precompute gradients
-    grad = [dict(f={}, b={}) for _ in range(dim)]
-    opt = [dict(f={}, b={}) for _ in range(dim)]
-    for i in range(dim):
-        x_i = grid[..., i]
-        for side in ('f', 'b'):
-            opt_i = dict(dim=dims[i], side=side, bound=bound[i])
-            grad[i][side] = diff1d(x_i, **opt_i)
-            opt[i][side] = opt_i
-
-    if not grid.requires_grad:
-        buf1 = torch.empty_like(grid[..., 0])
-        buf2 = torch.empty_like(grid[..., 0])
-    else:
-        buf1 = buf2 = None
-
-    # compute divergence
-    mom = torch.zeros_like(grid)
-    all_sides = list(itertools.product(['f', 'b'], repeat=dim))
-    for sides in all_sides:
-        div = buf1.zero_() if buf1 is not None else 0
-        for i, side in enumerate(sides):
-            div += grad[i][side]
-        for i, side in enumerate(sides):
-            mom[..., i] += div1d(div, **(opt[i][side]), out=buf2)
-
-    mom /= float(2 ** dim)  # weight sides combinations
-    return mom
+    return _grid_op(grid, terms_lame_div(dim), bound, weights)
 
 
 # aliases to avoid shadowing
@@ -1113,14 +896,15 @@ def regulariser_grid(v, absolute=0, membrane=0, bending=0, lame=0,
             absolute, membrane, bending, lame, factor,
             voxel_size=voxel_size, bound=bound)
 
-    if torch.is_tensor(kernel) or kernel:
+    if (torch.is_tensor(kernel) or kernel) and _kernel_supports(lame, bound, dim):
         if not torch.is_tensor(kernel):
             kernel = regulariser_grid_kernel(dim, absolute, membrane, bending,
                                              lame, factor, voxel_size, **backend)
         v = core.utils.fast_movedim(v, -1, -dim-1)
-        v = spconv(v, kernel, bound=bound, dim=dim)
-        v = core.utils.fast_movedim(v, -dim-1, -1)
-        return v
+        y = spconv(v, kernel, bound=bound, dim=dim)
+        y = _correct_grid_stencil(v, y, bending * factor, voxel_size,
+                                  bound, dim)
+        return core.utils.fast_movedim(y, -dim-1, -1)
 
     voxel_size = make_vector(voxel_size, dim, **backend)
     absolute = absolute * factor
@@ -1140,7 +924,7 @@ def regulariser_grid(v, absolute=0, membrane=0, bending=0, lame=0,
 
     y = torch.zeros_like(v)
     if absolute:
-        y.add_(absolute_grid(v, weights=wa, voxel_size=voxel_size), alpha=absolute)
+        y.add_(absolute_grid(v, weights=wa, voxel_size=voxel_size, bound=bound), alpha=absolute)
     if membrane:
         y.add_(membrane_grid(v, weights=wm, **fdopt), alpha=membrane)
     if bending:
@@ -1283,9 +1067,10 @@ def _membrane_diag1d(weights, d, dim, bound='dft'):
     """Diagonal of a weighted membrane along a single dimension
     (with unit voxel size): `w + (w[-1] + w[+1]) / 2` along `d`"""
     from ._finite_differences import _window1d, _lincomb
+    wbound = weight_bound(bound, dim)[d]
     d = weights.dim() - dim + d
     values = [[weights]]
-    values.extend(_window1d(weights, d, [-1, 1], bound=bound))
+    values.extend(_window1d(weights, d, [-1, 1], bound=wbound))
     dims = [None, d, d]
     return _lincomb(values, [1, 0.5, 0.5], dims, ref=weights)
 
@@ -1356,7 +1141,7 @@ def regulariser(x, absolute=0, membrane=0, bending=0, factor=1,
     for k in range(nb_prm):
         yk = 0
         if absolute and absolute[k]:
-            yk = yk + absolute[k] * _absolute(xs[k], weights=wa[k])
+            yk = yk + absolute[k] * _absolute(xs[k], weights=wa[k], bound=bound, dim=dim)
         if membrane and membrane[k]:
             yk = yk + membrane[k] * _membrane(xs[k], weights=wm[k], **fdopt)
         if bending and bending[k]:
@@ -1594,7 +1379,8 @@ def membrane_diag(voxel_size=1, bound='dct2', dim=None, weights=None):
     dims = [None] + [d for d in range(dim) for _ in range(2)]
     kernel = [vx.sum()]
     for d in range(dim):
-        values.extend(_window1d(weights, d, [-1, 1], bound=bound))
+        values.extend(_window1d(weights, d, [-1, 1],
+                                bound=weight_bound(bound, dim)[d]))
         kernel += [vx[d] / 2, vx[d] / 2]
     weights = _lincomb(values, kernel, dims, ref=weights)
 
@@ -1676,7 +1462,7 @@ def membrane_diag_alt(voxel_size=1, bound='dct2', dim=None, weights=None):
     kernel = torch.as_tensor(kernel, **backend)
     kernel = torch.sparse_coo_tensor(indices.t(), kernel, [3] * dim)
 
-    weights = spconv(weights, kernel, bound=bound, dim=dim)
+    weights = spconv(weights, kernel, bound=weight_bound(bound, dim), dim=dim)
     return weights
 
 
@@ -1779,7 +1565,7 @@ def bending_diag(voxel_size=1, bound='dct2', dim=None, weights=None):
     kernel = torch.as_tensor(kernel, **backend)
     kernel = torch.sparse_coo_tensor(indices.t(), kernel, [5] * dim)
 
-    weights = spconv(weights, kernel, bound=bound, dim=dim)
+    weights = spconv(weights, kernel, bound=weight_bound(bound, dim), dim=dim)
     return weights
 
 
