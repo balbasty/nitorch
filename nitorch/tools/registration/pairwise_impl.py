@@ -117,7 +117,14 @@ class PairwiseRegister:
 
     def _set_step_sizes(self):
         """Give each optimiser that stops on the size of its updates
-        (`disp_tol`) the function that measures them."""
+        (`disp_tol`) the function that measures them.
+
+        Returns
+        -------
+        hooks : dict[{'affine', 'nonlin'} -> callable]
+            The functions attached, by component.
+        """
+        hooks = {}
         targets = _step_targets(self.losses)
         affine = self.affine if not getattr(self.affine, 'frozen', False) else None
         nonlin = self.nonlin if not getattr(self.nonlin, 'frozen', False) else None
@@ -137,6 +144,8 @@ class PairwiseRegister:
                 it.step_size = _affine_step_size(self.affine, targets)
             else:
                 it.step_size = _nonlin_step_size(self.nonlin, targets)
+            hooks[kind] = it.step_size
+        return hooks
 
     def fit(self):
         # Transformation parameters must be floating point, even when
@@ -168,16 +177,21 @@ class PairwiseRegister:
             print(self.optim)
             print('')
 
+        # size of the accepted updates, printed when used for early stopping
+        disp_hooks = self._set_step_sizes()
         if self.verbose:
+            disp = f' | {"disp (vox)":^12s}' if disp_hooks else ''
+            width = 15 if disp_hooks else 0
             if self.nonlin:
-                print(f'{"step":8s} | {"it":3s} | {"fit":^12s} + {"nonlin":^12s} + {"affine":^12s} = {"obj":^12s} | {"gain":^12s}')
-                print('-' * 89)
+                print(f'{"step":8s} | {"it":3s} | {"fit":^12s} + {"nonlin":^12s} + {"affine":^12s} = {"obj":^12s} | {"gain":^12s}' + disp)
+                print('-' * (89 + width))
             else:
-                print(f'{"step":8s} | {"it":3s} | {"fit":^12s} + {"affine":^12s} = {"obj":^12s} | {"gain":^12s}')
-                print('-' * 74)
+                print(f'{"step":8s} | {"it":3s} | {"fit":^12s} + {"affine":^12s} = {"obj":^12s} | {"gain":^12s}' + disp)
+                print('-' * (74 + width))
 
         step = PairwiseRegisterStep(self.losses, self.affine, self.nonlin,
                                     self.verbose, self.framerate, self.figure)
+        step.disp_hooks = disp_hooks
         self.figure = step.figure
 
         if self.nonlin and isinstance(self.nonlin, ShootModel):
@@ -207,7 +221,6 @@ class PairwiseRegister:
             step.init_penalties()
 
         step.framerate = self.framerate
-        self._set_step_sizes()
         if self.affine and self.nonlin:
             if getattr(self.affine, 'frozen', False):
                 nonlin_optim = self.optim
@@ -463,6 +476,8 @@ class PairwiseRegisterStep:
         self.lla = 0                # last affine penalty
         self.all_ll = []            # all losses (total)
         self.last_step = None
+        self.disp_hooks = {}        # size of an update, by component
+        self._disp_prev = {}        # parameters at the last printed row
 
         self.framerate = framerate
         self.figure = figure
@@ -748,9 +763,24 @@ class PairwiseRegisterStep:
         if self._plot_pending:
             self._plot_pending.run()
 
-    def print(self, step, ll, lla=None, llv=None, in_line_search=False):
+    def _disp(self, step, param):
+        """Size of the update since the last printed row of this component
+        (None on its first row), and remember the current parameters."""
+        kind = 'nonlin' if step == 'nonlin' else 'affine'
+        hook = self.disp_hooks.get(kind)
+        if hook is None or param is None:
+            return None
+        prev = self._disp_prev.get(kind)
+        disp = None if prev is None else hook(prev, param)
+        self._disp_prev[kind] = optm.base._clone(param)
+        return disp
+
+    def print(self, step, ll, lla=None, llv=None, in_line_search=False,
+              param=None):
         # Assembles the total objective (data + llv + lla) and records it:
         # must be called exactly once per evaluation, whatever `verbose`.
+        # `param`: parameters of the component (for the `disp` column,
+        # printed when the size of the updates is used for early stopping).
 
         if lla is None:
             lla = self.lla
@@ -778,6 +808,12 @@ class PairwiseRegisterStep:
                     line += ' | :D' if gain > 0 else ' | :('
                 else:
                     line += f' | {gain:12.6g}'
+            show_disp = bool(getattr(self, 'disp_hooks', None)) and not in_line_search
+            if show_disp and self.ll_prev is None:
+                line += ' | ' + ' ' * 12
+            if show_disp:
+                disp = self._disp(step if has_vel else 'affine', param)
+                line += f' | {disp:12.6g}' if disp is not None else ' | ' + ' ' * 12
             print(line, end='\r' if in_line_search or self.verbose < 3 else '\n')
 
         if not in_line_search:
@@ -993,7 +1029,7 @@ class PairwiseRegisterStep:
         #                           VERBOSITY
         # ==============================================================
         sumloss = self.print('nonlin', sumloss, lla=self.lla, llv=llv,
-                             in_line_search=in_line_search)
+                             in_line_search=in_line_search, param=vel)
 
         # ==============================================================
         #                           RETURN
@@ -1267,7 +1303,7 @@ class PairwiseRegisterStep:
         #                           VERBOSITY
         # ==============================================================
         sumloss = self.print('affine', sumloss, lla=lla, llv=self.llv,
-                             in_line_search=in_line_search)
+                             in_line_search=in_line_search, param=logaff)
 
         # ==============================================================
         #                           RETURN
@@ -1429,7 +1465,7 @@ class PairwiseRegisterStep:
         #                           VERBOSITY
         # ==============================================================
         sumloss = self.print('affine_only', sumloss, lla=lla,
-                             in_line_search=in_line_search)
+                             in_line_search=in_line_search, param=logaff)
 
         # ==============================================================
         #                           RETURN
