@@ -58,3 +58,31 @@ def test_exp_backward_hessian(dim):
     g2, h2 = spatial.exp_backward(v, G, H, steps=4)
     assert torch.equal(g1, g2)
     assert h2.shape == H.shape and torch.isfinite(h2).all()
+
+
+@pytest.mark.parametrize('dim', [2, 3])
+def test_exp_backward_hessian_stays_psd_where_field_folds(dim):
+    """The push forward weights by the volume change |det J|: with a
+    folding field, a signed determinant made the Hessian indefinite (and
+    the Gauss-Newton solve diverge)."""
+    n = 32 if dim == 2 else 16
+    v = _smooth_field(dim, n, fwhm=2, amp=16, seed=1)
+    # the field folds already halfway through the squaring (the last
+    # step's Jacobian is that of exp(v/2))
+    half = spatial.exp_forward(v / 2, steps=7, displacement=True)
+    assert (spatial.grid_jacdet(half, type='disp') <= 0).any()
+    g = torch.Generator().manual_seed(2)
+    grad = torch.randn(v.shape, dtype=dt, generator=g)
+    nh = dim * (dim + 1) // 2
+    hess = torch.zeros([*v.shape[:-1], nh], dtype=dt)
+    hess[..., :dim] = 1                          # positive definite input
+    _, h = spatial.exp_backward(v, grad, hess, steps=8)
+    full = torch.zeros([*v.shape[:-1], dim, dim], dtype=dt)
+    c = dim
+    for i in range(dim):
+        full[..., i, i] = h[..., i]
+        for j in range(i + 1, dim):
+            full[..., i, j] = full[..., j, i] = h[..., c]
+            c += 1
+    eig = torch.linalg.eigvalsh(full)
+    assert eig.min() >= -1e-10 * eig.max(), eig.min()
