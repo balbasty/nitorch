@@ -350,6 +350,12 @@ def shoot(
     # the inverse is needed by the exact scheme, and to compute the
     # forward transform by inversion
     need_inverse = return_inverse or not fast or invert
+    # With the TS backend, grid_pull returns a view created inside a
+    # custom autograd Function, which autograd forbids modifying in
+    # place (issue #171). Use out-of-place ops when building a graph;
+    # they give the same values as the in-place ones.
+    inplace = not (torch.is_grad_enabled() and
+                   (vel.requires_grad or greens.requires_grad))
     disp = None if invert else -vel
     if need_inverse:
         idisp = vel.clone()
@@ -380,7 +386,8 @@ def shoot(
         # JA: I found that simply using
         # $\psi \gets \psi - \tfrac{1}{T} (D \psi) v$ was not so stable.
         if not invert:
-            disp = _pull_grid(disp, id - vel, **pull_prm).sub_(vel)
+            disp = _pull_grid(disp, id - vel, **pull_prm)
+            disp = disp.sub_(vel) if inplace else disp - vel
         if need_inverse:
             idisp += _pull_grid(vel, id + idisp, **pull_prm)
 
@@ -391,7 +398,7 @@ def shoot(
         jac = mom = mom0 = vel = greens = None  # free integration buffers
         disp = grid_inv(idisp, type='disp', bound='dft', method=inversion)
     if not displacement:
-        disp += id
+        disp = disp.add_(id) if inplace else disp + id
         if return_inverse:
             idisp += id
     return (disp, idisp) if return_inverse else disp
