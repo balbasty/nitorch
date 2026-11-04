@@ -5,7 +5,7 @@ import sys
 
 
 def cli(args=None):
-    f"""Command-line interface for `vexp`
+    f"""Command-line interface for `compose`
     
     {help}
     
@@ -24,7 +24,7 @@ def cli(args=None):
 
 
 def _cli(args):
-    """Command-line interface for `nicrop` without exception handling"""
+    """Command-line interface for `compose` without exception handling"""
     args = args or sys.argv[1:]
 
     options = parse(args)

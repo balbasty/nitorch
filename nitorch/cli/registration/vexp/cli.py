@@ -25,7 +25,7 @@ def cli(args=None):
 
 
 def _cli(args):
-    """Command-line interface for `nicrop` without exception handling"""
+    """Command-line interface for `vexp` without exception handling"""
     args = args or sys.argv[1:]
 
     options = parse(args)
