@@ -52,6 +52,21 @@ namespace {
                          true);
   }
 
+  // Hessians and weights are even quantities (they are never negated
+  // outside of the field of view): restrict them with dst2 -> dct2 and
+  // dst1/zero -> replicate
+  inline std::vector<BoundType> even_bound(const BoundVectorRef & bound)
+  {
+    std::vector<BoundType> out(bound.begin(), bound.end());
+    for (auto & b : out) {
+      if (b == BoundType::DST2)
+        b = BoundType::DCT2;
+      else if (b == BoundType::DST1 || b == BoundType::Zero)
+        b = BoundType::Replicate;
+    }
+    return out;
+  }
+
   inline void get_shape(const Tensor & x, int64_t s[])
   {
     int64_t dim = x.dim() - 2;
@@ -288,6 +303,13 @@ Tensor fmg_impl(const Tensor & hessian,
   {
     fmg_restriction(x, o, bound);
   };
+  std::vector<BoundType> ebound = even_bound(bound);
+  auto restrict_even_ = [&](const Tensor & x, const Tensor & o)
+  {
+    if (!o.defined() || o.numel() == 0)
+      return;
+    fmg_restriction(x, o, ebound);
+  };
   auto residuals_ = [&]
                     (const Tensor & hessian,  const Tensor & gradient,
                      const Tensor & solution, const Tensor & weight,
@@ -309,7 +331,7 @@ Tensor fmg_impl(const Tensor & hessian,
 
   int64_t N = prepare_tensors(hessian, gradient, solution, weight, 
                               tensors.data(), vx.data(), 
-                              restrict_, restrict_, restrict_,
+                              restrict_, restrict_even_, restrict_even_,
                               max_levels);
 
   Tensor * h = tensors.data();
@@ -407,11 +429,12 @@ Tensor fmg_grid_impl(const Tensor & hessian,
         break;
     }
   };
+  std::vector<BoundType> ebound = even_bound(bound);
   auto restrict_w_ = [&](const Tensor & x, const Tensor & o)
   {
     if (!o.defined() || o.numel() == 0)
       return;
-    fmg_restriction(x, o, bound);
+    fmg_restriction(x, o, ebound);
   };
   auto restrict_g_ = [bound, dim](const Tensor & x, const Tensor & o)
   {
@@ -440,7 +463,7 @@ Tensor fmg_grid_impl(const Tensor & hessian,
   {
     if (!o.defined() || o.numel() == 0)
       return;
-    fmg_restriction(x, o, bound);
+    fmg_restriction(x, o, ebound);
     Tensor view;
     double f0 = 1., f1 = 1., f2 = 1.;
     int64_t CC = x.size(1);

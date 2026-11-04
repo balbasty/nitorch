@@ -50,53 +50,15 @@ from ._regularisers import (absolute, membrane, bending,
                             lame_shear, lame_div,
                             absolute_diag, membrane_diag, bending_diag,
                             regulariser_grid_diag,
-                            regulariser_grid_kernel, regulariser_kernel)
+                            regulariser_grid_kernel, regulariser_kernel,
+                            regulariser_grid, _c_supports, _kernel_supports,
+                            _correct_grid_stencil, _correct_field_stencil)
+from ._quadform import weight_bound
 from ._spconv import spconv
 if compiled_backend == 'C':
     import nitorch._C.solve as c_solvers
 else:
     c_solvers = None
-
-
-def _c_supports(weights=None, bending=0, lame=0, bound=None):
-    """Whether the compiled solvers implement this problem correctly.
-
-    They do not implement per-penalty weight maps (dict), nor weighted
-    (RLS) bending or linear-elastic energies; and with `dct1` or
-    `replicate` boundaries their regularisers are not symmetric (they
-    apply the stencil to the extended field, which is self-adjoint for
-    dct2, dst2 and dft only). The TorchScript implementations are used
-    instead.
-    """
-    if bound is not None:
-        from nitorch._C.grid import bound_to_nitorch
-        names = bound_to_nitorch(py.make_list(bound), as_type='str')
-        if any(b in ('dct1', 'replicate') for b in names):
-            return False
-    if weights is None:
-        return True
-    if isinstance(weights, dict):
-        return False
-    return not (any(py.ensure_list(bending)) or any(py.ensure_list(lame)))
-
-# TODO:
-#   - implement separable prolong/restrict (with torchscript?)
-
-# ======================================================================
-#                           ESTATICS helpers
-# ======================================================================
-# these routines takes compact representation of sparse Hessians with a
-# "ESTATICS" structure.
-#
-# The Hessian of the likelihood term is sparse with structure:
-# [[D, b],
-#  [b', r]]
-# where D = diag(d) is diagonal.
-# It is stored in a flattened form: [d0, d1, ..., dP, r, b0, b1, ...,  bP]
-#
-# Because of this specific structure, the Hessian is inverted in
-# closed-form using the formula for the inverse of a 2x2 block matrix.
-# See: https://en.wikipedia.org/wiki/Block_matrix#Block_matrix_inversion
 
 
 def estatics_matvec(hess, grad):
@@ -301,18 +263,30 @@ class _FMG:
     def pullopt(self):
         return dict(bound=self.bound, dim=self.dim)
 
+    @property
+    def even_bound(self):
+        # Hessians and weights are even (they are never negated outside
+        # of the field of view): 'dst2' -> 'dct2', 'dst1'/'zero' -> 'replicate'
+        return weight_bound(self.bound, self.dim)
+
     def prolong(self, x, grid, shape):
         return prolong(x, shape, bound=self.bound, dim=self.dim, grid=grid)
 
     def restrict(self, x, grid, shape):
         return restrict(x, shape, bound=self.bound, dim=self.dim, grid=grid)
 
-    prolong_h = prolong
+    def prolong_even(self, x, grid, shape):
+        return prolong(x, shape, bound=self.even_bound, dim=self.dim, grid=grid)
+
+    def restrict_even(self, x, grid, shape):
+        return restrict(x, shape, bound=self.even_bound, dim=self.dim, grid=grid)
+
+    prolong_h = prolong_even
     prolong_g = prolong
-    prolong_w = prolong
-    restrict_h = restrict
+    prolong_w = prolong_even
+    restrict_h = restrict_even
     restrict_g = restrict
-    restrict_w = restrict
+    restrict_w = restrict_even
 
     def allocate(self):
         # allocate tensors at each pyramid level
@@ -530,7 +504,8 @@ class _FieldFMG(_FMG):
                 x = utils.fast_movedim(x, -1, -self.dim-1)
                 y = torch.zeros_like(x)
                 if self.absolute:
-                    y.add_(absolute(x, weights=last2channel(wa)),
+                    y.add_(absolute(x, weights=last2channel(wa),
+                                    bound=self.bound, dim=self.dim),
                            alpha=self.absolute)
                 if self.membrane:
                     y.add_(membrane(x, weights=last2channel(wm), **opt),
@@ -627,6 +602,8 @@ class _FieldFMG(_FMG):
                                      bending=self.bending,
                                      factor=self.factor,
                                      voxel_size=vx, **utils.backend(h))
+            bending = (torch.as_tensor(self.bending, **utils.backend(h)) *
+                       torch.as_tensor(self.factor, **utils.backend(h)))
 
             def regulariser(x, s=Ellipsis):
                 x = utils.fast_movedim(x, -1, -self.dim-1)
@@ -638,10 +615,12 @@ class _FieldFMG(_FMG):
                     step = [sl.step for sl in s[:self.dim]]
                 else:
                     start = step = stop = None
-                x = spconv(x, ker, start=start, stop=stop, step=step,
+                y = spconv(x, ker, start=start, stop=stop, step=step,
                            dim=self.dim, bound=self.bound)
-                x = utils.fast_movedim(x, -self.dim-1, -1)
-                return x
+                y = _correct_field_stencil(
+                    x, y, bending, vx, self.bound, self.dim,
+                    None if s is Ellipsis else s[:self.dim])
+                return utils.fast_movedim(y, -self.dim-1, -1)
 
             # diagonal of the regulariser
             center = [s // 2 for s in ker.shape[-self.dim:]]
@@ -733,7 +712,7 @@ class _GridFMG(_FMG):
         shape0 = x.shape[-self.dim-1:-1]
         scale = [s/s0 for s0, s in zip(shape0, shape)]
         scale = torch.as_tensor(scale, **utils.backend(x))
-        x = prolong(x, shape, bound=self.bound, dim=self.dim, grid=grid)
+        x = prolong(x, shape, bound=self.even_bound, dim=self.dim, grid=grid)
         x[..., :self.dim].mul_(scale.square())
         c = 0
         for i in range(self.dim):
@@ -754,7 +733,7 @@ class _GridFMG(_FMG):
         shape0 = x.shape[-self.dim-1:-1]
         scale = [s0/s for s0, s in zip(shape0, shape)]
         scale = torch.as_tensor(scale, **utils.backend(x))
-        x = restrict(x, shape, bound=self.bound, dim=self.dim, grid=grid)
+        x = restrict(x, shape, bound=self.even_bound, dim=self.dim, grid=grid)
         x[..., :self.dim].mul_(scale.square())
         c = 0
         for i in range(self.dim):
@@ -843,7 +822,8 @@ class _GridFMG(_FMG):
             def regulariser(x):
                 y = torch.zeros_like(x)
                 if self.absolute:
-                    y.add_(absolute_grid(x, weights=wa, voxel_size=vx),
+                    y.add_(absolute_grid(x, weights=wa, voxel_size=vx,
+                                         bound=self.bound),
                            alpha=self.absolute)
                 if self.membrane:
                     y.add_(membrane_grid(x, weights=wm, **opt),
@@ -927,6 +907,9 @@ class _GridFMG(_FMG):
                                           lame=self.lame,
                                           factor=self.factor,
                                           voxel_size=vx, **utils.backend(h))
+            # the stencil of the linear-elastic energy is not exact with
+            # mirror or replicate boundaries: use the explicit operator
+            kernel_ok = _kernel_supports(self.lame, self.bound, self.dim)
 
             def regulariser(v, s=Ellipsis):
                 if s and s is not Ellipsis:
@@ -937,11 +920,19 @@ class _GridFMG(_FMG):
                     step = [sl.step for sl in s[:self.dim]]
                 else:
                     start = step = stop = None
+                if not kernel_ok:
+                    return regulariser_grid(
+                        v, absolute=self.absolute, membrane=self.membrane,
+                        bending=self.bending, lame=self.lame,
+                        factor=self.factor, voxel_size=vx,
+                        bound=self.bound)[s]
                 v = utils.fast_movedim(v, -1, -self.dim - 1)
-                v = spconv(v, ker, start=start, stop=stop, step=step,
+                y = spconv(v, ker, start=start, stop=stop, step=step,
                            dim=self.dim, bound=self.bound)
-                v = utils.fast_movedim(v, -self.dim - 1, -1)
-                return v
+                y = _correct_grid_stencil(
+                    v, y, self.bending * self.factor, vx, self.bound,
+                    self.dim, None if s is Ellipsis else s[:self.dim])
+                return utils.fast_movedim(y, -self.dim - 1, -1)
 
             # diagonal of the regulariser
             smo = regulariser_grid_diag(
@@ -1252,7 +1243,8 @@ def solve_field(hessian, gradient, weights=None, dim=None,
     def regulariser(x):
         y = torch.zeros_like(x)
         for x1, y1, w1, alpha in zip(x, y, wa, absolute):
-            y1.add_(_absolute(x1, weights=w1), alpha=alpha)
+            y1.add_(_absolute(x1, weights=w1, bound=bound, dim=dim),
+                    alpha=alpha)
         for x1, y1, w1, alpha in zip(x, y, wm, membrane):
             y1.add_(_membrane(x1, weights=w1, **fdopt), alpha=alpha)
         for x1, y1, w1, alpha in zip(x, y, wb, bending):
@@ -1441,7 +1433,8 @@ def solve_grid(hessian, gradient, absolute=0, membrane=0, bending=0,
     def regulariser(v):
         y = torch.zeros_like(v)
         if absolute:
-            y.add_(absolute_grid(v, weights=wa, voxel_size=voxel_size), alpha=absolute)
+            y.add_(absolute_grid(v, weights=wa, voxel_size=voxel_size,
+                                 bound=bound), alpha=absolute)
         if membrane:
             y.add_(membrane_grid(v, weights=wm, **fdopt), alpha=membrane)
         if bending:
@@ -1564,12 +1557,18 @@ def solve_grid_kernel(hessian, gradient, absolute=0, membrane=0, bending=0,
         else:
             start = step = stop = None
         if no_reg:
-            v = absolute_grid(v[s], voxel_size=voxel_size)
-        else:
-            v = utils.fast_movedim(v, -1, -dim-1)
-            v = spconv(v, ker, start=start, stop=stop, step=step, dim=dim, **fdopt)
-            v = utils.fast_movedim(v, -dim-1, -1)
-        return v
+            return absolute_grid(v, voxel_size=voxel_size, bound=bound)[s]
+        if not _kernel_supports(lame, bound, dim):
+            # the stencil of the linear-elastic energy is not exact with
+            # mirror or replicate boundaries: use the explicit operator
+            return regulariser_grid(v, absolute=absolute, membrane=membrane,
+                                    bending=bending, lame=lame,
+                                    voxel_size=voxel_size, bound=bound)[s]
+        v = utils.fast_movedim(v, -1, -dim-1)
+        y = spconv(v, ker, start=start, stop=stop, step=step, dim=dim, **fdopt)
+        y = _correct_grid_stencil(v, y, bending, voxel_size, bound, dim,
+                                  None if s is Ellipsis else s[:dim])
+        return utils.fast_movedim(y, -dim-1, -1)
 
     # diagonal of the regulariser
     smo = regulariser_grid_diag(dim, absolute=absolute, membrane=membrane,
@@ -1653,11 +1652,12 @@ def solve_field_kernel(hessian, gradient, dim=None,
     is_diag = hessian.shape[-1] in (1, gradient.shape[-1])
 
     nb_prm = gradient.shape[-dim-1]
-    no_reg = not (membrane or bending)
-    if not no_reg:
-        ker = regulariser_kernel(dim, absolute=absolute, membrane=membrane,
-                                 bending=bending, factor=factor,
-                                 voxel_size=voxel_size, **backend)
+    no_reg = False  # (see the closed form above)
+    ker = regulariser_kernel(dim, absolute=absolute, membrane=membrane,
+                             bending=bending, factor=factor,
+                             voxel_size=voxel_size, **backend)
+    bending_factor = (torch.as_tensor(bending, **backend) *
+                      torch.as_tensor(factor, **backend))
 
     gradient = utils.fast_movedim(gradient, -dim - 1, -1)
     hessian = utils.fast_movedim(hessian, -dim-1, -1)
@@ -1673,13 +1673,12 @@ def solve_field_kernel(hessian, gradient, dim=None,
         else:
             start = step = stop = None
         v = utils.fast_movedim(v, -1, -dim-1)
-        if no_reg:
-            v = _absolute(v[s])
-        else:
-            v = spconv(v, ker, start=start, stop=stop, step=step, dim=dim,
-                       bound=bound)
-        v = utils.fast_movedim(v, -dim-1, -1)
-        return v
+        y = spconv(v, ker, start=start, stop=stop, step=step, dim=dim,
+                   bound=bound)
+        y = _correct_field_stencil(
+            v, y, bending_factor, voxel_size, bound, dim,
+            None if s is Ellipsis else s[:dim])
+        return utils.fast_movedim(y, -dim-1, -1)
 
     # diagonal of the regulariser
     center = [s//2 for s in ker.shape[-dim:]]
