@@ -764,12 +764,9 @@ def parse_samples(samples):
     return int(round(samples))
 
 
-def _parse_samples(x):
-    return parse_samples(x) or 0
 
-
-affine.add_option('samples', '--samples', default=0, nargs=1,
-                  convert=_parse_samples,
+affine.add_option('samples', '--samples', default=None, nargs=1,
+                  convert=parse_samples,
                   help='Number of fixed voxels sampled to fit the affine '
                        'alone: a number (2^18, 256k, 1e5), auto, or all')
 affine.add_group(optim)

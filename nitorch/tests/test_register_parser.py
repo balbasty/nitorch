@@ -48,7 +48,7 @@ def test_register_affine_penalty_factors(args, factor, groups):
 
 
 @pytest.mark.parametrize('args, expected', [
-    ([], 0),                              # all voxels by default
+    ([], None),                           # all voxels by default
     (['--samples', '100000'], 100000),
     (['--samples', '1e5'], 100000),       # scientific notation
     (['rigid', '--samples', '4096'], 4096),
@@ -57,8 +57,8 @@ def test_register_affine_penalty_factors(args, factor, groups):
     (['--samples', '256k'], 256000),      # SI suffixes
     (['--samples', '1M'], 1000000),
     (['--samples', 'auto'], 'auto'),
-    (['--samples', 'all'], 0),            # all voxels
-    (['--samples', 'inf'], 0),
+    (['--samples', 'all'], None),         # all voxels
+    (['--samples', 'inf'], None),
 ])
 def test_register_affine_samples_option(args, expected):
     options = parser.parse(['@loss', 'mse'] + IMAGES + ['@affine'] + args)

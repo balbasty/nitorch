@@ -204,11 +204,11 @@ def _main(options):
             affine = make_affine_2d(options.affine.is2d, affine0,
                                     options.affine.name, options.affine.position,
                                     penalty=affine_penalty, init=affine_init,
-                                    samples=options.affine.samples or None)
+                                    samples=options.affine.samples)
         else:
             affine = make_affine(options.affine.name, options.affine.position,
                                  penalty=affine_penalty, init=affine_init,
-                                 samples=options.affine.samples or None)
+                                 samples=options.affine.samples)
 
     # ------------------------------------------------------------------
     #                           BUILD DENSE

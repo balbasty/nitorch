@@ -11,7 +11,7 @@ from nitorch import spatial
 from nitorch.tools.registration import objects, pairwise_run
 from nitorch.tools.registration.losses import MSE, MI, LCC
 from nitorch.tools.registration.pairwise_impl import (
-    PairwiseRegisterStep, _FixedVoxels)
+    PairwiseRegisterStep, SampledVoxels)
 
 dt = torch.double
 
@@ -59,7 +59,7 @@ def test_sample_layout(mask):
     """Coordinates, values and weights of the sampled voxels"""
     fix, _ = make_images(mask=mask)
     n = 500
-    sample = _FixedVoxels(fix, n, torch.Generator().manual_seed(1))
+    sample = SampledVoxels(fix, n, torch.Generator().manual_seed(1))
     ncand = int(fix.mask.sum()) if mask else fix.dat[0].numel()
     assert sample.n == n and sample.ncand == ncand
     assert sample.grid.shape == (n, 1, 1, 3)
@@ -81,7 +81,7 @@ def test_sum_is_unbiased():
     full = fix.dat.sum().item()
     est = []
     for seed in range(200):
-        s = _FixedVoxels(fix, 200, torch.Generator().manual_seed(seed))
+        s = SampledVoxels(fix, 200, torch.Generator().manual_seed(seed))
         est.append((s.dat * s.mask).sum().item())
     est = torch.as_tensor(est)
     sem = est.std() / len(est) ** 0.5
@@ -249,10 +249,10 @@ def test_sampled_mi_bins_come_from_the_whole_image():
     from the whole image, not from the samples"""
     fix, mov = make_images(shape=(40, 40, 40))
     loss = MI(dim=3)
-    voxels = _FixedVoxels(fix, 2000, torch.Generator().manual_seed(0))
+    voxels = SampledVoxels(fix, 2000, torch.Generator().manual_seed(0))
     assert voxels.sampled
     assert voxels.loss_kwargs(loss)['bins'] == [loss.autobins(fix.dat, 3)] * 2
-    assert _FixedVoxels(fix).loss_kwargs(loss) == {}
+    assert SampledVoxels(fix).loss_kwargs(loss) == {}
     assert loss.autobins(fix.dat, 3) != loss.autobins(torch.zeros([1, 2000, 1, 1]), 3)
 
 
@@ -263,7 +263,28 @@ def test_image_untouched_without_enough_voxels(mask):
     fix, _ = make_images(mask=mask)
     ncand = int(fix.mask.sum()) if mask else fix.dat[0].numel()
     for n in (None, ncand, ncand + 1):
-        voxels = _FixedVoxels(fix, n, torch.Generator().manual_seed(0))
+        voxels = SampledVoxels(fix, n, torch.Generator().manual_seed(0))
         assert not voxels.sampled and voxels.grid is None
         assert voxels.dat is fix.dat
-    assert _FixedVoxels(fix, ncand - 1, torch.Generator().manual_seed(0)).sampled
+    assert SampledVoxels(fix, ncand - 1, torch.Generator().manual_seed(0)).sampled
+
+
+def test_live_plot_shows_all_voxels(monkeypatch):
+    """With samples, the live plot (verbose >= 3) still shows the whole
+    images, warped by the current affine"""
+    fix, mov = make_images()
+    calls = []
+
+    def mov2fix(self, fixed, moving, warped, *args, **kwargs):
+        calls.append((fixed.shape, moving.shape, warped.shape))
+
+    monkeypatch.setattr(PairwiseRegisterStep, 'mov2fix', mov2fix)
+    step, affine = make_step(MSE(lam=1, dim=3), fix, mov, samples=500)
+    step.verbose = 3
+    prm = affine.parameters().dat.clone()
+    step.do_affine_only(prm)
+    assert any(v.sampled for v in step._samples.values()
+               if isinstance(v, SampledVoxels))
+    assert calls, 'the live plot was not drawn'
+    full = tuple(fix.dat.shape)
+    assert all(tuple(f) == full and tuple(w) == full for f, _, w in calls)

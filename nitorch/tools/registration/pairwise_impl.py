@@ -448,7 +448,7 @@ def _backward_position(pos):
     return {'m': 'f', 'f': 'm'}.get(pos, pos)
 
 
-class _FixedVoxels:
+class SampledVoxels:
     """The voxels of a fixed image on which a loss is evaluated: all of
     them, or a fixed random subset.
 
@@ -1414,9 +1414,9 @@ class PairwiseRegisterStep:
             out.append(sumhess)
         return tuple(out) if len(out) > 1 else out[0]
 
-    def _fixed_voxels(self, loss, all_voxels=False):
+    def _sampled_voxels(self, loss, all_voxels=False):
         """Voxels of the fixed image on which a loss of the affine-only
-        fit is evaluated (see `_FixedVoxels`).
+        fit is evaluated (see `SampledVoxels`).
 
         A subset is drawn the first time it is needed and kept by this
         step (i.e., for one pyramid level), so that the objective is the
@@ -1438,7 +1438,7 @@ class PairwiseRegisterStep:
         if key not in self._samples:
             if n and self._sample_rng is None:
                 self._sample_rng = torch.Generator().manual_seed(0)
-            self._samples[key] = _FixedVoxels(loss.fixed, n, self._sample_rng)
+            self._samples[key] = SampledVoxels(loss.fixed, n, self._sample_rng)
         return self._samples[key]
 
     def _auto_samples(self, loss):
@@ -1503,7 +1503,7 @@ class PairwiseRegisterStep:
                     mask = warped_mask * voxels.mask
                 return psi, warped, warped_mask, mask
 
-            voxels = self._fixed_voxels(loss)
+            voxels = self._sampled_voxels(loss)
             psi, warped, warped_mask, mask = forward(voxels)
             grid = voxels.coords(aff)
 
@@ -1514,7 +1514,7 @@ class PairwiseRegisterStep:
                     ppsi, pwarped, pwarped_mask, pmask = \
                         psi, warped, warped_mask, mask
                 else:
-                    pvoxels = self._fixed_voxels(loss, all_voxels=True)
+                    pvoxels = self._sampled_voxels(loss, all_voxels=True)
                     ppsi, pwarped, pwarped_mask, pmask = forward(pvoxels)
                 lam = None
                 if hasattr(loss.loss, 'irls'):
