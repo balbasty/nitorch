@@ -79,6 +79,27 @@ def kron(mats):
     return out
 
 
+def expand_sides(terms):
+    """Replace the half-lattice differences ('h') of the terms by their
+    definition: the average of the forward and backward differences"""
+    out = []
+    for coef, parts in terms:
+        axes = sorted({d for _, kinds, _ in parts
+                       for d, k in enumerate(kinds) if k == 'h'})
+        if not axes:
+            out.append((coef, parts))
+            continue
+        for sides in itertools.product('fb', repeat=len(axes)):
+            new_parts = []
+            for comp, kinds, scale in parts:
+                kinds = list(kinds)
+                for d, side in zip(axes, sides):
+                    kinds[d] = side
+                new_parts.append((comp, ''.join(kinds), scale))
+            out.append((coef / 2 ** len(axes), new_parts))
+    return out
+
+
 def operator(shape, bound, terms, ncomp=1, weights=None):
     """Dense operator of `terms` (see `_quadform.quadform`)
 
@@ -94,6 +115,7 @@ def operator(shape, bound, terms, ncomp=1, weights=None):
     if weights is not None:
         Wx = kron([a[2] for a in axes])
         rows = rows * (Wx @ weights.flatten().to(dt))
+    terms = expand_sides(terms)
     Ps = [a[0].shape[0] for a in axes]
     N = E.shape[1]
     A = torch.zeros(ncomp * N, ncomp * N, dtype=dt)

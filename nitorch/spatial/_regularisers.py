@@ -922,18 +922,30 @@ def regulariser_grid(v, absolute=0, membrane=0, bending=0, lame=0,
         wa = wm = wb = wl = weights
     wl = ensure_list(wl, 2)
 
-    y = torch.zeros_like(v)
-    if absolute:
-        y.add_(absolute_grid(v, weights=wa, voxel_size=voxel_size, bound=bound), alpha=absolute)
-    if membrane:
-        y.add_(membrane_grid(v, weights=wm, **fdopt), alpha=membrane)
-    if bending:
-        y.add_(bending_grid(v, weights=wb, **fdopt), alpha=bending)
-    if lame[0]:
-        y.add_(lame_shear(v, weights=wl[0], **fdopt), alpha=lame[0])
-    if lame[1]:
-        y.add_(lame_div(v, weights=wl[1], **fdopt), alpha=lame[1])
+    # All energies that share their weights are applied in a single pass
+    # (one extension and one fold of the grid).
+    vx = _voxel_size_list(voxel_size, dim)
+    groups = {}
 
+    def add(w, factor, terms):
+        group = groups.setdefault(id(w), [w, []])
+        group[1].extend((c * factor, p) for c, p in terms)
+
+    if absolute:
+        add(wa, absolute, _per_component(dim, lambda: terms_absolute(dim), vx))
+    if membrane:
+        add(wm, membrane, _per_component(dim, lambda: terms_membrane(dim, vx), vx))
+    if bending:
+        add(wb, bending, _per_component(dim, lambda: terms_bending(dim, vx), vx))
+    if lame[0]:
+        add(wl[0], lame[0], terms_lame_shear(dim, vx))
+    if lame[1]:
+        add(wl[1], lame[1], terms_lame_div(dim))
+
+    y = None
+    for w, terms in groups.values():
+        yw = _grid_op(v, terms, bound, w)
+        y = yw if y is None else y + yw
     return y
 
 
@@ -1135,18 +1147,31 @@ def regulariser(x, absolute=0, membrane=0, bending=0, factor=1,
             return [None] * nb_prm
         return torch.as_tensor(w, **backend).expand(x.shape).unbind(-dim-1)
 
+    # All energies of a channel that share their weights are applied in a
+    # single pass (one extension and one fold of the field).
+    vx = _voxel_size_list(voxel_size, dim)
     xs = x.unbind(-dim-1)
+    keys = (id(wa), id(wm), id(wb))
     wa, wm, wb = per_channel(wa), per_channel(wm), per_channel(wb)
     ys = []
     for k in range(nb_prm):
-        yk = 0
+        groups = {}
+
+        def add(key, w, factor, terms):
+            group = groups.setdefault(key, [w, []])
+            group[1].extend((c * factor, p) for c, p in terms)
+
         if absolute and absolute[k]:
-            yk = yk + absolute[k] * _absolute(xs[k], weights=wa[k], bound=bound, dim=dim)
+            add(keys[0], wa[k], absolute[k], terms_absolute(dim))
         if membrane and membrane[k]:
-            yk = yk + membrane[k] * _membrane(xs[k], weights=wm[k], **fdopt)
+            add(keys[1], wm[k], membrane[k], terms_membrane(dim, vx))
         if bending and bending[k]:
-            yk = yk + bending[k] * _bending(xs[k], weights=wb[k], **fdopt)
-        ys.append(yk if torch.is_tensor(yk) else torch.zeros_like(xs[k]))
+            add(keys[2], wb[k], bending[k], terms_bending(dim, vx))
+        yk = None
+        for w, terms in groups.values():
+            yw = _field_op(xs[k], terms, bound, dim, w)
+            yk = yw if yk is None else yk + yw
+        ys.append(yk if yk is not None else torch.zeros_like(xs[k]))
     y = torch.stack(ys, -dim-1)
 
     pad_spatial = (Ellipsis,) + (None,) * dim
