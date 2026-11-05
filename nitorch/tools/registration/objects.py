@@ -847,127 +847,41 @@ class Displacement(SpatialTensor, DenseTransform):
         type='displacement',
     )
 
-    # Lattice convention of the coarse-to-fine transfers (#114)
-    # ----------------------------------------------------------
-    # The image pyramid (`ImagePyramid`, gaussian or stride method) puts
-    # the centre of coarse voxel `j` on fine voxel `2*j` and has
-    # `ceil(N/2)` voxels: this is `affine_conv(kernel=3, stride=2,
-    # padding=1)` (or `affine_sub(::2)`). The pooling methods (average,
-    # median) put it on fine voxel `2*j + 0.5`. The velocity is
-    # transferred with the same convention, so that its lattice is the
-    # image lattice at each level (no fractional offset):
-    #       fine = factor * coarse + shift
-    # where `shift` is the position, in fine voxels, of the centre of the
-    # first coarse voxel. Axes that are singleton on both lattices are
-    # left untouched (scale 1, shift 0), as before.
-    # Passing `anchor` selects the former `spatial.resize_grid` behaviour.
-
-    def _transfer(self, shape, factor, shift, upsample, **kwargs):
-        if 'anchor' in kwargs:
-            upkwargs = dict(self._upkwargs)
-            upkwargs.update(kwargs)
-            return spatial.resize_grid(self.dat, shape=shape,
-                                       affine=self.affine, **upkwargs)
-        return _transfer_disp(self.dat, self.affine, shape, factor, shift,
-                              upsample, **kwargs)
-
-    def _shape(self, factor, upsample):
-        factor = py.make_list(factor, self.dim)
-        if upsample:
-            return [int(math.floor(s*f)) for s, f in zip(self.shape, factor)]
-        return [int(math.ceil(s/f)) for s, f in zip(self.shape, factor)]
-
-    def downsample_(self, factor=2, shape=None, shift=0., **kwargs):
-        shape = shape or self._shape(factor, False)
-        self.dat, self.affine = self._transfer(shape, factor, shift, False,
-                                               **kwargs)
+    def downsample_(self, factor=2, **kwargs):
+        new_shape = [int(math.ceil(s/factor)) for s in self.shape]
+        kwargs.setdefault('shape', new_shape)
+        upkwargs = dict(self._upkwargs)
+        upkwargs.update(kwargs)
+        self.dat, self.affine = spatial.resize_grid(
+            self.dat, affine=self.affine, **upkwargs)
         return self
 
-    def downsample(self, factor=2, shape=None, shift=0., **kwargs):
-        shape = shape or self._shape(factor, False)
-        dat, aff = self._transfer(shape, factor, shift, False, **kwargs)
-        return type(self)(dat, aff)
+    def downsample(self, factor=2, **kwargs):
+        new_shape = [int(math.ceil(s/factor)) for s in self.shape]
+        kwargs.setdefault('shape', new_shape)
+        upkwargs = dict(self._upkwargs)
+        upkwargs.update(kwargs)
+        dat, aff = spatial.resize_grid(
+            self.dat, affine=self.affine, **upkwargs)
+        return type(self)(dat, aff, dim=self.dim)
 
-    def upsample_(self, factor=2, shape=None, shift=0., **kwargs):
-        shape = shape or self._shape(factor, True)
-        self.dat, self.affine = self._transfer(shape, factor, shift, True,
-                                               **kwargs)
+    def upsample_(self, factor=2, **kwargs):
+        new_shape = [int(math.floor(s*factor)) for s in self.shape]
+        kwargs.setdefault('shape', new_shape)
+        upkwargs = dict(self._upkwargs)
+        upkwargs.update(kwargs)
+        self.dat, self.affine = spatial.resize_grid(
+            self.dat, affine=self.affine, **upkwargs)
         return self
 
-    def upsample(self, factor=2, shape=None, shift=0., **kwargs):
-        shape = shape or self._shape(factor, True)
-        dat, aff = self._transfer(shape, factor, shift, True, **kwargs)
-        return type(self)(dat, aff)
-
-
-def _transfer_disp(dat, affine, shape, factor=2, shift=0., upsample=False,
-                   interpolation=3, bound='dft', extrapolate=True,
-                   prefilter=True):
-    """Transfer a displacement field (in voxels) between pyramid levels.
-
-    Coarse and fine voxel coordinates are related by
-    `fine = factor * coarse + shift` (per axis), except along axes that
-    are singleton on both lattices, which are kept as is.
-
-    Parameters
-    ----------
-    dat : (*inshape, D) tensor
-        Displacement, in input voxels
-    affine : (D+1, D+1) tensor
-        Input orientation matrix
-    shape : list[int]
-        Output shape
-    factor : [list of] float
-        Size ratio (fine voxel size = coarse voxel size / factor)
-    shift : [list of] float
-        Position of the first coarse voxel, in fine voxels
-    upsample : bool
-        Whether the input is the coarse (True) or fine (False) lattice
-
-    Returns
-    -------
-    dat : (*shape, D) tensor
-        Displacement, in output voxels
-    affine : (D+1, D+1) tensor
-        Output orientation matrix
-    """
-    dim = dat.shape[-1]
-    inshape = list(dat.shape[-dim-1:-1])
-    shape = list(shape)
-    factor = py.make_list(factor, dim)
-    shift = py.make_list(shift, dim)
-    # input = scale * output + offset
-    scale, offset = [], []
-    for i, o, f, s in zip(inshape, shape, factor, shift):
-        if i == o == 1:
-            scale.append(1.)
-            offset.append(0.)
-        elif upsample:
-            scale.append(1. / f)
-            offset.append(-s / f)
-        else:
-            scale.append(float(f))
-            offset.append(float(s))
-    backend = utils.backend(dat)
-    trf = torch.eye(dim + 1, dtype=torch.double)
-    trf[:dim, :dim] = torch.diag(torch.as_tensor(scale, dtype=torch.double))
-    trf[:dim, -1] = torch.as_tensor(offset, dtype=torch.double)
-    affine = affine.double().matmul(trf).to(affine)
-
-    if list(inshape) == shape and all(sc == 1 and of == 0
-                                      for sc, of in zip(scale, offset)):
-        return dat.clone(), affine
-    lin = [torch.arange(o, **backend) * sc + of
-           for o, sc, of in zip(shape, scale, offset)]
-    grid = torch.stack(utils.meshgrid_ij(*lin), dim=-1)
-    dat = utils.last2channel(dat[None])
-    dat = spatial.grid_pull(dat, grid[None], interpolation=interpolation,
-                            bound=bound, extrapolate=extrapolate,
-                            prefilter=prefilter)
-    dat = utils.channel2last(dat)[0]
-    # displacements in input voxels -> output voxels
-    dat = dat / torch.as_tensor(scale, **backend)
-    return dat, affine
+    def upsample(self, factor=2, **kwargs):
+        new_shape = [int(math.floor(s*factor)) for s in self.shape]
+        kwargs.setdefault('shape', new_shape)
+        upkwargs = dict(self._upkwargs)
+        upkwargs.update(kwargs)
+        dat, aff = spatial.resize_grid(
+            self.dat, affine=self.affine, **upkwargs)
+        return type(self)(dat, aff, dim=self.dim)
 
 
 # --- Affine Lie bases ------------------------------------------------
