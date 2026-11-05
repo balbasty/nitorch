@@ -442,7 +442,7 @@ def pushgrad3d(inp, g, shape: Optional[List[int]], bound: List[Bound],
     idx = sub2ind_list([gx0, gy0, gz1], shape)
     idx = idx.expand([batch, channel, idx.shape[-1]])
     out1 = inp.clone()
-    sign = make_sign([signx0, signy0, signz0])
+    sign = make_sign([signx0, signy0, signz1])
     if sign is not None:
         out1 *= sign.unsqueeze(-1)
     if mask is not None:
@@ -456,7 +456,7 @@ def pushgrad3d(inp, g, shape: Optional[List[int]], bound: List[Bound],
     idx = sub2ind_list([gx0, gy1, gz0], shape)
     idx = idx.expand([batch, channel, idx.shape[-1]])
     out1 = inp.clone()
-    sign = make_sign([signx0, signy0, signz0])
+    sign = make_sign([signx0, signy1, signz0])
     if sign is not None:
         out1 *= sign.unsqueeze(-1)
     if mask is not None:
@@ -470,7 +470,7 @@ def pushgrad3d(inp, g, shape: Optional[List[int]], bound: List[Bound],
     idx = sub2ind_list([gx0, gy1, gz1], shape)
     idx = idx.expand([batch, channel, idx.shape[-1]])
     out1 = inp.clone()
-    sign = make_sign([signx0, signy0, signz0])
+    sign = make_sign([signx0, signy1, signz1])
     if sign is not None:
         out1 *= sign.unsqueeze(-1)
     if mask is not None:
@@ -484,7 +484,7 @@ def pushgrad3d(inp, g, shape: Optional[List[int]], bound: List[Bound],
     idx = sub2ind_list([gx1, gy0, gz0], shape)
     idx = idx.expand([batch, channel, idx.shape[-1]])
     out1 = inp.clone()
-    sign = make_sign([signx0, signy0, signz0])
+    sign = make_sign([signx1, signy0, signz0])
     if sign is not None:
         out1 *= sign.unsqueeze(-1)
     if mask is not None:
@@ -498,7 +498,7 @@ def pushgrad3d(inp, g, shape: Optional[List[int]], bound: List[Bound],
     idx = sub2ind_list([gx1, gy0, gz1], shape)
     idx = idx.expand([batch, channel, idx.shape[-1]])
     out1 = inp.clone()
-    sign = make_sign([signx0, signy0, signz0])
+    sign = make_sign([signx1, signy0, signz1])
     if sign is not None:
         out1 *= sign.unsqueeze(-1)
     if mask is not None:
@@ -512,7 +512,7 @@ def pushgrad3d(inp, g, shape: Optional[List[int]], bound: List[Bound],
     idx = sub2ind_list([gx1, gy1, gz0], shape)
     idx = idx.expand([batch, channel, idx.shape[-1]])
     out1 = inp.clone()
-    sign = make_sign([signx0, signy0, signz0])
+    sign = make_sign([signx1, signy1, signz0])
     if sign is not None:
         out1 *= sign.unsqueeze(-1)
     if mask is not None:
@@ -526,7 +526,7 @@ def pushgrad3d(inp, g, shape: Optional[List[int]], bound: List[Bound],
     idx = sub2ind_list([gx1, gy1, gz1], shape)
     idx = idx.expand([batch, channel, idx.shape[-1]])
     out1 = inp.clone()
-    sign = make_sign([signx0, signy0, signz0])
+    sign = make_sign([signx1, signy1, signz1])
     if sign is not None:
         out1 *= sign.unsqueeze(-1)
     if mask is not None:
@@ -588,7 +588,7 @@ def hess3d(inp, g, bound: List[Bound], extrapolate: int = 1):
     outzz.zero_()
     sign = make_sign([signx0, signy0, signz0])
     if sign is not None:
-        out *= sign.unsqueeze(-1)
+        out *= sign.unsqueeze(-1).unsqueeze(-1)
     outxy *= (1 - gz)
     outxz *= (1 - gy)
     outyz *= (1 - gx)
@@ -967,7 +967,7 @@ def pushgrad2d(inp, g, shape: Optional[List[int]], bound: List[Bound],
     idx = sub2ind_list([gx0, gy1], shape)
     idx = idx.expand([batch, channel, idx.shape[-1]])
     out1 = inp.clone()
-    sign = make_sign([signx0, signy0])
+    sign = make_sign([signx0, signy1])
     if sign is not None:
         out1 *= sign.unsqueeze(-1)
     if mask is not None:
@@ -980,7 +980,7 @@ def pushgrad2d(inp, g, shape: Optional[List[int]], bound: List[Bound],
     idx = sub2ind_list([gx1, gy0], shape)
     idx = idx.expand([batch, channel, idx.shape[-1]])
     out1 = inp.clone()
-    sign = make_sign([signx0, signy0])
+    sign = make_sign([signx1, signy0])
     if sign is not None:
         out1 *= sign.unsqueeze(-1)
     if mask is not None:
@@ -993,7 +993,7 @@ def pushgrad2d(inp, g, shape: Optional[List[int]], bound: List[Bound],
     idx = sub2ind_list([gx1, gy1], shape)
     idx = idx.expand([batch, channel, idx.shape[-1]])
     out1 = inp.clone()
-    sign = make_sign([signx0, signy0])
+    sign = make_sign([signx1, signy1])
     if sign is not None:
         out1 *= sign.unsqueeze(-1)
     if mask is not None:
@@ -1049,7 +1049,7 @@ def hess2d(inp, g, bound: List[Bound], extrapolate: int = 1):
     outyy.zero_()
     sign = make_sign([signx0, signy0])
     if sign is not None:
-        out *= sign.unsqueeze(-1)
+        out *= sign.unsqueeze(-1).unsqueeze(-1)
     outxy *= 1
     # - corner 01
     idx = sub2ind_list([gx0, gy1], shape)
@@ -1311,7 +1311,7 @@ def pushgrad1d(inp, g, shape: Optional[List[int]], bound: List[Bound],
     idx = gx1
     idx = idx.expand([batch, channel, idx.shape[-1]])
     out1 = inp.clone()
-    sign = signx0
+    sign = signx1
     if sign is not None:
         out1 *= sign.unsqueeze(-1)
     if mask is not None:
