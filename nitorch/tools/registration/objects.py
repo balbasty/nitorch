@@ -408,8 +408,49 @@ class Image(SpatialTensor):
     def preview(self, x):
         self._preview = x
 
+    @property
+    def fov_tapered(self):
+        """True if samples outside the field of view are excluded from
+        the loss by a mask that tapers continuously to zero (see `pull`)"""
+        return self.masked and not self.extrapolate
+
+    def fov_weights(self, grid):
+        """Weight of each sample in the loss, from its position relative
+        to the field of view.
+
+        It is 1 inside the lattice ([0, n-1] in voxels along each axis),
+        decreases linearly to 0 over the voxel outside it (0.5 at the
+        edge of the field of view, -0.5 and n-0.5), and is 0 beyond.
+
+        Parameters
+        ----------
+        grid : (*spatial, dim) tensor
+            Sampling coordinates, in voxels of this image.
+
+        Returns
+        -------
+        weights : (1, *spatial) tensor
+        """
+        weights = None
+        for g, n in zip(grid.unbind(-1), self.shape):
+            w = (g + 1).clamp_(0, 1)
+            w *= (n - g).clamp_(0, 1)
+            weights = w if weights is None else weights.mul_(w)
+        return weights[None]
+
     def pull(self, grid, dat=True, mask=False, preview=False):
         """Sample the image at dense coordinates.
+
+        If the image has a mask and is not extrapolated (`fov_tapered`),
+        samples outside the field of view are excluded from the loss by
+        the returned mask, which is the pulled mask multiplied by
+        `fov_weights`: it tapers linearly to zero over the voxel outside
+        the field of view. The data are extrapolated over that voxel
+        (according to `bound`) so that the weighted samples are
+        continuous as well. (A hard in-bounds cut makes the loss jump
+        whenever a voxel crosses the edge of the field of view, which
+        traps line searches.) The mask is treated as fixed when
+        differentiating with respect to the transform.
 
         Parameters
         ----------
@@ -433,10 +474,11 @@ class Image(SpatialTensor):
         # Interpolation must happen in floating point, even if the
         # image is not (e.g., discretized images are integers).
         dtype = self._float_dtype
+        extrapolate = self.extrapolate or self.fov_tapered
         if dat or (preview and not self.previewed):
             img = regutils.smart_pull(self.dat.to(dtype), grid,
                                       bound=self.bound,
-                                      extrapolate=self.extrapolate)
+                                      extrapolate=extrapolate)
             if dat:
                 out += [img]
         if mask:
@@ -444,13 +486,15 @@ class Image(SpatialTensor):
             if self.masked:
                 msk = self.mask.to(dtype)
                 msk = regutils.smart_pull(msk, grid, bound=self.bound,
-                                          extrapolate=self.extrapolate)
+                                          extrapolate=extrapolate)
+                if self.fov_tapered and grid is not None:
+                    msk *= self.fov_weights(grid).to(msk)
             out += [msk]
         if preview:
             if self.previewed:
                 prv = self.preview.to(dtype)
                 prv = regutils.smart_pull(prv, grid, bound=self.bound,
-                                          extrapolate=self.extrapolate)
+                                          extrapolate=extrapolate)
             else:
                 prv = img
             out += [prv]
@@ -458,6 +502,8 @@ class Image(SpatialTensor):
 
     def pull_grad(self, grid, rotate=False):
         """Sample the image gradients at dense coordinates.
+
+        The data are extrapolated as in `pull`.
 
         Parameters
         ----------
@@ -475,7 +521,7 @@ class Image(SpatialTensor):
             return self.grad()
         dat = self.dat.to(self._float_dtype)
         grad = spatial.grid_grad(dat, grid, bound=self.bound,
-                                 extrapolate=self.extrapolate)
+                                 extrapolate=self.extrapolate or self.fov_tapered)
         if rotate:
             jac = spatial.grid_jacobian(grid)
             jac = jac.transpose(-1, -2)

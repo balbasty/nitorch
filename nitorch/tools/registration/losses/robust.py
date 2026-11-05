@@ -76,8 +76,8 @@ def irls_laplace_reweight(moving, fixed, lam=1, joint=False, eps=1e-5,
     fixed, moving, lam, mask = utils.to_max_device(fixed, moving, lam, mask)
     lam = preproc_lam(lam, dim)
 
+    # (the mask weights the voxel's loss: it does not scale its residual)
     weights = (moving - fixed).square_().mul_(lam)
-    weights = mul_(weights, mask)
     if joint:
         weights = weights.sum(dim=-dim-1, keepdims=True)
     weights = weights.sqrt_().clamp_min_(eps).reciprocal_()
@@ -118,8 +118,8 @@ def irls_tukey_reweight(moving, fixed, lam=1, c=4.685, joint=False, dim=None,
     fixed, moving, lam, mask = utils.to_max_device(fixed, moving, lam, mask)
     lam = preproc_lam(lam, dim)
 
+    # (the mask weights the voxel's loss: it does not scale its residual)
     weights = (moving - fixed).square_().mul_(lam)
-    weights = mul_(weights, mask)
     if joint:
         weights = weights.sum(dim=-dim-1, keepdims=True)
     zeromsk = weights > c
@@ -245,10 +245,14 @@ class RobustLoss(OptimizationLoss):
         # Buffers (allocated at the first iteration, then reused):
         #   weights : s², then w, shape of `self.reweight`'s output
         #   tmp     : lam * r² (joint) or w * r², shape of r²
+        # The mask (or weights) weights each voxel's term in the mean: the
+        # IRLS weights are computed from the unweighted residuals. (Scaling
+        # the residuals by a fractional mask instead made the Laplace
+        # weights, and the loss, blow up as the mask goes to zero.)
         fixed_, moving_ = utils.to_max_backend(fixed, moving)
         res2 = (moving_ - fixed_).square_()
-        res2 = mul_(res2, mask if torch.is_tensor(mask) else None)
         del fixed_, moving_
+        weight = mask if torch.is_tensor(mask) else None
         kappa = self.kappa(nb_channels=nb_channels, **kwargs)
         spatial = list(range(-dim, 0))
         zero = (mask == 0) if torch.is_tensor(mask) else None
@@ -257,7 +261,7 @@ class RobustLoss(OptimizationLoss):
         if lam is None:
             # = weighted_precision(moving, fixed, mask), from r²
             if torch.is_tensor(mask):
-                lam = res2.sum(spatial, keepdim=True).div_(nvox)
+                lam = mul_(res2.clone(), weight).sum(spatial, keepdim=True).div_(nvox)
             else:
                 lam = res2.mean(spatial, keepdim=True)
             lam = lam.reciprocal_()
@@ -279,7 +283,7 @@ class RobustLoss(OptimizationLoss):
         for n_iter in range(64):
             lam_prev = lam
             weights = reweight(lam)
-            tmp = torch.mul(weights, res2, out=tmp)
+            tmp = mul_(torch.mul(weights, res2, out=tmp), weight)
             lam = tmp.sum(spatial, keepdim=True)
             lam = lam.reciprocal_().mul_(nvox).mul_(kappa)
             if (lam / lam_prev).log().abs().max() < 1e-6:
@@ -374,6 +378,7 @@ class RobustLoss(OptimizationLoss):
 
         kwargs['lam'] = lam
         kwargs['dim'] = dim
+        kwargs['mask'] = mask
 
         llx = mse(moving, fixed, grad=False, hess=False, **kwargs)
         return llx + llw + lll
@@ -407,6 +412,7 @@ class RobustLoss(OptimizationLoss):
 
         kwargs['lam'] = lam
         kwargs['dim'] = dim
+        kwargs['mask'] = mask
 
         llx, g = mse(moving, fixed, grad=True, hess=False, **kwargs)
         return llx + llw + lll, g
@@ -442,6 +448,7 @@ class RobustLoss(OptimizationLoss):
 
         kwargs['lam'] = lam
         kwargs['dim'] = dim
+        kwargs['mask'] = mask
 
         llx, g, h = mse(moving, fixed, grad=True, hess=True, **kwargs)
         return llx + llw + lll, g, h
