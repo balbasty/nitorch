@@ -98,11 +98,13 @@ def test_displacement_transfer_fov(shape):
 # ----------------------------------------------------------------------
 
 @pytest.mark.parametrize('method', ['gauss', 'average', 'stride'])
-@pytest.mark.parametrize('shape', [(16, 16, 16), (17, 15, 9), (17, 15, 1)])
+@pytest.mark.parametrize('shape', [(16, 16, 16), (17, 15, 9), (17, 15, 1),
+                                   (33, 32, 1)])
 def test_image_pyramid_affine(shape, method):
     """A ramp along each axis, pyramided, takes at each coarse voxel the
     fine coordinate that the level's affine assigns to it (interior
-    voxels: the boundary condition bends the ramp at the border).
+    voxels: the boundary condition bends the ramp within the kernel
+    support of the border).
     The median pyramid is left out: `math.median` returns the lower of
     the two middle values, which biases intensities, not positions."""
     aff = spatial.affine_default(shape, VX, dtype=dt)
@@ -119,10 +121,10 @@ def test_image_pyramid_affine(shape, method):
             pred = spatial.affine_matvec(
                 torch.linalg.solve(aff, img.affine), vox)[..., d]
             n = img.shape[d]
-            if n <= 4:
+            if n < 5:
                 continue
             sl = [slice(None)] * 3
-            sl[d] = slice(1, n - 1)
+            sl[d] = slice(2, n - 2)
             sl = tuple(sl)
             assert torch.allclose(img.dat[0][sl], pred[sl], atol=1e-3)
 
@@ -227,3 +229,41 @@ def test_coarse_level_grad_fd(shape):
               step.do_vel(x - eps * d, in_line_search=True)) / (2 * eps)
         an = (g * d).sum()
         assert abs(fd - an) < 1e-5 * g.norm(), (fd.item(), an.item())
+
+
+# ----------------------------------------------------------------------
+#   Gaussian pyramid: the PSF is 1 voxel of each level
+# ----------------------------------------------------------------------
+
+def test_gauss_pyramid_psf():
+    """Assuming a native PSF of FWHM 1 voxel, each level of the gaussian
+    pyramid must have a PSF of FWHM 1 voxel of that level: the filter of
+    FWHM f (in input voxels) adds f**2 in quadrature, so f = sqrt(3).
+
+    The added variance is measured on a well-sampled blob, in fine
+    voxels, at the positions given by each level's affine. The discrete
+    kernel of `spatial.smooth` is the Gaussian convolved with the linear
+    basis of the samples, whose variance (1/6 input voxel**2 per
+    filtering) is not part of the filter, and is removed."""
+    c = 8 * math.log(2)
+    n, sigma = 128, 5.
+    x = torch.arange(n, dtype=dt) - n / 2
+    blob = torch.exp(-0.5 * x ** 2 / sigma ** 2)[None, :, None, None]
+    aff = spatial.affine_default([n, 1, 1], 1., dtype=dt)
+    pyr = objects.ImagePyramid(blob, levels=[0, 1, 2], affine=aff, dim=3,
+                               method='gauss')
+
+    def variance(img):
+        pos = spatial.affine_matvec(
+            torch.linalg.solve(aff, img.affine),
+            spatial.identity_grid(list(img.shape), dtype=dt))[..., 0]
+        w = img.dat[0]
+        mean = (w * pos).sum() / w.sum()
+        return float((w * (pos - mean) ** 2).sum() / w.sum())
+
+    var0 = variance(pyr[0])
+    for level in (1, 2):
+        added = variance(pyr[level]) - var0
+        basis = sum(4 ** k / 6 for k in range(level))
+        fwhm = math.sqrt(1 + c * (added - basis)) / 2 ** level
+        assert abs(fwhm - 1) < 0.02, (level, fwhm)

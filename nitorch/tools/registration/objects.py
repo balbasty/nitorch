@@ -624,6 +624,20 @@ class ImageSequence(Image):
         return [f'nb_images={len(self)}'] + super()._prm_as_str()
 
 
+# FWHM (in input voxels) of the Gaussian filter of the gaussian pyramid
+_GAUSS_PYRAMID_FWHM = math.sqrt(3)
+
+
+def _gauss_pyramid_kernel_size():
+    """Size of the (odd) kernel that `spatial.smooth` uses for the
+    gaussian pyramid"""
+    from nitorch.core import kernels
+    kernel = kernels.smooth('gauss', _GAUSS_PYRAMID_FWHM, basis=1)
+    if isinstance(kernel, (list, tuple)):
+        kernel = kernel[0]
+    return kernel.numel()
+
+
 class ImagePyramid(ImageSequence):
     """
     Compute a multiscale image pyramid.
@@ -732,11 +746,14 @@ class ImagePyramid(ImageSequence):
             shape = dat.shape[-dim:]
             kernel_size = [min(2, s) for s in shape]
             if method[0] == 'g':  # gaussian pyramid
-                # We assume the original data has a PSF of 1 input voxel.
-                # We smooth by an additional 1-vx FWHM so that the data has a
-                # PSF of 2 input voxels == 1 output voxel, then subsample.
-                smooth = lambda x: spatial.smooth(x, fwhm=1, stride=2,
-                                                  dim=dim, bound=bound)
+                # We assume the original data has a PSF of FWHM 1 input
+                # voxel. FWHMs add in quadrature, so smoothing by a FWHM of
+                # sqrt(3) input voxels gives a PSF of FWHM sqrt(1 + 3) = 2
+                # input voxels == 1 output voxel; after subsampling, the
+                # data again has a PSF of FWHM 1 (output) voxel.
+                smooth = lambda x: spatial.smooth(x, fwhm=_GAUSS_PYRAMID_FWHM,
+                                                  stride=2, dim=dim,
+                                                  bound=bound)
             elif method[0] == 'a':  # average window
                 smooth = lambda x: spatial.pool(dim, x, kernel_size=kernel_size,
                                                 stride=2, reduction='mean')
@@ -778,8 +795,9 @@ class ImagePyramid(ImageSequence):
                 affine, shape = spatial.affine_sub(affine, shape, slicer)
             else:  # conv pyramid
                 if method[0] == 'g':  # gaussian pyramid
+                    # same (odd) kernel and 'same' padding as `smooth`
                     padding = 'auto'
-                    kernel = 3
+                    kernel = _gauss_pyramid_kernel_size()
                 else:  # moving window
                     padding = 0
                     kernel = [min(2, s) for s in shape]
