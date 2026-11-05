@@ -190,6 +190,11 @@ usage:
         -i, --input                     Path to initial transform (fov, com, or file path)
         -o, --output                    Path to the output transform: [{dir}/{name}.lta]
         -2d [AXIS=2]                    Force transform to be 2d about AXIS
+        --samples N                     Fit the affine alone (before any @nonlin) on N
+                                        random fixed voxels, drawn once per level [all].
+                                        N: a number (262144, 2^18, 64^3, 256k, 1e5),
+                                        auto (from the parameters and the histogram
+                                        of the loss), or all
 
 @nonlin options:
     NAME can take values:
@@ -712,6 +717,58 @@ affine.add_option('progressive', ('-g', '--progressive'), default=False,
 affine.add_option('is2d', '-2d', default=False, nargs='?',
                   action=cli.Actions.store_value(2),
                   convert=number_or_str(int))
+def parse_samples(samples):
+    """Parse `@affine --samples`: the number of voxels on which an
+    affine-only fit evaluates its data terms (see `AffineModel`).
+
+    Parameters
+    ----------
+    samples : int or float or str or None
+        - None, 0, 'all', 'inf' or float('inf'): all voxels (None)
+        - 'auto': chosen from the problem (see `auto_samples`)
+        - a number, possibly written 'a^b' (e.g. '2^18', '64^3'), with
+          an SI suffix ('256k', '1M') or in scientific notation ('1e5')
+
+    Returns
+    -------
+    samples : int or 'auto' or None
+    """
+    if samples is None:
+        return None
+    if isinstance(samples, str):
+        text = samples.strip().lower().replace(' ', '')
+        if text in ('', 'all', 'inf', 'none', '0'):
+            return None
+        if text == 'auto':
+            return 'auto'
+        scale = 1
+        if text[-1] in 'km':
+            scale = 1000 if text[-1] == 'k' else 1000000
+            text = text[:-1]
+        try:
+            if '^' in text or '**' in text:
+                base, exp = text.replace('**', '^').split('^')
+                value = float(base) ** float(exp)
+            else:
+                value = float(text)
+        except ValueError:
+            raise ValueError(f"Invalid number of samples: {samples!r}. "
+                             f"Expected a number (e.g. 262144, 2^18, 256k, "
+                             f"1e5), 'auto' or 'all'.")
+        samples = value * scale
+    if samples == float('inf') or samples == 0:
+        return None
+    if samples < 0:
+        raise ValueError(f'The number of samples must be positive, '
+                         f'got {samples}')
+    return int(round(samples))
+
+
+
+affine.add_option('samples', '--samples', default=None, nargs=1,
+                  convert=parse_samples,
+                  help='Number of fixed voxels sampled to fit the affine '
+                       'alone: a number (2^18, 256k, 1e5), auto, or all')
 affine.add_group(optim)
 
 # nonlin group
