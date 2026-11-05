@@ -433,7 +433,8 @@ class Image(SpatialTensor):
         """
         weights = None
         for g, n in zip(grid.unbind(-1), self.shape):
-            w = (g + 1).clamp(0, 1) * (n - g).clamp(0, 1)
+            w = (g + 1).clamp_(0, 1)
+            w *= (n - g).clamp_(0, 1)
             weights = w if weights is None else weights.mul_(w)
         return weights[None]
 
@@ -487,7 +488,7 @@ class Image(SpatialTensor):
                 msk = regutils.smart_pull(msk, grid, bound=self.bound,
                                           extrapolate=extrapolate)
                 if self.fov_tapered and grid is not None:
-                    msk = msk * self.fov_weights(grid).to(msk)
+                    msk *= self.fov_weights(grid).to(msk)
             out += [msk]
         if preview:
             if self.previewed:
