@@ -448,40 +448,59 @@ def _backward_position(pos):
     return {'m': 'f', 'f': 'm'}.get(pos, pos)
 
 
-class _VoxelSample:
-    """A fixed random subset of the voxels of an image.
+class _FixedVoxels:
+    """The voxels of a fixed image on which a loss is evaluated: all of
+    them, or a fixed random subset.
 
-    The sampled voxels are laid out along the first spatial dimension,
-    as an image of shape `(n, 1, ..., 1)`, so that pointwise losses can
-    be evaluated on them as on any image. Each voxel is drawn uniformly,
-    without replacement, among the voxels of the image (those in its
-    mask, if it has one), and is weighted by the inverse of its
-    probability of being drawn (Horvitz-Thompson), so that sums over
-    the sample are unbiased estimates of sums over the whole image.
+    Either way, it gives the fixed data and mask at these voxels and maps
+    them through an affine, so that the forward pass does not depend on
+    whether it samples.
+
+    A subset is drawn uniformly, without replacement, among the voxels
+    of the image (those in its mask, if it has one), and laid out as an
+    image of shape `(n, 1, ..., 1)`, so that pointwise losses can be
+    evaluated on it as on any image. Each sampled voxel is weighted by
+    the inverse of its probability of being drawn (Horvitz-Thompson), so
+    that sums over the subset are unbiased estimates of sums over the
+    image. If there are fewer candidate voxels than samples, the image
+    is used as is.
 
     Attributes
     ----------
-    grid : (n, 1, ..., 1, dim) tensor
-        Voxel coordinates of the samples
-    dat : (C, n, 1, ..., 1) tensor
-        Image values at the samples
-    mask : (C|1, n, 1, ..., 1) tensor
-        Weights of the samples (mask x inverse sampling probability)
+    sampled : bool
+        Whether the voxels are a subset of the image
+    n, ncand : int
+        Number of voxels used, and of candidate voxels (in the mask)
+    grid : (n, 1, ..., 1, dim) tensor or None
+        Voxel coordinates of the samples (None: the image lattice)
+    dat : (C, *spatial) or (C, n, 1, ..., 1) tensor
+        Image values at the voxels
+    mask : (C|1, *spatial) or (C|1, n, 1, ..., 1) tensor or None
+        Weights of the voxels (mask, x inverse sampling probability)
     """
 
-    def __init__(self, image, n, generator=None):
+    def __init__(self, image, samples=None, generator=None):
+        self.image = image
+        self.sampled = False
+        self.grid = None
+        self.dat = image.dat
+        self.mask = image.mask if image.masked else None
+        self.n = self.ncand = py.prod(image.shape)
+        if not samples:
+            return
+
         dim, shape, dat = image.dim, list(image.shape), image.dat
-        dtype = image._float_dtype
+        inside = None
         if image.masked:
             inside = image.mask
             while inside.dim() > dim:  # channels: valid in any channel
                 inside = inside.amax(0)
             inside = (inside > 0).flatten().nonzero().squeeze(-1)
-            ncand = len(inside)
-        else:
-            inside = None
-            ncand = py.prod(shape)
-        n = min(int(n), ncand)
+            self.n = self.ncand = len(inside)
+        if samples >= self.ncand:
+            return
+
+        n, ncand, dtype = int(samples), self.ncand, image._float_dtype
         idx = torch.randperm(ncand, generator=generator)[:n]
         idx = idx.sort().values.to(dat.device)  # sorted: local memory access
         if inside is not None:
@@ -496,14 +515,33 @@ class _VoxelSample:
         self.grid = coords.reshape([*layout, dim])
         self.dat = dat.reshape([len(dat), -1])[:, idx]
         self.dat = self.dat.reshape([len(dat), *layout])
-        weight = ncand / max(n, 1)
+        weight = ncand / n
         if image.masked:
             mask = image.mask.to(dtype)
             mask = mask.reshape([len(mask), -1])[:, idx].mul_(weight)
         else:
             mask = torch.full([1, n], weight, dtype=dtype, device=dat.device)
         self.mask = mask.reshape([len(mask), *layout])
-        self.n, self.ncand = n, ncand
+        self.n, self.sampled = n, True
+
+    def coords(self, like):
+        """Voxel coordinates of the samples (None: the image lattice)"""
+        return None if self.grid is None else self.grid.to(like)
+
+    def affine_grid(self, aff):
+        """Map the voxels through a voxel-to-voxel affine"""
+        if self.grid is None:
+            return spatial.affine_grid(aff, self.image.shape)
+        return spatial.affine_matvec(aff, self.coords(aff))
+
+    def loss_kwargs(self, loss):
+        """Options of a loss evaluated on these voxels: on a subset,
+        histogram losses whose bins are automatic take the bins of the
+        whole image, not those of the subset"""
+        if self.sampled and hasattr(loss, 'resolved_bins') and not loss.bins:
+            return dict(bins=loss.resolved_bins(self.image.dat,
+                                                self.image.dim))
+        return {}
 
 
 class PairwiseRegisterStep:
@@ -1376,34 +1414,31 @@ class PairwiseRegisterStep:
             out.append(sumhess)
         return tuple(out) if len(out) > 1 else out[0]
 
-    def _voxel_sample(self, loss):
-        """Voxel sample on which a loss of the affine-only fit is
-        evaluated, or None (all voxels).
+    def _fixed_voxels(self, loss, all_voxels=False):
+        """Voxels of the fixed image on which a loss of the affine-only
+        fit is evaluated (see `_FixedVoxels`).
 
-        It is drawn the first time it is needed and kept by this step
-        (i.e., for one pyramid level), so that the objective is the same
-        function across iterations and line searches. The seed is fixed,
-        so that a run is reproducible.
+        A subset is drawn the first time it is needed and kept by this
+        step (i.e., for one pyramid level), so that the objective is the
+        same function across iterations and line searches. The seed is
+        fixed, so that a run is reproducible.
         """
-        n = getattr(self.affine, 'samples', None)
-        if not n:
-            return None
+        n = None if all_voxels else getattr(self.affine, 'samples', None)
         if n == 'auto':
             n = self._auto_samples(loss)
-        if getattr(loss.loss, 'spatial', False):
+        if n and getattr(loss.loss, 'spatial', False):
             if not self._samples.get('warned'):
                 import warnings
                 warnings.warn(f'{type(loss.loss).__name__} depends on the '
                               f'spatial arrangement of the voxels: it is '
                               f'evaluated on all voxels (samples ignored).')
                 self._samples['warned'] = True
-            return None
-        key = (id(loss.fixed), n)
+            n = None
+        key = (id(loss.fixed), n or None)
         if key not in self._samples:
-            if self._sample_rng is None:
+            if n and self._sample_rng is None:
                 self._sample_rng = torch.Generator().manual_seed(0)
-            sample = _VoxelSample(loss.fixed, n, self._sample_rng)
-            self._samples[key] = sample if sample.n < sample.ncand else None
+            self._samples[key] = _FixedVoxels(loss.fixed, n, self._sample_rng)
         return self._samples[key]
 
     def _auto_samples(self, loss):
@@ -1413,15 +1448,6 @@ class PairwiseRegisterStep:
         cells = loss.loss.histogram_cells(loss.moving.dat, loss.fixed.dat,
                                           loss.fixed.dim)
         return auto_samples(nb_params, cells)
-
-    @staticmethod
-    def _sampled_loss_kwargs(loss):
-        """Options of a loss evaluated on samples: its number of bins is
-        chosen from the whole image, not from the samples"""
-        if hasattr(loss.loss, 'resolved_bins') and not loss.loss.bins:
-            return dict(bins=loss.loss.resolved_bins(loss.fixed.dat,
-                                                     loss.fixed.dim))
-        return {}
 
     def do_affine_only(self, logaff, grad=False, hess=False, in_line_search=False):
         """Forward pass for updating the affine component (nonlin is None)"""
@@ -1464,37 +1490,32 @@ class PairwiseRegisterStep:
             gaff = linalg.lmdiv(aff_mov, gaff)
 
             # ----------------------------------------------------------
-            # forward pass (on all fixed voxels, or on a sample)
+            # forward pass (on all fixed voxels, or on a subset)
             # ----------------------------------------------------------
-            def forward(sample):
-                if sample is None:
-                    grid = None
-                    fixed_dat = fixed.dat
-                    fixed_mask = fixed.mask if fixed.masked else None
-                    psi = spatial.affine_grid(aff, fixed.shape)
-                else:
-                    grid = sample.grid.to(aff)
-                    fixed_dat, fixed_mask = sample.dat, sample.mask
-                    psi = spatial.affine_matvec(aff, grid)
+            def forward(voxels):
+                psi = voxels.affine_grid(aff)
                 warped, warped_mask = moving.pull(psi, mask=True)
-                if fixed_mask is None:
+                if voxels.mask is None:
                     mask = warped_mask
                 elif warped_mask is None:
-                    mask = fixed_mask
+                    mask = voxels.mask
                 else:
-                    mask = warped_mask * fixed_mask
-                return grid, psi, fixed_dat, warped, warped_mask, mask
+                    mask = warped_mask * voxels.mask
+                return psi, warped, warped_mask, mask
 
-            sample = self._voxel_sample(loss)
-            grid, psi, fixed_dat, warped, warped_mask, mask = forward(sample)
+            voxels = self._fixed_voxels(loss)
+            psi, warped, warped_mask, mask = forward(voxels)
+            grid = voxels.coords(aff)
 
             if do_print:
                 has_printed = True
-                if sample is None:
+                # the plot shows all voxels
+                if not voxels.sampled:
                     ppsi, pwarped, pwarped_mask, pmask = \
                         psi, warped, warped_mask, mask
-                else:  # the plot shows all voxels
-                    _, ppsi, _, pwarped, pwarped_mask, pmask = forward(None)
+                else:
+                    pvoxels = self._fixed_voxels(loss, all_voxels=True)
+                    ppsi, pwarped, pwarped_mask, pmask = forward(pvoxels)
                 lam = None
                 if hasattr(loss.loss, 'irls'):
                     # lam estimated by the last evaluation: no IRLS loop
@@ -1524,10 +1545,9 @@ class PairwiseRegisterStep:
             # derivatives wrt moving
             # ----------------------------------------------------------
             g = h = None
-            loss_args = (warped, fixed_dat)
-            loss_kwargs = dict(dim=fixed.dim, mask=mask)
-            if sample is not None:
-                loss_kwargs.update(self._sampled_loss_kwargs(loss))
+            loss_args = (warped, voxels.dat)
+            loss_kwargs = dict(dim=fixed.dim, mask=mask,
+                               **voxels.loss_kwargs(loss.loss))
             state = loss.loss.get_state()
             if not grad and not hess:
                 llx = loss.loss.loss(*loss_args, **loss_kwargs)

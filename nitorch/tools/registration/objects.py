@@ -2196,53 +2196,6 @@ class Nonlin2dModel(NonLinModel):
 _AFFINE_PENALTY_GROUPS = ('translation', 'rotation', 'zoom', 'shear')
 
 
-def parse_samples(samples):
-    """Number of voxels on which an affine-only fit evaluates its data
-    terms (see `AffineModel`).
-
-    Parameters
-    ----------
-    samples : int or float or str or None
-        - None, 0, 'all', 'inf' or float('inf'): all voxels (None)
-        - 'auto': chosen from the problem (see `auto_samples`)
-        - a number, possibly written 'a^b' (e.g. '2^18', '64^3'), with
-          an SI suffix ('256k', '1M') or in scientific notation ('1e5')
-
-    Returns
-    -------
-    samples : int or 'auto' or None
-    """
-    if samples is None:
-        return None
-    if isinstance(samples, str):
-        text = samples.strip().lower().replace(' ', '')
-        if text in ('', 'all', 'inf', 'none', '0'):
-            return None
-        if text == 'auto':
-            return 'auto'
-        scale = 1
-        if text[-1] in 'km':
-            scale = 1000 if text[-1] == 'k' else 1000000
-            text = text[:-1]
-        try:
-            if '^' in text or '**' in text:
-                base, exp = text.replace('**', '^').split('^')
-                value = float(base) ** float(exp)
-            else:
-                value = float(text)
-        except ValueError:
-            raise ValueError(f"Invalid number of samples: {samples!r}. "
-                             f"Expected a number (e.g. 262144, 2^18, 256k, "
-                             f"1e5), 'auto' or 'all'.")
-        samples = value * scale
-    if samples == float('inf') or samples == 0:
-        return None
-    if samples < 0:
-        raise ValueError(f'The number of samples must be positive, '
-                         f'got {samples}')
-    return int(round(samples))
-
-
 def auto_samples(nb_params, histogram_cells=None):
     """Number of voxel samples for an affine-only fit (`samples='auto'`)
 
@@ -2461,23 +2414,15 @@ class AffineModel(TransformationModel):
             space if the loss is symmetric), whatever the position.
         dat : LogAffine or tensor, optional
             Pre-allocated log-parameters.
-        samples : int or {'auto', 'all'}, optional
-            When the affine is fitted alone (no nonlinear component),
-            evaluate the data terms on a fixed random subset of (at
-            most) `samples` voxels of each fixed image, drawn once per
-            pyramid level, instead of on all voxels. Each sampled voxel
-            is weighted by the inverse of its probability of being
-            drawn, so the data terms keep their scale with respect to
-            the prior. Losses that depend on the spatial arrangement of
-            the voxels (local windows, slices) always use all voxels.
-            'auto': chosen from the number of parameters and the joint
-            histogram of the loss (see `auto_samples`).
-            None, 0, 'all' or inf: use all voxels.
-            Strings such as '2^18', '256k' or '1e5' are accepted
-            (see `parse_samples`).
+        samples : int or 'auto', optional
+            Fit the affine alone (no nonlinear component) on a fixed
+            random subset of `samples` voxels of each fixed image, drawn
+            once per pyramid level, each weighted by the inverse of its
+            probability of being drawn. 'auto': see `auto_samples`.
+            None: all voxels.
         """
         self.factor = factor
-        self.samples = parse_samples(samples)
+        self.samples = samples or None
         self.penalty = penalty
         self._basis = basis
         self._optim = optim

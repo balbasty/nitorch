@@ -11,7 +11,7 @@ from nitorch import spatial
 from nitorch.tools.registration import objects, pairwise_run
 from nitorch.tools.registration.losses import MSE, MI, LCC
 from nitorch.tools.registration.pairwise_impl import (
-    PairwiseRegisterStep, _VoxelSample)
+    PairwiseRegisterStep, _FixedVoxels)
 
 dt = torch.double
 
@@ -59,7 +59,7 @@ def test_sample_layout(mask):
     """Coordinates, values and weights of the sampled voxels"""
     fix, _ = make_images(mask=mask)
     n = 500
-    sample = _VoxelSample(fix, n, torch.Generator().manual_seed(1))
+    sample = _FixedVoxels(fix, n, torch.Generator().manual_seed(1))
     ncand = int(fix.mask.sum()) if mask else fix.dat[0].numel()
     assert sample.n == n and sample.ncand == ncand
     assert sample.grid.shape == (n, 1, 1, 3)
@@ -81,7 +81,7 @@ def test_sum_is_unbiased():
     full = fix.dat.sum().item()
     est = []
     for seed in range(200):
-        s = _VoxelSample(fix, 200, torch.Generator().manual_seed(seed))
+        s = _FixedVoxels(fix, 200, torch.Generator().manual_seed(seed))
         est.append((s.dat * s.mask).sum().item())
     est = torch.as_tensor(est)
     sem = est.std() / len(est) ** 0.5
@@ -197,13 +197,13 @@ def test_recovers_translation():
     ('2**10', 1024), ('256k', 256000), ('1M', 1000000), ('1e5', 100000),
 ])
 def test_parse_samples(value, expected):
-    from nitorch.tools.registration.objects import parse_samples
+    from nitorch.cli.registration.register.parser import parse_samples
     assert parse_samples(value) == expected
 
 
 @pytest.mark.parametrize('value', ['-5', 'lots', '2^'])
 def test_parse_samples_rejects(value):
-    from nitorch.tools.registration.objects import parse_samples
+    from nitorch.cli.registration.register.parser import parse_samples
     with pytest.raises(ValueError):
         parse_samples(value)
 
@@ -234,15 +234,14 @@ def test_auto_samples_of_a_loss(loss, cells):
     assert affine.samples == 'auto'
     prm = affine.parameters().dat.clone()
     step.do_affine_only(prm, in_line_search=True)
-    sample = next(s for s in step._samples.values() if s is not None) \
-        if any(s is not None for s in step._samples.values()) else None
     n = auto_samples(6, cells)
+    voxels = [v for k, v in step._samples.items() if isinstance(k, tuple)]
+    assert [k[1] for k in step._samples if isinstance(k, tuple)] == [n]
     # the image (64000 voxels) is smaller than the auto sample size:
-    # all voxels are used
+    # it is used as is
     assert n >= 2 ** 16 > fix.dat[0].numel()
-    assert sample is None
-    assert (step._samples and all(k[1] == n for k in step._samples
-                                  if isinstance(k, tuple)))
+    assert len(voxels) == 1 and not voxels[0].sampled
+    assert voxels[0].dat is fix.dat
 
 
 def test_sampled_mi_bins_come_from_the_whole_image():
@@ -250,7 +249,21 @@ def test_sampled_mi_bins_come_from_the_whole_image():
     from the whole image, not from the samples"""
     fix, mov = make_images(shape=(40, 40, 40))
     loss = MI(dim=3)
-    step, affine = make_step(loss, fix, mov, samples=2000)
-    kwargs = step._sampled_loss_kwargs(step.losses[0])
-    assert kwargs['bins'] == [loss.autobins(fix.dat, 3)] * 2
+    voxels = _FixedVoxels(fix, 2000, torch.Generator().manual_seed(0))
+    assert voxels.sampled
+    assert voxels.loss_kwargs(loss)['bins'] == [loss.autobins(fix.dat, 3)] * 2
+    assert _FixedVoxels(fix).loss_kwargs(loss) == {}
     assert loss.autobins(fix.dat, 3) != loss.autobins(torch.zeros([1, 2000, 1, 1]), 3)
+
+
+@pytest.mark.parametrize('mask', [False, True])
+def test_image_untouched_without_enough_voxels(mask):
+    """If there are no more voxels (in the mask) than samples, the image
+    is used as is"""
+    fix, _ = make_images(mask=mask)
+    ncand = int(fix.mask.sum()) if mask else fix.dat[0].numel()
+    for n in (None, ncand, ncand + 1):
+        voxels = _FixedVoxels(fix, n, torch.Generator().manual_seed(0))
+        assert not voxels.sampled and voxels.grid is None
+        assert voxels.dat is fix.dat
+    assert _FixedVoxels(fix, ncand - 1, torch.Generator().manual_seed(0)).sampled
