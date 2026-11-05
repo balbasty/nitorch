@@ -243,6 +243,8 @@ public:
   PrecondImpl(const PrecondAllocator & info):
     dim(info.dim),
     bound0(info.bound0), bound1(info.bound1), bound2(info.bound2),
+    wbound0(bound::even(info.bound0)), wbound1(bound::even(info.bound1)),
+    wbound2(bound::even(info.bound2)),
     N(static_cast<offset_t>(info.N)),
     C(static_cast<offset_t>(info.C)),
     CC(static_cast<offset_t>(info.CC)),
@@ -396,6 +398,9 @@ private:
   BoundType         bound0;            // boundary condition  // x|W
   BoundType         bound1;            // boundary condition  // y|H
   BoundType         bound2;            // boundary condition  // z|D
+  BoundType         wbound0;        // boundary of the weights (even) // x|W
+  BoundType         wbound1;        // boundary of the weights (even) // y|H
+  BoundType         wbound2;        // boundary of the weights (even) // z|D
   reduce_t          absolute[MaxC];    // penalty on absolute values
   reduce_t          membrane[MaxC];    // penalty on first derivatives
   reduce_t          bending[MaxC];     // penalty on second derivatives
@@ -560,9 +565,10 @@ void PrecondImpl<scalar_t,offset_t,reduce_t,hessian_t>::finish(
 #define GET_SIGN2_(x, X, i)  \
   int8_t   s##x##00 = bound::sign(bound##i, x##00,  X); \
   int8_t   s##x##11 = bound::sign(bound##i, x##11,  X);
+// (only used to sample the weights, with their even boundary)
 #define GET_WARP1_(x, X, i)  \
-  x##0  = (bound::index(bound##i, x##0,  X) - x) * wgt_s##X; \
-  x##1  = (bound::index(bound##i, x##1,  X) - x) * wgt_s##X;
+  x##0  = (bound::index(wbound##i, x##0,  X) - x) * wgt_s##X; \
+  x##1  = (bound::index(wbound##i, x##1,  X) - x) * wgt_s##X;
 #define GET_WARP2_(x, X, i)  \
   x##00  = (bound::index(bound##i, x##00,  X) - x) * wgt_s##X; \
   x##11  = (bound::index(bound##i, x##11,  X) - x) * wgt_s##X;
@@ -622,7 +628,6 @@ void PrecondImpl<scalar_t,offset_t,reduce_t,hessian_t>::precond3d_rls_membrane(
   reduce_t val[MaxC], wval[MaxC];
   {
     GET_COORD1
-    GET_SIGN1
     GET_WARP1
     const reduce_t *a = absolute, *m = membrane;
     const scalar_t *wgt = wgt_ptr + (x*wgt_sX + y*wgt_sY + z*wgt_sZ + n*wgt_sN);
@@ -631,12 +636,12 @@ void PrecondImpl<scalar_t,offset_t,reduce_t,hessian_t>::precond3d_rls_membrane(
     for (int32_t c = 0; c < C; ++c, grd += grd_sC, wgt += wgt_sC)
     {
       scalar_t wcenter = *wgt;
-      reduce_t wm = m100 * (wcenter + bound::get_weight(wgt, x0, sx0, wcenter))
-                  + m100 * (wcenter + bound::get_weight(wgt, x1, sx1, wcenter))
-                  + m010 * (wcenter + bound::get_weight(wgt, y0, sy0, wcenter))
-                  + m010 * (wcenter + bound::get_weight(wgt, y1, sy1, wcenter))
-                  + m001 * (wcenter + bound::get_weight(wgt, z0, sz0, wcenter))
-                  + m001 * (wcenter + bound::get_weight(wgt, z1, sz1, wcenter));
+      reduce_t wm = m100 * (wcenter + wgt[x0])
+                  + m100 * (wcenter + wgt[x1])
+                  + m010 * (wcenter + wgt[y0])
+                  + m010 * (wcenter + wgt[y1])
+                  + m001 * (wcenter + wgt[z0])
+                  + m001 * (wcenter + wgt[z1]);
       val[c] = *grd;
       wval[c] = ( (*(a++)) * wcenter - 0.5 * (*(m++)) * wm );
     }
@@ -727,7 +732,6 @@ void PrecondImpl<scalar_t,offset_t,reduce_t,hessian_t>::precond2d_rls_membrane(
    reduce_t val[MaxC], wval[MaxC];
   {
     GET_COORD1
-    GET_SIGN1
     GET_WARP1
     const reduce_t *a = absolute, *m = membrane;
     const scalar_t *wgt = wgt_ptr + (x*wgt_sX + y*wgt_sY + n*wgt_sN);
@@ -736,10 +740,10 @@ void PrecondImpl<scalar_t,offset_t,reduce_t,hessian_t>::precond2d_rls_membrane(
     for (int32_t c = 0; c < C; ++c, grd += grd_sC, wgt += wgt_sC)
     {
       scalar_t wcenter = *wgt;
-      reduce_t wm = m100 * (wcenter + bound::get_weight(wgt, x0, sx0, wcenter))
-                  + m100 * (wcenter + bound::get_weight(wgt, x1, sx1, wcenter))
-                  + m010 * (wcenter + bound::get_weight(wgt, y0, sy0, wcenter))
-                  + m010 * (wcenter + bound::get_weight(wgt, y1, sy1, wcenter));
+      reduce_t wm = m100 * (wcenter + wgt[x0])
+                  + m100 * (wcenter + wgt[x1])
+                  + m010 * (wcenter + wgt[y0])
+                  + m010 * (wcenter + wgt[y1]);
       val[c] = *grd;
       wval[c] = ( (*(a++)) * wcenter - 0.5 * (*(m++)) * wm );
     }
@@ -816,7 +820,6 @@ void PrecondImpl<scalar_t,offset_t,reduce_t,hessian_t>::precond1d_rls_membrane(
    reduce_t val[MaxC], wval[MaxC];
   {
     GET_COORD1
-    GET_SIGN1
     GET_WARP1
     const reduce_t *a = absolute, *m = membrane;
     const scalar_t *wgt = wgt_ptr + (x*wgt_sX + n*wgt_sN);
@@ -825,8 +828,8 @@ void PrecondImpl<scalar_t,offset_t,reduce_t,hessian_t>::precond1d_rls_membrane(
     for (int32_t c = 0; c < C; ++c, grd += grd_sC, wgt += wgt_sC)
     {
       scalar_t wcenter = *wgt;
-      reduce_t wm = m100 * (wcenter + bound::get_weight(wgt, x0, sx0, wcenter))
-                  + m100 * (wcenter + bound::get_weight(wgt, x1, sx1, wcenter));
+      reduce_t wm = m100 * (wcenter + wgt[x0])
+                  + m100 * (wcenter + wgt[x1]);
       val[c] = *grd;
       wval[c] = ( (*(a++)) * wcenter - 0.5 * (*(m++)) * wm );
     }

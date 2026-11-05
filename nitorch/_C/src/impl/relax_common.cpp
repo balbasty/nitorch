@@ -241,6 +241,8 @@ public:
   RelaxImpl(const RelaxAllocator & info):
     dim(info.dim),
     bound0(info.bound0), bound1(info.bound1), bound2(info.bound2),
+    wbound0(bound::even(info.bound0)), wbound1(bound::even(info.bound1)),
+    wbound2(bound::even(info.bound2)),
     N(static_cast<offset_t>(info.N)),
     C(static_cast<offset_t>(info.C)),
     CC(static_cast<offset_t>(info.CC)),
@@ -503,6 +505,9 @@ private:
   BoundType         bound0;          // boundary condition  // x|W
   BoundType         bound1;          // boundary condition  // y|H
   BoundType         bound2;          // boundary condition  // z|D
+  BoundType         wbound0;        // boundary of the weights (even) // x|W
+  BoundType         wbound1;        // boundary of the weights (even) // y|H
+  BoundType         wbound2;        // boundary of the weights (even) // z|D
   reduce_t          absolute[MaxC];  // penalty on absolute values
   reduce_t          membrane[MaxC];  // penalty on first derivatives
   reduce_t          bending[MaxC];   // penalty on second derivatives
@@ -788,13 +793,12 @@ void RelaxImpl<scalar_t,offset_t,reduce_t,hessian_t>::finish(
 #define GET_WARP2_(x, X, i)  \
   x##00  = (bound::index(bound##i, x##00,  X) - x) * sol_s##X; \
   x##11  = (bound::index(bound##i, x##11,  X) - x) * sol_s##X;
+// Weights are sampled with their own (even) boundary condition
 #define GET_WARP1_RLS_(x, X, i) \
-  x##0  = (bound::index(bound##i, x##0,  X) - x); \
-  x##1  = (bound::index(bound##i, x##1,  X) - x); \
-  offset_t w##x##0 = x##0 * wgt_s##X; \
-  offset_t w##x##1 = x##1 * wgt_s##X; \
-  x##0 *= sol_s##X; \
-  x##1 *= sol_s##X;
+  offset_t w##x##0 = (bound::index(wbound##i, x##0, X) - x) * wgt_s##X; \
+  offset_t w##x##1 = (bound::index(wbound##i, x##1, X) - x) * wgt_s##X; \
+  x##0  = (bound::index(bound##i, x##0,  X) - x) * sol_s##X; \
+  x##1  = (bound::index(bound##i, x##1,  X) - x) * sol_s##X;
 
 
 /* ========================================================================== */
@@ -1008,12 +1012,12 @@ void RelaxImpl<scalar_t,offset_t,reduce_t,hessian_t>::relax3d_rls_membrane(
          ++c, sol += sol_sC, grd += grd_sC, wgt += wgt_sC)
     {
       scalar_t wcenter = *wgt;
-      reduce_t w1m00 = m100 * (wcenter + bound::get_weight(wgt, wx0, sx0, wcenter));
-      reduce_t w1p00 = m100 * (wcenter + bound::get_weight(wgt, wx1, sx1, wcenter));
-      reduce_t w01m0 = m010 * (wcenter + bound::get_weight(wgt, wy0, sy0, wcenter));
-      reduce_t w01p0 = m010 * (wcenter + bound::get_weight(wgt, wy1, sy1, wcenter));
-      reduce_t w001m = m001 * (wcenter + bound::get_weight(wgt, wz0, sz0, wcenter));
-      reduce_t w001p = m001 * (wcenter + bound::get_weight(wgt, wz1, sz1, wcenter));
+      reduce_t w1m00 = m100 * (wcenter + wgt[wx0]);
+      reduce_t w1p00 = m100 * (wcenter + wgt[wx1]);
+      reduce_t w01m0 = m010 * (wcenter + wgt[wy0]);
+      reduce_t w01p0 = m010 * (wcenter + wgt[wy1]);
+      reduce_t w001m = m001 * (wcenter + wgt[wz0]);
+      reduce_t w001p = m001 * (wcenter + wgt[wz1]);
 
       scalar_t center = *sol;  // no need to use `get` -> we know we are in the FOV
       auto get = [center](const scalar_t * x, offset_t o, int8_t s)
@@ -1243,10 +1247,10 @@ void RelaxImpl<scalar_t,offset_t,reduce_t,hessian_t>::relax2d_rls_membrane(
          ++c, sol += sol_sC, grd += grd_sC, wgt += wgt_sC)
     {
       scalar_t wcenter = *wgt;
-      reduce_t w1m00 = m100 * (wcenter + bound::get_weight(wgt, wx0, sx0, wcenter));
-      reduce_t w1p00 = m100 * (wcenter + bound::get_weight(wgt, wx1, sx1, wcenter));
-      reduce_t w01m0 = m010 * (wcenter + bound::get_weight(wgt, wy0, sy0, wcenter));
-      reduce_t w01p0 = m010 * (wcenter + bound::get_weight(wgt, wy1, sy1, wcenter));
+      reduce_t w1m00 = m100 * (wcenter + wgt[wx0]);
+      reduce_t w1p00 = m100 * (wcenter + wgt[wx1]);
+      reduce_t w01m0 = m010 * (wcenter + wgt[wy0]);
+      reduce_t w01p0 = m010 * (wcenter + wgt[wy1]);
 
       scalar_t center = *sol;  // no need to use `get` -> we know we are in the FOV
       auto get = [center](const scalar_t * x, offset_t o, int8_t s)
@@ -1455,8 +1459,8 @@ void RelaxImpl<scalar_t,offset_t,reduce_t,hessian_t>::relax1d_rls_membrane(
          ++c, sol += sol_sC, grd += grd_sC, wgt += wgt_sC)
     {
       scalar_t wcenter = *wgt;
-      reduce_t w1m00 = m100 * (wcenter + bound::get_weight(wgt, wx0, sx0, wcenter));
-      reduce_t w1p00 = m100 * (wcenter + bound::get_weight(wgt, wx1, sx1, wcenter));
+      reduce_t w1m00 = m100 * (wcenter + wgt[wx0]);
+      reduce_t w1p00 = m100 * (wcenter + wgt[wx1]);
 
       scalar_t center = *sol;  // no need to use `get` -> we know we are in the FOV
       auto get = [center](const scalar_t * x, offset_t o, int8_t s)

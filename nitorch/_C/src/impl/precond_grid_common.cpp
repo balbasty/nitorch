@@ -233,6 +233,8 @@ public:
   PrecondGridImpl(const PrecondGridAllocator & info):
     dim(info.dim),
     bound0(info.bound0), bound1(info.bound1), bound2(info.bound2),
+    wbound0(bound::even(info.bound0)), wbound1(bound::even(info.bound1)),
+    wbound2(bound::even(info.bound2)),
     vx0(info.vx0), vx1(info.vx1), vx2(info.vx2),
     absolute(info.absolute), membrane(info.membrane), bending(info.bending), 
     lame_shear(info.lame_shear), lame_div(info.lame_div), 
@@ -428,6 +430,9 @@ private:
   BoundType         bound0;         // boundary condition  // x|W
   BoundType         bound1;         // boundary condition  // y|H
   BoundType         bound2;         // boundary condition  // z|D
+  BoundType         wbound0;        // boundary of the weights (even) // x|W
+  BoundType         wbound1;        // boundary of the weights (even) // y|H
+  BoundType         wbound2;        // boundary of the weights (even) // z|D
   reduce_t          vx0;            // voxel size // x|W
   reduce_t          vx1;            // voxel size // y|H
   reduce_t          vx2;            // voxel size // z|D
@@ -762,13 +767,12 @@ void PrecondGridImpl<scalar_t,offset_t,reduce_t>::finish(
 #define GET_WARP2_(x, X, i)  \
   x##00  = (bound::index(bound##i, x##00,  X) - x) * sol_s##X; \
   x##11  = (bound::index(bound##i, x##11,  X) - x) * sol_s##X;
+// Weights are sampled with their own (even) boundary condition
 #define GET_WARP1_RLS_(x, X, i) \
-  x##0  = (bound::index(bound##i, x##0,  X) - x); \
-  x##1  = (bound::index(bound##i, x##1,  X) - x); \
-  offset_t w##x##0 = x##0 * wgt_s##X; \
-  offset_t w##x##1 = x##1 * wgt_s##X; \
-  x##0 *= sol_s##X; \
-  x##1 *= sol_s##X;
+  offset_t w##x##0 = (bound::index(wbound##i, x##0, X) - x) * wgt_s##X; \
+  offset_t w##x##1 = (bound::index(wbound##i, x##1, X) - x) * wgt_s##X; \
+  x##0  = (bound::index(bound##i, x##0,  X) - x) * sol_s##X; \
+  x##1  = (bound::index(bound##i, x##1,  X) - x) * sol_s##X;
 
 
 /* ========================================================================== */
@@ -825,18 +829,17 @@ void PrecondGridImpl<scalar_t,offset_t,reduce_t>::precond3d_rls_membrane(
   offset_t x, offset_t y, offset_t z, offset_t n) const
 {
   GET_COORD1
-  GET_SIGN1
   GET_WARP1_RLS
   GET_POINTERS
   scalar_t * wgt = wgt_ptr + (x*wgt_sX + y*wgt_sY + z*wgt_sZ);
 
   scalar_t wcenter = *wgt;
-  reduce_t w1m00 = m100 * (wcenter + bound::get_weight(wgt, wx0, sx0, wcenter));
-  reduce_t w1p00 = m100 * (wcenter + bound::get_weight(wgt, wx1, sx1, wcenter));
-  reduce_t w01m0 = m010 * (wcenter + bound::get_weight(wgt, wy0, sy0, wcenter));
-  reduce_t w01p0 = m010 * (wcenter + bound::get_weight(wgt, wy1, sy1, wcenter));
-  reduce_t w001m = m001 * (wcenter + bound::get_weight(wgt, wz0, sz0, wcenter));
-  reduce_t w001p = m001 * (wcenter + bound::get_weight(wgt, wz1, sz1, wcenter));
+  reduce_t w1m00 = m100 * (wcenter + wgt[wx0]);
+  reduce_t w1p00 = m100 * (wcenter + wgt[wx1]);
+  reduce_t w01m0 = m010 * (wcenter + wgt[wy0]);
+  reduce_t w01p0 = m010 * (wcenter + wgt[wy1]);
+  reduce_t w001m = m001 * (wcenter + wgt[wz0]);
+  reduce_t w001p = m001 * (wcenter + wgt[wz1]);
 
   reduce_t w = absolute * wcenter 
              - 0.5 * membrane * (w1m00 + w1p00 + w01m0 + w01p0 + w001m + w001p);
@@ -913,16 +916,15 @@ void PrecondGridImpl<scalar_t,offset_t,reduce_t>::precond2d_rls_membrane(
   offset_t x, offset_t y, offset_t z, offset_t n) const
 {
   GET_COORD1
-  GET_SIGN1
   GET_WARP1_RLS
   GET_POINTERS
   scalar_t * wgt = wgt_ptr + (x*wgt_sX + y*wgt_sY);
 
   scalar_t wcenter = *wgt;
-  reduce_t w1m00 = m100 * (wcenter + bound::get_weight(wgt, wx0, sx0, wcenter));
-  reduce_t w1p00 = m100 * (wcenter + bound::get_weight(wgt, wx1, sx1, wcenter));
-  reduce_t w01m0 = m010 * (wcenter + bound::get_weight(wgt, wy0, sy0, wcenter));
-  reduce_t w01p0 = m010 * (wcenter + bound::get_weight(wgt, wy1, sy1, wcenter));
+  reduce_t w1m00 = m100 * (wcenter + wgt[wx0]);
+  reduce_t w1p00 = m100 * (wcenter + wgt[wx1]);
+  reduce_t w01m0 = m010 * (wcenter + wgt[wy0]);
+  reduce_t w01p0 = m010 * (wcenter + wgt[wy1]);
 
   reduce_t w = absolute * wcenter 
              - 0.5 * membrane * (w1m00 + w1p00 + w01m0 + w01p0);
@@ -989,14 +991,13 @@ void PrecondGridImpl<scalar_t,offset_t,reduce_t>::precond1d_rls_membrane(
   offset_t x, offset_t y, offset_t z, offset_t n) const
 {
   GET_COORD1
-  GET_SIGN1
   GET_WARP1_RLS
   GET_POINTERS
   scalar_t * wgt = wgt_ptr + (x*wgt_sX + y*wgt_sY);
 
   scalar_t wcenter = *wgt;
-  reduce_t w1m00 = m100 * (wcenter + bound::get_weight(wgt, wx0, sx0, wcenter));
-  reduce_t w1p00 = m100 * (wcenter + bound::get_weight(wgt, wx1, sx1, wcenter));
+  reduce_t w1m00 = m100 * (wcenter + wgt[wx0]);
+  reduce_t w1p00 = m100 * (wcenter + wgt[wx1]);
 
   reduce_t w = absolute * wcenter 
              - 0.5 * membrane * (w1m00 + w1p00);

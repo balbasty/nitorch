@@ -270,14 +270,19 @@ slide(BoundType bound_type, int8_t sign, int axis, int comp) {
          ? static_cast<int8_t>(1) : sign;
 }
 
-// Weights (RLS) are always even: ignore the sign of the boundary
-// condition of the field and, where the field is zero (dst1, zero),
-// take the weight of the centre voxel.
-template <typename scalar_t, typename offset_t>
-static NI_INLINE NI_DEVICE scalar_t
-get_weight(const scalar_t * ptr, offset_t offset, int8_t sign,
-           scalar_t center) {
-  return sign ? ptr[offset] : center;
+// Boundary condition of the weights (RLS), which are always even: they
+// are never negated (dst2/sliding -> dct2) and, where the field is zero
+// (dst1/zero), take the value of the nearest voxel (replicate), as
+// `weight_bound` in nitorch/spatial/_quadform.py. Their sign is always 1.
+static NI_INLINE NI_HOST NI_DEVICE BoundType
+even(BoundType bound_type) {
+  switch (bound_type) {
+    case BoundType::DST2:
+    case BoundType::Sliding:    return BoundType::DCT2;
+    case BoundType::DST1:
+    case BoundType::Zero:       return BoundType::Replicate;
+    default:                    return bound_type;
+  }
 }
 
 } // namespace bound

@@ -234,6 +234,8 @@ public:
   RelaxGridImpl(const RelaxGridAllocator & info):
     dim(info.dim),
     bound0(info.bound0), bound1(info.bound1), bound2(info.bound2),
+    wbound0(bound::even(info.bound0)), wbound1(bound::even(info.bound1)),
+    wbound2(bound::even(info.bound2)),
     vx0(info.vx0), vx1(info.vx1), vx2(info.vx2),
     absolute(info.absolute), membrane(info.membrane), bending(info.bending),
     lame_shear(info.lame_shear), lame_div(info.lame_div),
@@ -542,6 +544,9 @@ private:
   BoundType         bound0;         // boundary condition  // x|W
   BoundType         bound1;         // boundary condition  // y|H
   BoundType         bound2;         // boundary condition  // z|D
+  BoundType         wbound0;        // boundary of the weights (even) // x|W
+  BoundType         wbound1;        // boundary of the weights (even) // y|H
+  BoundType         wbound2;        // boundary of the weights (even) // z|D
   reduce_t          vx0;            // voxel size // x|W
   reduce_t          vx1;            // voxel size // y|H
   reduce_t          vx2;            // voxel size // z|D
@@ -1082,13 +1087,12 @@ void RelaxGridImpl<scalar_t,offset_t,reduce_t>::finish1(
 #define GET_WARP2_(x, X, i)  \
   x##00  = (bound::index(bound##i, x##00,  X) - x) * sol_s##X; \
   x##11  = (bound::index(bound##i, x##11,  X) - x) * sol_s##X;
+// Weights are sampled with their own (even) boundary condition
 #define GET_WARP1_RLS_(x, X, i) \
-  x##0  = (bound::index(bound##i, x##0,  X) - x); \
-  x##1  = (bound::index(bound##i, x##1,  X) - x); \
-  offset_t w##x##0 = x##0 * wgt_s##X; \
-  offset_t w##x##1 = x##1 * wgt_s##X; \
-  x##0 *= sol_s##X; \
-  x##1 *= sol_s##X;
+  offset_t w##x##0 = (bound::index(wbound##i, x##0, X) - x) * wgt_s##X; \
+  offset_t w##x##1 = (bound::index(wbound##i, x##1, X) - x) * wgt_s##X; \
+  x##0  = (bound::index(bound##i, x##0,  X) - x) * sol_s##X; \
+  x##1  = (bound::index(bound##i, x##1,  X) - x) * sol_s##X;
 
 
 /* ========================================================================== */
@@ -1497,12 +1501,12 @@ void RelaxGridImpl<scalar_t,offset_t,reduce_t>::relax3d_rls_membrane(
 
   // In `grid` mode, the weight map is single channel
   scalar_t wcenter = *wgt;
-  reduce_t w1m00 = w100 * (wcenter + bound::get_weight(wgt, wx0, sx0, wcenter));
-  reduce_t w1p00 = w100 * (wcenter + bound::get_weight(wgt, wx1, sx1, wcenter));
-  reduce_t w01m0 = w010 * (wcenter + bound::get_weight(wgt, wy0, sy0, wcenter));
-  reduce_t w01p0 = w010 * (wcenter + bound::get_weight(wgt, wy1, sy1, wcenter));
-  reduce_t w001m = w001 * (wcenter + bound::get_weight(wgt, wz0, sz0, wcenter));
-  reduce_t w001p = w001 * (wcenter + bound::get_weight(wgt, wz1, sz1, wcenter));
+  reduce_t w1m00 = w100 * (wcenter + wgt[wx0]);
+  reduce_t w1p00 = w100 * (wcenter + wgt[wx1]);
+  reduce_t w01m0 = w010 * (wcenter + wgt[wy0]);
+  reduce_t w01p0 = w010 * (wcenter + wgt[wy1]);
+  reduce_t w001m = w001 * (wcenter + wgt[wz0]);
+  reduce_t w001p = w001 * (wcenter + wgt[wz1]);
 
   {
     scalar_t c = *sol0;  // no need to use `get` -> we know we are in the FOV
@@ -1873,10 +1877,10 @@ void RelaxGridImpl<scalar_t,offset_t,reduce_t>::relax2d_rls_membrane(
 
   // In `grid` mode, the weight map is single channel
   scalar_t wcenter = *wgt;
-  reduce_t w1m00 = w100 * (wcenter + bound::get_weight(wgt, wx0, sx0, wcenter));
-  reduce_t w1p00 = w100 * (wcenter + bound::get_weight(wgt, wx1, sx1, wcenter));
-  reduce_t w01m0 = w010 * (wcenter + bound::get_weight(wgt, wy0, sy0, wcenter));
-  reduce_t w01p0 = w010 * (wcenter + bound::get_weight(wgt, wy1, sy1, wcenter));
+  reduce_t w1m00 = w100 * (wcenter + wgt[wx0]);
+  reduce_t w1p00 = w100 * (wcenter + wgt[wx1]);
+  reduce_t w01m0 = w010 * (wcenter + wgt[wy0]);
+  reduce_t w01p0 = w010 * (wcenter + wgt[wy1]);
 
   {
     scalar_t c = *sol0;  // no need to use `get` -> we know we are in the FOV
@@ -2116,8 +2120,8 @@ void RelaxGridImpl<scalar_t,offset_t,reduce_t>::relax1d_rls_membrane(
 
   // In `grid` mode, the weight map is single channel
   scalar_t wcenter = *wgt;
-  reduce_t w1m00 = w100 * (wcenter + bound::get_weight(wgt, wx0, sx0, wcenter));
-  reduce_t w1p00 = w100 * (wcenter + bound::get_weight(wgt, wx1, sx1, wcenter));
+  reduce_t w1m00 = w100 * (wcenter + wgt[wx0]);
+  reduce_t w1p00 = w100 * (wcenter + wgt[wx1]);
 
   {
     scalar_t c = *sol0;  // no need to use `get` -> we know we are in the FOV
