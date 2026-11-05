@@ -191,7 +191,10 @@ usage:
         -o, --output                    Path to the output transform: [{dir}/{name}.lta]
         -2d [AXIS=2]                    Force transform to be 2d about AXIS
         --samples N                     Fit the affine alone (before any @nonlin) on N
-                                        random fixed voxels, drawn once per level [0: all]
+                                        random fixed voxels, drawn once per level [all].
+                                        N: a number (262144, 2^18, 64^3, 256k, 1e5),
+                                        auto (from the parameters and the histogram
+                                        of the loss), or all
 
 @nonlin options:
     NAME can take values:
@@ -714,10 +717,15 @@ affine.add_option('progressive', ('-g', '--progressive'), default=False,
 affine.add_option('is2d', '-2d', default=False, nargs='?',
                   action=cli.Actions.store_value(2),
                   convert=number_or_str(int))
+def _parse_samples(x):
+    from nitorch.tools.registration.objects import parse_samples
+    return parse_samples(x) or 0
+
+
 affine.add_option('samples', '--samples', default=0, nargs=1,
-                  convert=lambda x: int(float(x)),
+                  convert=_parse_samples,
                   help='Number of fixed voxels sampled to fit the affine '
-                       'alone (0: all)')
+                       'alone: a number (2^18, 256k, 1e5), auto, or all')
 affine.add_group(optim)
 
 # nonlin group

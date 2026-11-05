@@ -52,6 +52,13 @@ def test_register_affine_penalty_factors(args, factor, groups):
     (['--samples', '100000'], 100000),
     (['--samples', '1e5'], 100000),       # scientific notation
     (['rigid', '--samples', '4096'], 4096),
+    (['--samples', '2^18'], 2 ** 18),     # powers
+    (['--samples', '64^3'], 64 ** 3),
+    (['--samples', '256k'], 256000),      # SI suffixes
+    (['--samples', '1M'], 1000000),
+    (['--samples', 'auto'], 'auto'),
+    (['--samples', 'all'], 0),            # all voxels
+    (['--samples', 'inf'], 0),
 ])
 def test_register_affine_samples_option(args, expected):
     options = parser.parse(['@loss', 'mse'] + IMAGES + ['@affine'] + args)

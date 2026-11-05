@@ -1388,6 +1388,8 @@ class PairwiseRegisterStep:
         n = getattr(self.affine, 'samples', None)
         if not n:
             return None
+        if n == 'auto':
+            n = self._auto_samples(loss)
         if getattr(loss.loss, 'spatial', False):
             if not self._samples.get('warned'):
                 import warnings
@@ -1396,13 +1398,30 @@ class PairwiseRegisterStep:
                               f'evaluated on all voxels (samples ignored).')
                 self._samples['warned'] = True
             return None
-        key = id(loss.fixed)
+        key = (id(loss.fixed), n)
         if key not in self._samples:
             if self._sample_rng is None:
                 self._sample_rng = torch.Generator().manual_seed(0)
             sample = _VoxelSample(loss.fixed, n, self._sample_rng)
             self._samples[key] = sample if sample.n < sample.ncand else None
         return self._samples[key]
+
+    def _auto_samples(self, loss):
+        """Number of samples of `samples='auto'` (see `auto_samples`)"""
+        from .objects import auto_samples
+        nb_params = len(self.affine.parameters())
+        cells = loss.loss.histogram_cells(loss.moving.dat, loss.fixed.dat,
+                                          loss.fixed.dim)
+        return auto_samples(nb_params, cells)
+
+    @staticmethod
+    def _sampled_loss_kwargs(loss):
+        """Options of a loss evaluated on samples: its number of bins is
+        chosen from the whole image, not from the samples"""
+        if hasattr(loss.loss, 'resolved_bins') and not loss.loss.bins:
+            return dict(bins=loss.loss.resolved_bins(loss.fixed.dat,
+                                                     loss.fixed.dim))
+        return {}
 
     def do_affine_only(self, logaff, grad=False, hess=False, in_line_search=False):
         """Forward pass for updating the affine component (nonlin is None)"""
@@ -1507,6 +1526,8 @@ class PairwiseRegisterStep:
             g = h = None
             loss_args = (warped, fixed_dat)
             loss_kwargs = dict(dim=fixed.dim, mask=mask)
+            if sample is not None:
+                loss_kwargs.update(self._sampled_loss_kwargs(loss))
             state = loss.loss.get_state()
             if not grad and not hess:
                 llx = loss.loss.loss(*loss_args, **loss_kwargs)

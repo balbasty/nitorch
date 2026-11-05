@@ -189,3 +189,68 @@ def test_recovers_translation():
     corners = corners.to(dt)
     d = spatial.affine_matvec(a_full, corners) - spatial.affine_matvec(a_smpl, corners)
     assert d.norm(dim=-1).max() < 0.05
+
+
+@pytest.mark.parametrize('value, expected', [
+    (None, None), (0, None), ('all', None), ('inf', None), (float('inf'), None),
+    ('auto', 'auto'), (4096, 4096), ('2^18', 2 ** 18), ('64^3', 64 ** 3),
+    ('2**10', 1024), ('256k', 256000), ('1M', 1000000), ('1e5', 100000),
+])
+def test_parse_samples(value, expected):
+    from nitorch.tools.registration.objects import parse_samples
+    assert parse_samples(value) == expected
+
+
+@pytest.mark.parametrize('value', ['-5', 'lots', '2^'])
+def test_parse_samples_rejects(value):
+    from nitorch.tools.registration.objects import parse_samples
+    with pytest.raises(ValueError):
+        parse_samples(value)
+
+
+def test_auto_samples():
+    """max(2^16, 2^14 * parameters, 256 * histogram cells)"""
+    from nitorch.tools.registration.objects import auto_samples
+    assert auto_samples(6) == 6 * 2 ** 14      # rigid, pointwise loss
+    assert auto_samples(12) == 12 * 2 ** 14    # affine, pointwise loss
+    assert auto_samples(3) == 2 ** 16          # floor
+    assert auto_samples(6, 32 * 32) == 2 ** 18  # NMI, 32x32 bins
+
+
+@pytest.mark.parametrize('loss, cells', [
+    ('mse', None), ('mi32', 32 * 32), ('mi16x8', 16 * 8), ('mi_auto', None)])
+def test_auto_samples_of_a_loss(loss, cells):
+    """`samples='auto'` counts the affine parameters and the joint
+    histogram of the loss, whose bins are chosen on the whole image"""
+    from nitorch.tools.registration.objects import auto_samples
+    fix, mov = make_images(shape=(40, 40, 40))
+    loss = (MSE(lam=1, dim=3) if loss == 'mse' else
+            MI(dim=3, bins=32) if loss == 'mi32' else
+            MI(dim=3, bins=[16, 8]) if loss == 'mi16x8' else
+            MI(dim=3))
+    if cells is None and isinstance(loss, MI):
+        cells = loss.autobins(fix.dat, 3) ** 2
+    step, affine = make_step(loss, fix, mov, samples='auto')
+    assert affine.samples == 'auto'
+    prm = affine.parameters().dat.clone()
+    step.do_affine_only(prm, in_line_search=True)
+    sample = next(s for s in step._samples.values() if s is not None) \
+        if any(s is not None for s in step._samples.values()) else None
+    n = auto_samples(6, cells)
+    # the image (64000 voxels) is smaller than the auto sample size:
+    # all voxels are used
+    assert n >= 2 ** 16 > fix.dat[0].numel()
+    assert sample is None
+    assert (step._samples and all(k[1] == n for k in step._samples
+                                  if isinstance(k, tuple)))
+
+
+def test_sampled_mi_bins_come_from_the_whole_image():
+    """With `bins=None`, MI chooses its bins from the number of voxels:
+    from the whole image, not from the samples"""
+    fix, mov = make_images(shape=(40, 40, 40))
+    loss = MI(dim=3)
+    step, affine = make_step(loss, fix, mov, samples=2000)
+    kwargs = step._sampled_loss_kwargs(step.losses[0])
+    assert kwargs['bins'] == [loss.autobins(fix.dat, 3)] * 2
+    assert loss.autobins(fix.dat, 3) != loss.autobins(torch.zeros([1, 2000, 1, 1]), 3)
