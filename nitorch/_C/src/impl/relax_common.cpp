@@ -775,7 +775,7 @@ void RelaxImpl<scalar_t,offset_t,reduce_t,hessian_t>::finish(
   }
   // diagonal `w * (diag[c] - bending[c] * cdiag)`, evaluated on the fly
   // (no local array)
-  ScaledDiag<reduce_t> wdiag = {diag, w, bending, -w * cdiag};
+  AffineDiag<reduce_t> wdiag = {diag, w, bending, -w * cdiag};
   hessian_t::addinvert(C, sol, sol_sC, hes, hes_sC, val, wdiag);
 }
 

@@ -108,11 +108,23 @@ namespace Cholesky {
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 // The diagonal `w` that `invert` adds to the Hessian is read as `w[c]`:
-// it can be a pointer, or this view, which evaluates
-// `a * diag[c] + b * other[c]` on the fly instead of storing it in a
-// local array.
+// it can be a pointer, or one of these views, which evaluate it on the
+// fly instead of storing it in a local array.
+
+// `a * diag[c]`
 template <typename reduce_t>
 struct ScaledDiag {
+  const reduce_t * diag;
+  reduce_t         a;
+
+  NI_INLINE NI_DEVICE reduce_t operator[](int32_t c) const {
+    return a * diag[c];
+  }
+};
+
+// `a * diag[c] + b * other[c]`
+template <typename reduce_t>
+struct AffineDiag {
   const reduce_t * diag;
   reduce_t         a;
   const reduce_t * other;
