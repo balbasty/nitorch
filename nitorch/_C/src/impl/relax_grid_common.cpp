@@ -532,6 +532,9 @@ private:
     const scalar_t * hes, scalar_t * sol0,
     reduce_t val0, reduce_t val1, reduce_t val2,
     reduce_t d0, reduce_t d1, reduce_t d2) const;
+  NI_DEVICE void finish1(offset_t c, reduce_t w, int8_t rx, int8_t ry, int8_t rz,
+    const scalar_t * grd0, const scalar_t * sol0,
+    reduce_t & val, reduce_t & d) const;
 
   /* ~~~ OPTIONS ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ */
   offset_t          dim;            // dimensionality (2 or 3)
@@ -1025,24 +1028,34 @@ void RelaxGridImpl<scalar_t,offset_t,reduce_t>::finish(
   if (w == static_cast<reduce_t>(1) && !(rx || ry || rz))
     return invert(hes, sol0, val0, val1, val2, d0, d1, d2);
   const scalar_t * grd0 = grd_ptr + (x*grd_sX + y*grd_sY + z*grd_sZ + n*grd_sN);
-  const reduce_t vx[3] = {vx0, vx1, vx2};
-  reduce_t val[3] = {val0, val1, val2}, d[3] = {d0, d1, d2};
-  for (offset_t c = 0; c < dim; ++c) {
-    reduce_t g = static_cast<reduce_t>(grd0[c * grd_sC]);
-    reduce_t lx = g - val[c];
-    if (rx || ry || rz) {
-      const scalar_t * s = sol0 + c * sol_sC;
-      reduce_t center = static_cast<reduce_t>(*s), corr = 0, cdiag = 0;
-      if (rx) { corr += w200 * (static_cast<reduce_t>(s[rx * sol_sX]) - center); cdiag += w200; }
-      if (ry) { corr += w020 * (static_cast<reduce_t>(s[ry * sol_sY]) - center); cdiag += w020; }
-      if (rz) { corr += w002 * (static_cast<reduce_t>(s[rz * sol_sZ]) - center); cdiag += w002; }
-      lx   += corr / vx[c];
-      d[c] -= cdiag / vx[c];
-    }
-    val[c] = g - w * lx;
-    d[c]  *= w;
+  // components are corrected one at a time (no local arrays)
+  finish1(0, w, rx, ry, rz, grd0, sol0, val0, d0);
+  if (dim > 1) finish1(1, w, rx, ry, rz, grd0, sol0, val1, d1);
+  if (dim > 2) finish1(2, w, rx, ry, rz, grd0, sol0, val2, d2);
+  invert(hes, sol0, val0, val1, val2, d0, d1, d2);
+}
+
+// Exact residual `val` and diagonal `d` of the component `c`
+template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
+void RelaxGridImpl<scalar_t,offset_t,reduce_t>::finish1(
+    offset_t c, reduce_t w, int8_t rx, int8_t ry, int8_t rz,
+    const scalar_t * grd0, const scalar_t * sol0,
+    reduce_t & val, reduce_t & d) const
+{
+  reduce_t vx = c == 0 ? vx0 : c == 1 ? vx1 : vx2;
+  reduce_t g = static_cast<reduce_t>(grd0[c * grd_sC]);
+  reduce_t lx = g - val;
+  if (rx || ry || rz) {
+    const scalar_t * s = sol0 + c * sol_sC;
+    reduce_t center = static_cast<reduce_t>(*s), corr = 0, cdiag = 0;
+    if (rx) { corr += w200 * (static_cast<reduce_t>(s[rx * sol_sX]) - center); cdiag += w200; }
+    if (ry) { corr += w020 * (static_cast<reduce_t>(s[ry * sol_sY]) - center); cdiag += w020; }
+    if (rz) { corr += w002 * (static_cast<reduce_t>(s[rz * sol_sZ]) - center); cdiag += w002; }
+    lx += corr / vx;
+    d  -= cdiag / vx;
   }
-  invert(hes, sol0, val[0], val[1], val[2], d[0], d[1], d[2]);
+  val = g - w * lx;
+  d  *= w;
 }
 
 #define GET_COORD1_(x) offset_t x##0  = x - 1, x##1 = x + 1;

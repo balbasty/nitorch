@@ -749,22 +749,28 @@ void RelaxImpl<scalar_t,offset_t,reduce_t,hessian_t>::finish(
   if (w == static_cast<reduce_t>(1) && !(rx || ry || rz))
     return hessian_t::addinvert(C, sol, sol_sC, hes, hes_sC, val, diag);
   const scalar_t * grd = grd_ptr + (x*grd_sX + y*grd_sY + z*grd_sZ + n*grd_sN);
-  reduce_t wdiag[MaxC];
+  // the bending correction removes `bending[c] * cdiag` from the
+  // diagonal of channel c (cdiag does not depend on the channel)
+  reduce_t cdiag = 0;
+  if (rx) cdiag += b200;
+  if (ry) cdiag += b020;
+  if (rz) cdiag += b002;
   for (offset_t c = 0; c < C; ++c) {
     reduce_t g = static_cast<reduce_t>(grd[c * grd_sC]);
-    reduce_t lx = g - val[c], d = diag[c];
+    reduce_t lx = g - val[c];
     if (rx || ry || rz) {
       const scalar_t * s = sol + c * sol_sC;
-      reduce_t center = static_cast<reduce_t>(*s), corr = 0, cdiag = 0;
-      if (rx) { corr += b200 * (static_cast<reduce_t>(s[rx * sol_sX]) - center); cdiag += b200; }
-      if (ry) { corr += b020 * (static_cast<reduce_t>(s[ry * sol_sY]) - center); cdiag += b020; }
-      if (rz) { corr += b002 * (static_cast<reduce_t>(s[rz * sol_sZ]) - center); cdiag += b002; }
+      reduce_t center = static_cast<reduce_t>(*s), corr = 0;
+      if (rx) corr += b200 * (static_cast<reduce_t>(s[rx * sol_sX]) - center);
+      if (ry) corr += b020 * (static_cast<reduce_t>(s[ry * sol_sY]) - center);
+      if (rz) corr += b002 * (static_cast<reduce_t>(s[rz * sol_sZ]) - center);
       lx += bending[c] * corr;
-      d  -= bending[c] * cdiag;
     }
-    val[c]   = g - w * lx;
-    wdiag[c] = w * d;
+    val[c] = g - w * lx;
   }
+  // diagonal `w * (diag[c] - bending[c] * cdiag)`, evaluated on the fly
+  // (no local array)
+  ScaledDiag<reduce_t> wdiag = {diag, w, bending, -w * cdiag};
   hessian_t::addinvert(C, sol, sol_sC, hes, hes_sC, val, wdiag);
 }
 

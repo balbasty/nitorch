@@ -547,9 +547,8 @@ void PrecondImpl<scalar_t,offset_t,reduce_t,hessian_t>::finish(
              * bound::row_weight<reduce_t>(bound2, z, Z);
   if (w == static_cast<reduce_t>(1))
     return hessian_t::invert(C, sol, sol_sC, hes, hes_sC, val, diag);
-  reduce_t wdiag[MaxC];
-  for (offset_t c = 0; c < C; ++c)
-    wdiag[c] = w * diag[c];
+  // diagonal `w * diag[c]`, evaluated on the fly (no local array)
+  ScaledDiag<reduce_t> wdiag = {diag, w, diag, static_cast<reduce_t>(0)};
   hessian_t::invert(C, sol, sol_sC, hes, hes_sC, val, wdiag);
 }
 

@@ -32,7 +32,7 @@ NI_NAMESPACE_DEVICE {
 namespace {
 
 
-  Tensor fmg_prolongation(const Tensor             & input, 
+  NI_HOST Tensor fmg_prolongation(const Tensor             & input, 
                           const Tensor             & output,
                           const BoundVectorRef     & bound) 
   {
@@ -42,7 +42,7 @@ namespace {
                          false);
   }
 
-  Tensor fmg_restriction(const Tensor             & input, 
+  NI_HOST Tensor fmg_restriction(const Tensor             & input, 
                          const Tensor             & output,
                          const BoundVectorRef     & bound) 
   {
@@ -55,7 +55,7 @@ namespace {
   // Hessians and weights are even quantities (they are never negated
   // outside of the field of view): restrict them with dst2/sliding -> dct2
   // and dst1/zero -> replicate
-  inline std::vector<BoundType> even_bound(const BoundVectorRef & bound)
+  NI_HOST inline std::vector<BoundType> even_bound(const BoundVectorRef & bound)
   {
     std::vector<BoundType> out(bound.begin(), bound.end());
     for (auto & b : out) {
@@ -67,7 +67,7 @@ namespace {
     return out;
   }
 
-  inline bool has_sliding(const BoundVectorRef & bound)
+  NI_HOST inline bool has_sliding(const BoundVectorRef & bound)
   {
     for (auto b : bound)
       if (b == BoundType::Sliding)
@@ -78,7 +78,7 @@ namespace {
   // Boundary conditions of the component `c` of a displacement grid:
   // along a sliding axis `d`, the component `d` (normal to the border) is
   // antisymmetric (dst2) and the other components symmetric (dct2).
-  inline std::vector<BoundType>
+  NI_HOST inline std::vector<BoundType>
   component_bound(const BoundVectorRef & bound, int64_t c, int64_t dim)
   {
     std::vector<BoundType> out;
@@ -94,9 +94,10 @@ namespace {
   }
 
   // Resample each component of a (N, D, *spatial) grid with its own
-  // boundary conditions (they only differ with sliding boundaries)
+  // boundary conditions (they only differ with sliding boundaries).
+  // Host code: it launches one resampling per component.
   template <typename Fn>
-  inline void per_component(Fn fn, const Tensor & input, const Tensor & output,
+  NI_HOST inline void per_component(Fn fn, const Tensor & input, const Tensor & output,
                             const BoundVectorRef & bound)
   {
     if (!has_sliding(bound))
@@ -108,13 +109,13 @@ namespace {
     }
   }
 
-  inline void fmg_prolongation_grid(const Tensor & input, const Tensor & output,
+  NI_HOST inline void fmg_prolongation_grid(const Tensor & input, const Tensor & output,
                                     const BoundVectorRef & bound)
   {
     per_component(fmg_prolongation, input, output, bound);
   }
 
-  inline void fmg_restriction_grid(const Tensor & input, const Tensor & output,
+  NI_HOST inline void fmg_restriction_grid(const Tensor & input, const Tensor & output,
                                    const BoundVectorRef & bound)
   {
     per_component(fmg_restriction, input, output, bound);

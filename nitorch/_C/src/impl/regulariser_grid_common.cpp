@@ -455,6 +455,8 @@ NI_DEVICE void matvec(const scalar_t *, const scalar_t *, scalar_t *) const;
   DEFINE_MATVEC_DIM(2)
   DEFINE_MATVEC_DIM(3)
 
+  NI_DEVICE NI_INLINE reduce_t voxel_size(offset_t c) const
+  { return c == 0 ? vx0 : c == 1 ? vx1 : vx2; }
   NI_DEVICE void finish(offset_t x, offset_t y, offset_t z,
     scalar_t * out0, const scalar_t * inp0, const scalar_t * hes0) const;
 
@@ -774,7 +776,6 @@ void RegulariserGridImpl<scalar_t,offset_t,reduce_t>::finish(
     ry = bound::replicate_inward(bound1, y, Y);
     rz = bound::replicate_inward(bound2, z, Z);
   }
-  const reduce_t vx[3] = {vx0, vx1, vx2};
   if (rx || ry || rz)
     for (offset_t c = 0; c < dim; ++c) {
       const scalar_t * i = inp0 + c * inp_sC;
@@ -782,7 +783,7 @@ void RegulariserGridImpl<scalar_t,offset_t,reduce_t>::finish(
       if (rx) corr += w200 * (static_cast<reduce_t>(i[rx * inp_sX]) - center);
       if (ry) corr += w020 * (static_cast<reduce_t>(i[ry * inp_sY]) - center);
       if (rz) corr += w002 * (static_cast<reduce_t>(i[rz * inp_sZ]) - center);
-      out0[c * out_sC] += static_cast<scalar_t>(corr / vx[c]);
+      out0[c * out_sC] += static_cast<scalar_t>(corr / voxel_size(c));
     }
   if (w != static_cast<reduce_t>(1))
     for (offset_t c = 0; c < dim; ++c)
