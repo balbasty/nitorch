@@ -200,15 +200,22 @@ def test_spconv_is_the_stencil_on_the_extension(bound, name):
 #   Solvers solve the exact system
 # ----------------------------------------------------------------------
 
+# The bounds that need a correction of the stencil (dct1, replicate) and
+# a control (dft) run by default; all bounds run with --runslow.
+SOLVER_BOUNDS = [b if b in ('dft', 'dct1', 'replicate')
+                 else pytest.param(b, marks=pytest.mark.slow) for b in BOUNDS]
+SOLVER_ITER = dict(cg=50, relax=200, kernel=200)
+
+
 def _residual(A, h, x, g):
     return ((A @ x.flatten()) + h.flatten() * x.flatten() - g.flatten()).abs().max()
 
 
-@pytest.mark.parametrize('bound', BOUNDS)
+@pytest.mark.parametrize('bound', SOLVER_BOUNDS)
 @pytest.mark.parametrize('optim', ['cg', 'relax', 'kernel', 'fmg'])
 @pytest.mark.parametrize('name', ['membrane', 'bending'])
 def test_solve_field(bound, optim, name):
-    shape, dim = (8, 7), 2
+    shape, dim = (6, 5), 2
     vx = VX[:dim]
     torch.manual_seed(0)
     g = torch.randn([1, *shape], dtype=dt)
@@ -217,21 +224,21 @@ def test_solve_field(bound, optim, name):
     A = ref.operator(shape, bound, field_terms(dim, vx, a=1e-3, **{name[0]: 0.5}))
     opt = dict(voxel_size=vx, bound=bound, dim=dim, **prm)
     if optim == 'fmg':
-        x = spatial.solve_field_fmg(h, g, nb_cycles=50, nb_iter=4, **opt)
+        x = spatial.solve_field_fmg(h, g, nb_cycles=8, nb_iter=4, **opt)
     elif optim == 'kernel':
-        x = spatial.solve_field_kernel(h, g, optim='relax', max_iter=2000,
-                                       tolerance=0, **opt)
+        x = spatial.solve_field_kernel(h, g, optim='relax', tolerance=0,
+                                       max_iter=SOLVER_ITER[optim], **opt)
     else:
-        x = spatial.solve_field(h, g, optim=optim, max_iter=2000,
-                                tolerance=0, **opt)
+        x = spatial.solve_field(h, g, optim=optim, tolerance=0,
+                                max_iter=SOLVER_ITER[optim], **opt)
     assert _residual(A, h, x, g) < 1e-6
 
 
-@pytest.mark.parametrize('bound', BOUNDS)
+@pytest.mark.parametrize('bound', SOLVER_BOUNDS)
 @pytest.mark.parametrize('optim', ['cg', 'relax', 'kernel', 'fmg'])
 @pytest.mark.parametrize('name', ['membrane', 'bending', 'lame'])
 def test_solve_grid(bound, optim, name):
-    shape, dim = (8, 7), 2
+    shape, dim = (6, 5), 2
     vx = VX[:dim]
     torch.manual_seed(0)
     g = torch.randn([*shape, dim], dtype=dt)
@@ -244,12 +251,12 @@ def test_solve_grid(bound, optim, name):
     A = grid_matrix(shape, bound, grid_terms(dim, vx, **case))
     opt = dict(voxel_size=vx, bound=bound, **_grid_kwargs(case))
     if optim == 'fmg':
-        x = spatial.solve_grid_fmg(hfull, g, nb_cycles=50, nb_iter=4, **opt)
+        x = spatial.solve_grid_fmg(hfull, g, nb_cycles=8, nb_iter=4, **opt)
     elif optim == 'kernel':
-        x = spatial.solve_grid_kernel(h, g, optim='relax', max_iter=2000,
-                                      tolerance=0, **opt)
+        x = spatial.solve_grid_kernel(h, g, optim='relax', tolerance=0,
+                                      max_iter=SOLVER_ITER[optim], **opt)
     else:
-        x = spatial.solve_grid(h, g, optim=optim, max_iter=2000,
-                               tolerance=0, **opt)
+        x = spatial.solve_grid(h, g, optim=optim, tolerance=0,
+                               max_iter=SOLVER_ITER[optim], **opt)
     xf, gf, hf = x.movedim(-1, 0), g.movedim(-1, 0), h.movedim(-1, 0)
     assert _residual(A, hf, xf, gf) < 1e-6
