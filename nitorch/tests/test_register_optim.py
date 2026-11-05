@@ -78,6 +78,20 @@ def test_register_affine_ogm(tmp_path):
 
 
 @pytest.mark.slow
+@pytest.mark.parametrize('optim', ['nes', 'gd', 'lbfgs'])
+def test_register_affine_first_order(tmp_path, optim):
+    """Other first-order optimisers. The phantom is far from zero at the
+    edge of its field of view: they used to stall at the jumps of the
+    loss caused by voxels crossing that edge (see
+    `test_register_fov_taper.py`)."""
+    f, expected = make_pair(tmp_path, shift=SHIFT, rot=ROT)
+    register(['@loss', 'mse', '@@fix', f['fix'], '-o', 'false',
+              '@@mov', f['mov'], '-o', 'false',
+              '@affine', 'rigid', '-o', f['out'], '@@optim', optim])
+    check_affine(f['out'], expected)
+
+
+@pytest.mark.slow
 def test_register_affine_rotation(tmp_path):
     f, expected = make_pair(tmp_path, rot=(0.03, -0.02, 0.08))
     register(['@loss', 'mse', '@@fix', f['fix'], '-o', 'false',
