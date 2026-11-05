@@ -75,6 +75,31 @@ def to_nitorch(bound, as_enum=False):
     return obound
 
 
+def even(bound):
+    """Boundary condition of a quantity that is always even (e.g., voxel
+    weights), given the boundary condition of the field it belongs to.
+
+    Such a quantity is never negated outside of the field of view
+    ('dst2' -> 'dct2'), and takes the value of the nearest voxel where the
+    field is zero ('dst1', 'zero' -> 'replicate').
+
+    Parameters
+    ----------
+    bound : [list of] bound_like
+
+    Returns
+    -------
+    bound : [list of] str
+        Boundary condition in NITorch's convention
+
+    """
+    if isinstance(bound, (list, tuple)):
+        return type(bound)(even(b) for b in bound)
+    bound = to_nitorch(bound)
+    return {'dst2': 'dct2', 'dst1': 'replicate',
+            'zero': 'replicate'}.get(bound, bound)
+
+
 def to_scipy(bound):
     """Convert boundary type to SciPy's convention.
 
@@ -394,49 +419,34 @@ def dct1_(i, n):
 def dst1(i, n):
     """Apply DST-I (antimirror) boundary conditions to an index
 
+    The field is antisymmetric about the (zero) samples -1 and n, and its
+    period is 2 * (n + 1).
+
     Parameters
     ----------
-    i : int                 Index
+    i : int or tensor       Index
     n : int                 Length of the field of view
 
     Returns
     -------
-    i : int                 Index that falls inside the field of view [0, n-1]
-    s : {1, -1}             Sign of the transformation (always 1 for dct1)
+    i : int or tensor       Index that falls inside the field of view [0, n-1]
+    s : {1, 0, -1}          Sign of the transformation (0 at the zeros)
 
     """
     n2 = 2 * (n + 1)
     if isinstance(i, int):
-        # sign
-        ii = n - 1 - i if i < 0 else i
-        ii = ii % n2
-        x = 0 if ii == 0 else 1
-        x = 0 if ii % (n + 1) == n else x
-        x = -x if (ii / (n + 1)) % 2 > 0 else x
-        # index
-        i = -i - 2 if i < 0 else i
-        i = i % n2
-        i = n2 - 2 - i if i > n else i
-        i = min(max(i, 0), n-1)
-        return i, x
-
-    one = torch.ones([1], dtype=torch.int8, device=i.device)
-    zero = torch.zeros([1], dtype=torch.int8, device=i.device)
-    first = torch.full([1], 0, dtype=i.dtype, device=i.device)
-    last = torch.full([1], n - 1, dtype=i.dtype, device=i.device)
-
-    i = torch.where(i < 0, -i - 2, i)
-    i = i.remainder(n2)
-
-    # sign
-    x = torch.where(i.remainder(n + 1) == n, zero, one)
-    x = torch.where((i / (n + 1)).remainder(2) > 0, -x, x)
-
-    # index
-    i = torch.where(i > n, -i + (n2 - 2), i)
-    i = torch.where(i == -1, first, i)
-    i = torch.where(i == n, last, i)
-    return i, x
+        k = (i + 1) % n2            # k = 0 <-> i = -1, k = n + 1 <-> i = n
+        if k == 0 or k == n + 1:
+            return 0, 0
+        if k <= n:
+            return k - 1, 1
+        return n2 - k - 1, -1
+    k = (i + 1).remainder(n2)
+    one = torch.ones([], dtype=torch.int8, device=i.device)
+    s = torch.where(k > n, -one, one)
+    s = torch.where((k == 0) | (k == n + 1), torch.zeros_like(one), s)
+    i = torch.where(k > n, n2 - k - 1, k - 1).clamp_(0, n - 1)
+    return i, s
 
 
 def dst1_(i, n):
@@ -444,62 +454,44 @@ def dst1_(i, n):
 
     Parameters
     ----------
-    i : int                 Index
+    i : int or tensor       Index
     n : int                 Length of the field of view
 
     Returns
     -------
-    i : int                 Index that falls inside the field of view [0, n-1]
-    s : {1, -1}             Sign of the transformation (always 1 for dct1)
+    i : int or tensor       Index that falls inside the field of view [0, n-1]
+    s : {1, 0, -1}          Sign of the transformation (0 at the zeros)
 
     """
     if isinstance(i, int):
         return dst1(i, n)
-
-    one = torch.ones([1], dtype=torch.int8, device=i.device)
-    zero = torch.zeros([1], dtype=torch.int8, device=i.device)
-
-    n2 = 2 * (n + 1)
-
-    mask = i < 0
-    i[mask] += 2
-    i[mask] *= -1
-    i = i.remainder_(n2)
-
-    # sign
-    x = torch.where(i.remainder(n + 1) == n, zero, one)
-    mask = (i / (n + 1)).remainder(2) > 0
-    x *= 1 - 2 * mask
-
-    # index
-    mask = i > n
-    i[mask] *= -1
-    i[mask] += n2 - 2
-    i.clamp_(0, n-1)
-    return i, x
+    j, s = dst1(i, n)
+    return i.copy_(j), s
 
 
 def dst2(i, n):
     """Apply DST-II (antireflect) boundary conditions to an index
 
+    The field is antisymmetric about the edges of the field of view, and
+    its period is 2 * n.
+
     Parameters
     ----------
-    i : int                 Index
+    i : int or tensor       Index
     n : int                 Length of the field of view
 
     Returns
     -------
-    i : int                 Index that falls inside the field of view [0, n-1]
-    s : {1, -1}             Sign of the transformation (always 1 for dct1)
+    i : int or tensor       Index that falls inside the field of view [0, n-1]
+    s : {1, -1}             Sign of the transformation
 
     """
-    if n == 1:
-        return dct2(i, n)
-    else:
-        ii = torch.where(i < 0, n - 1 - i, i)
-        x = torch.ones([1], dtype=torch.int8, device=i.device)
-        x = torch.where((ii / n).remainder(2) > 0, -x, x)
-        return dct2(i, n)[0], x
+    n2 = 2 * n
+    if isinstance(i, int):
+        return dct2(i, n)[0], (-1 if (i % n2) >= n else 1)
+    one = torch.ones([], dtype=torch.int8, device=i.device)
+    s = torch.where(i.remainder(n2) >= n, -one, one)
+    return dct2(i, n)[0], s
 
 
 def dst2_(i, n):
@@ -507,22 +499,20 @@ def dst2_(i, n):
 
     Parameters
     ----------
-    i : int                 Index
+    i : int or tensor       Index
     n : int                 Length of the field of view
 
     Returns
     -------
-    i : int                 Index that falls inside the field of view [0, n-1]
-    s : {1, -1}             Sign of the transformation (always 1 for dct1)
+    i : int or tensor       Index that falls inside the field of view [0, n-1]
+    s : {1, -1}             Sign of the transformation
 
     """
-    if n == 1:
-        return dct2_(i, n)
-    else:
-        ii = torch.where(i < 0, n - 1 - i, i)
-        x = torch.ones([1], dtype=torch.int8, device=i.device)
-        x = torch.where((ii / n).remainder(2) > 0, -x, x)
-        return dct2_(i, n)[0], x
+    if isinstance(i, int):
+        return dst2(i, n)
+    one = torch.ones([], dtype=torch.int8, device=i.device)
+    s = torch.where(i.remainder(2 * n) >= n, -one, one)
+    return dct2_(i, n)[0], s
 
 
 nearest = border = replicate

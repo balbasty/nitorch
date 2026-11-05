@@ -1034,7 +1034,7 @@ def ensure_shape(inp, shape, mode='constant', value=0, side='post'):
     return inp
 
 
-def pad(inp, padsize, mode='constant', value=0, side=None):
+def pad(inp, padsize, mode='constant', value=0, side=None, adjoint=False):
     """Pad a tensor.
 
     This function is a bit more generic than torch's native pad, but probably
@@ -1046,12 +1046,10 @@ def pad(inp, padsize, mode='constant', value=0, side=None):
     When used with defaults parameters (side=None), it behaves
     exactly like `torch.nn.functional.pad`
 
-    Boundary modes are:
-        - 'circular' or 'dft'
-        - 'reflect' or 'reflect1' or 'dct1'
-        - 'reflect2' or 'dct2'
-        - 'replicate'
-        - 'constant'
+    Boundary modes are any boundary condition of `nitorch.core.bounds`
+    (e.g., 'circular'/'dft', 'reflect1'/'dct1', 'reflect2'/'dct2',
+    'antireflect'/'dst2', 'antimirror'/'dst1', 'replicate', 'constant').
+    Different modes can be used along different dimensions.
 
     Side modes are 'pre', 'post', 'both' or None. If side is not None,
     inp.dim() values (or less) should be provided. If side is None,
@@ -1073,11 +1071,16 @@ def pad(inp, padsize, mode='constant', value=0, side=None):
         Use padsize to pad on left side ('pre'), right side ('post') or
         both sides ('both'). If None, the padding side for the left and
         right sides should be provided in alternate order.
+    adjoint : bool, default=False
+        Apply the adjoint (transpose) of the padding: `inp` is a padded
+        tensor, and the values of its margins are added back onto the
+        voxels they were copied from (with their sign). In 'constant'
+        mode, the margins are cropped (`value` is ignored).
 
     Returns
     -------
     tensor
-        Padded tensor.
+        Padded tensor (or unpadded tensor, if `adjoint`).
 
     """
     # Argument checking
@@ -1112,10 +1115,13 @@ def pad(inp, padsize, mode='constant', value=0, side=None):
     mode = py.ensure_list(mode)
     mode = mode[:1] * max(0, inp.dim()-len(mode)) + mode
     mode = list(map(bounds.to_nitorch, mode))
+    if adjoint:
+        bound = [getattr(bounds, m) for m in mode]
+        return _pad_bound_adjoint(inp, padpre, padpost, bound)
     if all(m == 'zero' for m in mode):
         return _pad_constant(inp, padpre, padpost, value)
     else:
-        bound = [getattr(bounds, m + '_') for m in mode]
+        bound = [getattr(bounds, m) for m in mode]
         return _pad_bound(inp, padpre, padpost, bound)
 
 
@@ -1128,31 +1134,70 @@ def _pad_constant(inp, padpre, padpost, value):
     return out
 
 
+def _pad_margins(n, pre, post, bound, device):
+    """Positions (in the padded axis) of the margin samples of an axis of
+    length n, their source index and their sign (None if all ones)"""
+    pos = list(range(max(pre, 0))) + list(range(pre + n, pre + n + max(post, 0)))
+    pos = torch.as_tensor(pos, dtype=torch.long, device=device)
+    idx, sign = bound(pos - pre, n)
+    if not torch.is_tensor(sign):
+        sign = None if sign == 1 else torch.full_like(idx, sign)
+    elif bool((sign == 1).all()):
+        sign = None
+    return pos, idx, sign
+
+
 def _pad_bound(inp, padpre, padpost, bound):
-    begin = list(map(lambda x: -x, padpre))
-    end = tuple(d+p for d, p in zip(inp.shape, padpost))
-
-    grid = [torch.arange(b, e, device=inp.device) for (b, e) in zip(begin, end)]
-    mult = [None] * inp.dim()
+    if any(p < 0 for p in (*padpre, *padpost)):
+        # (some) cropping: gather each axis from the extension of the input
+        out = inp
+        for d, n in enumerate(inp.shape):
+            if not (padpre[d] or padpost[d]):
+                continue
+            idx = torch.arange(-padpre[d], n + padpost[d], device=inp.device)
+            idx, sign = bound[d](idx, n)
+            out = out.index_select(d, idx)
+            if torch.is_tensor(sign) or sign != 1:
+                sign = torch.as_tensor(sign, device=inp.device).to(out.dtype)
+                out = out * sign.reshape([-1] + [1] * (out.dim() - d - 1))
+        return out
+    # copy the input once into the interior of the output, then fill the
+    # margins axis by axis (the margins of an axis are copied from the
+    # full extent of the previous axes, so that corners are filled too)
+    shape = [n + a + b for n, a, b in zip(inp.shape, padpre, padpost)]
+    out = inp.new_empty(shape)
+    interior = out
+    for d, (n, a) in enumerate(zip(inp.shape, padpre)):
+        interior = interior.narrow(d, a, n)
+    interior.copy_(inp)
     for d, n in enumerate(inp.shape):
-        grid[d], mult[d] = bound[d](grid[d], n)
-    grid = list(meshgrid_ij(*grid))
-    if any(map(torch.is_tensor, mult)):
-        # a per-dimension bound that always returns a scalar sign (e.g.
-        # dct2/replicate) mixed with one that returns a real per-index
-        # tensor (e.g. zero) would otherwise leave a bare int in `mult`,
-        # which meshgrid rejects -- wrap any remaining scalars as a
-        # 1-element tensor (broadcasts fine against the others)
-        mult = [m if torch.is_tensor(m) else torch.as_tensor([m], device=inp.device)
-                for m in mult]
-        mult = meshgrid_ij(*mult)
-    mult = py.prod(mult)
-    grid = jit.sub2ind_list(grid, inp.shape)
-
-    out = inp.flatten()[grid]
-    if torch.is_tensor(mult) or mult != 1:
-        out *= mult
+        if not (padpre[d] or padpost[d]):
+            continue
+        pos, idx, sign = _pad_margins(n, padpre[d], padpost[d], bound[d], inp.device)
+        src = out.narrow(d, padpre[d], n).index_select(d, idx)
+        if sign is not None:
+            src = src * sign.to(src.dtype).reshape([-1] + [1] * (out.dim() - d - 1))
+        out.index_copy_(d, pos, src)
     return out
+
+
+def _pad_bound_adjoint(inp, padpre, padpost, bound):
+    # transpose of `_pad_bound`: add the (signed) margins of each axis back
+    # onto the voxels they copy, in reverse order (in place)
+    if any(p < 0 for p in (*padpre, *padpost)):
+        raise NotImplementedError('Adjoint of a negative padding')
+    out = inp.clone()
+    for d in reversed(range(out.dim())):
+        if not (padpre[d] or padpost[d]):
+            continue
+        n = out.shape[d] - padpre[d] - padpost[d]
+        pos, idx, sign = _pad_margins(n, padpre[d], padpost[d], bound[d], out.device)
+        src = out.index_select(d, pos)
+        if sign is not None:
+            src = src * sign.to(src.dtype).reshape([-1] + [1] * (out.dim() - d - 1))
+        out = out.narrow(d, padpre[d], n)
+        out.index_add_(d, idx, src)
+    return out.contiguous()
 
 
 def roll(inp, shifts=1, dims=None, bound='dft'):
@@ -1190,28 +1235,20 @@ def roll(inp, shifts=1, dims=None, bound='dft'):
     dims = py.make_list(dims)
     shifts = py.make_list(shifts, len(dims))
     bound = map(bounds.to_nitorch, py.make_list(bound, len(dims)))
-    bound = [getattr(bounds, b + '_') for b in bound]
+    bound = [getattr(bounds, b) for b in bound]
 
-    grid = [torch.arange(n, device=inp.device) for n in inp.shape]
-    mult = [1] * inp.dim()
+    # one gather per rolled dimension: out[i] = sign * inp[bound(i - s)]
+    out = inp
     for d, s, b in zip(dims, shifts, bound):
-        grid[d] -= s
-        grid[d], mult[d] = b(grid[d], inp.shape[d])
-    grid = list(meshgrid_ij(*grid))
-    if any(map(torch.is_tensor, mult)):
-        # dims outside `dims` (e.g. an untouched channel dim) were never
-        # passed through a bound function and are still the scalar `1`
-        # initializer -- meshgrid requires every argument to be a tensor,
-        # so wrap any remaining scalars as a 1-element tensor (broadcasts
-        # fine against the other, real per-index multipliers)
-        mult = [m if torch.is_tensor(m) else torch.as_tensor([m], device=inp.device)
-                for m in mult]
-        mult = meshgrid_ij(*mult)
-    mult = py.prod(mult)
-    grid = jit.sub2ind_list(grid, inp.shape)
-
-    out = inp.flatten()[grid]
-    out *= mult
+        d = d % inp.dim()
+        n = inp.shape[d]
+        idx, sign = b(torch.arange(n, device=inp.device) - s, n)
+        out = out.index_select(d, idx)
+        if torch.is_tensor(sign) or sign != 1:
+            sign = torch.as_tensor(sign, device=inp.device).to(out.dtype)
+            out = out * sign.reshape([-1] + [1] * (out.dim() - d - 1))
+    if out is inp:
+        out = out.clone()
     return out
 
 
