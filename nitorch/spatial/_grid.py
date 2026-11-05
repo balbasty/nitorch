@@ -43,12 +43,17 @@ _doc_bound = \
         - 'dst2'       or BoundType.dst2
         - 'dft'        or BoundType.dft
         - 'zero'       or BoundType.zero
+        - 'sliding'    or BoundType.sliding
     A list of values can be provided, in the order [W, H, D],
     to specify dimension-specific boundary conditions.
     Note that
     - `dft` corresponds to circular padding
     - `dct2` corresponds to Neumann boundary conditions (symmetric)
     - `dst2` corresponds to Dirichlet boundary conditions (antisymmetric)
+    - `sliding` is for displacement fields (one channel per spatial
+      dimension): along a sliding axis `d`, the channel `d` (normal to
+      the border) is `dst2` and the others are `dct2`, which reflects the
+      field geometrically. Counts have no channels and use `dct2`.
     See https://en.wikipedia.org/wiki/Discrete_cosine_transform
         https://en.wikipedia.org/wiki/Discrete_sine_transform"""
 

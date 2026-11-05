@@ -13,6 +13,11 @@ class BoundType(Enum):
     dst1 = antimirror = 4
     dst2 = antireflect = 5
     dft = wrap = 6
+    # Displacement fields: along axis d, component d is dst2 and the other
+    # components dct2. Pull/push split the components (`component_bounds`
+    # in nitorch._C.grid); on its own, it is the dst2 of the normal
+    # component.
+    sliding = 7
 
 
 class ExtrapolateType(Enum):
@@ -30,7 +35,7 @@ class Bound:
     def index(self, i, n: int):
         if self.type in (0, 1):  # zero / replicate
             return i.clamp(min=0, max=n-1)
-        elif self.type in (3, 5):  # dct2 / dst2
+        elif self.type in (3, 5, 7):  # dct2 / dst2 / sliding
             n2 = n * 2
             i = torch.where(i < 0, (-i-1).remainder(n2).neg().add(n2 - 1),
                             i.remainder(n2))
@@ -75,7 +80,7 @@ class Bound:
             # flipped the sign of in-bounds samples)
             x = torch.where(floor_div_int(i, n + 1).remainder(2) > 0, -x, x)
             return x
-        elif self.type == 5:  # dst2
+        elif self.type in (5, 7):  # dst2 / sliding (normal component)
             i = torch.where(i < 0, n - 1 - i, i)
             x = torch.ones([1], dtype=torch.int8, device=i.device)
             # floor division (`i / n` is a true division, which flipped

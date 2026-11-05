@@ -125,12 +125,18 @@ def bound_to_nitorch(bound, as_type='str'):
             obound.append('dst2')
         elif b in ('dst1', 'antimirror', BoundType.dst1):
             obound.append('dst1')
+        elif b == 'sliding' or getattr(b, 'name', None) == 'sliding':
+            # displacement fields: along axis d, component d is dst2 and
+            # the other components dct2 (see `component_bounds`)
+            obound.append('sliding')
         else:
             raise ValueError(f'Unknown boundary condition {b}')
     if as_type in ('enum', 'int', int):
         obound = list(map(lambda b: getattr(BoundType, b), obound))
         if as_type in ('int', int):
-            obound = [getattr(_TSBoundType, b.name).value for b in obound]
+            obound = [getattr(_TSBoundType, b.name).value
+                      if b.name != 'sliding' else _SLIDING_INT
+                      for b in obound]
     if issubclass(intype, (list, tuple)):
         obound = intype(obound)
     else:
@@ -188,22 +194,101 @@ def inter_to_nitorch(inter, as_type='str'):
 
 enum_type = 'int' if COMPILED_BACKEND == 'TS' else 'enum'
 
+# integer code of 'sliding' in the TorchScript backend
+_SLIDING_INT = 7
+
+
+def component_bounds(bound, dim, nb_comp):
+    """Boundary conditions of each component (channel) of a displacement
+    field, if any axis has a 'sliding' boundary condition (else None).
+
+    Along a sliding axis `d`, the component `d` (normal to the border) is
+    antisymmetric ('dst2') and the other components are symmetric
+    ('dct2'). Channel `c` is the component along axis `c` (channels
+    beyond the number of axes are symmetric).
+    """
+    names = bound_to_nitorch(make_list(bound), 'str')
+    names = names + names[-1:] * max(0, dim - len(names))
+    if 'sliding' not in names:
+        return None
+    return [[('dst2' if d == c else 'dct2') if b == 'sliding' else b
+             for d, b in enumerate(names)] for c in range(nb_comp)]
+
+
+def _even_bounds(bound):
+    """Sliding -> dct2 (for quantities without components, e.g. counts)"""
+    return ['dct2' if b == 'sliding' else b
+            for b in bound_to_nitorch(make_list(bound), 'str')]
+
+
+def _unpack(grads, needs):
+    """(grad_input, grad_grid) from the output of a backward function"""
+    if COMPILED_BACKEND == 'TS':
+        grad_input, grad_grid = grads
+        return (grad_input if needs[0] else None,
+                grad_grid if needs[1] else None)
+    grad_input = grad_grid = None
+    if needs[0]:
+        grad_input = grads[0]
+        if needs[1]:
+            grad_grid = grads[1]
+    elif needs[1]:
+        grad_grid = grads[0]
+    return grad_input, grad_grid
+
+
+def _forward_components(fn, input, grid, opts, *extra):
+    """Apply `fn` to each channel, with its own options"""
+    return torch.cat([fn(input[:, c:c+1], grid, *extra, *opt)
+                      for c, opt in enumerate(opts)], 1)
+
+
+def _backward_components(fn, grad, input, grid, opts, needs, *extra):
+    """Backward of `_forward_components`: the gradients of the channels
+    are concatenated, those of the grid summed"""
+    grad_inputs, grad_grid = [], None
+    with torch.no_grad():
+        grid_ = grid.detach().requires_grad_(needs[1])
+        for c, opt in enumerate(opts):
+            input_ = input[:, c:c+1].detach().requires_grad_(needs[0])
+            gi, gg = _unpack(fn(grad[:, c:c+1], input_, grid_, *extra, *opt),
+                             needs)
+            grad_inputs.append(gi)
+            if gg is not None:
+                grad_grid = gg if grad_grid is None else grad_grid + gg
+    grad_input = torch.cat(grad_inputs, 1) if needs[0] else None
+    return grad_input, grad_grid
+
+
+def _options(bound, interpolation, extrapolate, dim, nb_comp):
+    """Options of each channel (one set if they share them)"""
+    interpolation = inter_to_nitorch(make_list(interpolation), as_type=enum_type)
+    extrapolate = int(extrapolate)
+    cbound = component_bounds(bound, dim, nb_comp)
+    if cbound is None:
+        bound = bound_to_nitorch(make_list(bound), as_type=enum_type)
+        return [(bound, interpolation, extrapolate)], False
+    return [(bound_to_nitorch(b, as_type=enum_type), interpolation, extrapolate)
+            for b in cbound], True
+
 
 class GridPull(torch.autograd.Function):
 
     @staticmethod
     def forward(ctx, input, grid, interpolation, bound, extrapolate):
 
-        bound = bound_to_nitorch(make_list(bound), as_type=enum_type)
-        interpolation = inter_to_nitorch(make_list(interpolation), as_type=enum_type)
-        extrapolate = int(extrapolate)
-        opt = (bound, interpolation, extrapolate)
+        opts, split = _options(bound, interpolation, extrapolate,
+                               grid.shape[-1], input.shape[1])
 
-        # Pull
-        output = grid_pull(input, grid, *opt)
+        # Pull (each component with its own boundary conditions if sliding)
+        if split:
+            output = _forward_components(grid_pull, input, grid, opts)
+        else:
+            output = grid_pull(input, grid, *opts[0])
 
         # Context
-        ctx.opt = opt
+        ctx.opt = opts[0]
+        ctx.opts = opts if split else None
         ctx.save_for_backward(input, grid)
 
         return output
@@ -212,6 +297,10 @@ class GridPull(torch.autograd.Function):
     def backward(ctx, grad):
         var = ctx.saved_tensors
         opt = ctx.opt
+        if ctx.opts:
+            return (*_backward_components(grid_pull_backward, grad, *var,
+                                          ctx.opts, ctx.needs_input_grad[:2]),
+                    None, None, None)
         grad_input = grad_grid = None
         grads = grid_pull_backward(grad, *var, *opt)
         if COMPILED_BACKEND == 'TS':
@@ -231,17 +320,18 @@ class GridPush(torch.autograd.Function):
     @staticmethod
     def forward(ctx, input, grid, shape, interpolation, bound, extrapolate):
 
-        bound = bound_to_nitorch(make_list(bound), as_type=enum_type)  # enum_type
-        interpolation = inter_to_nitorch(make_list(interpolation), as_type=enum_type)  # enum_type
-        extrapolate = int(extrapolate)
-        opt = (bound, interpolation, extrapolate)
-        # opt = (interpolation, bound, extrapolate)
+        opts, split = _options(bound, interpolation, extrapolate,
+                               grid.shape[-1], input.shape[1])
 
-        # Push
-        output = grid_push(input, grid, shape, *opt)
+        # Push (each component with its own boundary conditions if sliding)
+        if split:
+            output = _forward_components(grid_push, input, grid, opts, shape)
+        else:
+            output = grid_push(input, grid, shape, *opts[0])
 
         # Context
-        ctx.opt = opt
+        ctx.opt = opts[0]
+        ctx.opts = opts if split else None
         ctx.save_for_backward(input, grid)
 
         return output
@@ -250,6 +340,10 @@ class GridPush(torch.autograd.Function):
     def backward(ctx, grad):
         var = ctx.saved_tensors
         opt = ctx.opt
+        if ctx.opts:
+            return (*_backward_components(grid_push_backward, grad, *var,
+                                          ctx.opts, ctx.needs_input_grad[:2]),
+                    None, None, None, None)
         grad_input = grad_grid = None
         grads = grid_push_backward(grad, *var, *opt)
         if COMPILED_BACKEND == 'TS':
@@ -269,7 +363,8 @@ class GridCount(torch.autograd.Function):
     @staticmethod
     def forward(ctx, grid, shape, interpolation, bound, extrapolate):
 
-        bound = bound_to_nitorch(make_list(bound), as_type=enum_type)
+        # counts have no components: sliding is symmetric (dct2)
+        bound = bound_to_nitorch(_even_bounds(bound), as_type=enum_type)
         interpolation = inter_to_nitorch(make_list(interpolation), as_type=enum_type)
         extrapolate = int(extrapolate)
         opt = (bound, interpolation, extrapolate)
@@ -298,16 +393,19 @@ class GridGrad(torch.autograd.Function):
     @staticmethod
     def forward(ctx, input, grid, interpolation, bound, extrapolate):
 
-        bound = bound_to_nitorch(make_list(bound), as_type=enum_type)
-        interpolation = inter_to_nitorch(make_list(interpolation), as_type=enum_type)
-        extrapolate = int(extrapolate)
-        opt = (bound, interpolation, extrapolate)
+        opts, split = _options(bound, interpolation, extrapolate,
+                               grid.shape[-1], input.shape[1])
 
-        # Pull
-        output = grid_grad(input, grid, *opt)
+        # Pull gradients (each component with its own boundary conditions
+        # if sliding)
+        if split:
+            output = _forward_components(grid_grad, input, grid, opts)
+        else:
+            output = grid_grad(input, grid, *opts[0])
 
         # Context
-        ctx.opt = opt
+        ctx.opt = opts[0]
+        ctx.opts = opts if split else None
         ctx.save_for_backward(input, grid)
 
         return output
@@ -316,6 +414,12 @@ class GridGrad(torch.autograd.Function):
     def backward(ctx, grad):
         var = ctx.saved_tensors
         opt = ctx.opt
+        if ctx.opts:
+            if not (ctx.needs_input_grad[0] or ctx.needs_input_grad[1]):
+                return None, None, None, None, None
+            return (*_backward_components(grid_grad_backward, grad, *var,
+                                          ctx.opts, ctx.needs_input_grad[:2]),
+                    None, None, None)
         grad_input = grad_grid = None
         if ctx.needs_input_grad[0] or ctx.needs_input_grad[1]:
             grads = grid_grad_backward(grad, *var, *opt)
@@ -336,6 +440,9 @@ class SplineCoeff(torch.autograd.Function):
     @staticmethod
     def forward(ctx, input, bound, interpolation, dim, inplace):
 
+        if bound_to_nitorch(bound, 'str') == 'sliding':
+            raise ValueError("'sliding' needs all spatial dimensions "
+                             "(use spline_coeff_nd)")
         bound = bound_to_nitorch(bound, as_type='int')
         interpolation = inter_to_nitorch(interpolation, as_type='int')
         opt = (bound, interpolation, dim, inplace)
@@ -362,16 +469,27 @@ class SplineCoeffND(torch.autograd.Function):
     @staticmethod
     def forward(ctx, input, bound, interpolation, dim, inplace):
 
-        bound = bound_to_nitorch(make_list(bound), as_type='int')
         interpolation = inter_to_nitorch(make_list(interpolation), as_type='int')
-        opt = (bound, interpolation, dim, inplace)
+        if input.dim() > dim:
+            cbound = component_bounds(bound, dim, input.shape[-dim-1])
+        else:
+            # no components: sliding is symmetric (dct2)
+            bound, cbound = _even_bounds(bound), None
+        if cbound is None:
+            bound = bound_to_nitorch(make_list(bound), as_type='int')
+            opts = [(bound, interpolation, dim, inplace)]
+        else:
+            # sliding: each component (channel) with its own boundary
+            # conditions
+            opts = [(bound_to_nitorch(b, as_type='int'), interpolation, dim,
+                     inplace) for b in cbound]
 
-        # Pull
-        output = spline_coeff_nd(input, *opt)
+        output = _spline_coeff_components(input, opts, dim)
 
         # Context
         if input.requires_grad:
-            ctx.opt = opt
+            ctx.opts = opts
+            ctx.dim = dim
 
         return output
 
@@ -379,5 +497,14 @@ class SplineCoeffND(torch.autograd.Function):
     def backward(ctx, grad):
         # symmetric filter -> backward == forward
         # (I don't know if I can write into grad, so inplace=False to be safe)
-        grad = spline_coeff_nd(grad, *ctx.opt[:-1], inplace=False)
+        opts = [(*opt[:-1], False) for opt in ctx.opts]
+        grad = _spline_coeff_components(grad, opts, ctx.dim)
         return grad, None, None, None, None
+
+
+def _spline_coeff_components(input, opts, dim):
+    if len(opts) == 1:
+        return spline_coeff_nd(input, *opts[0])
+    ax = input.dim() - dim - 1
+    return torch.cat([spline_coeff_nd(input.narrow(ax, c, 1), *opt)
+                      for c, opt in enumerate(opts)], ax)

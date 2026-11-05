@@ -15,17 +15,7 @@ if COMPILED_BACKEND == 'C':
         pcg as _c_pcg,
         pcg_grid as _c_pcg_grid,
         fmg as _c_fmg,
-        fmg_grid as _c_fmg_grid,
-        _bound_sliding)
-
-    def _grid_bound_to_enum(bound):
-        """Boundary conditions of a displacement grid, which may also be
-        'sliding' (the component normal to the border is antisymmetric,
-        the others symmetric)"""
-        return [_bound_sliding
-                if isinstance(b, str) and b.lower() == 'sliding'
-                else bound_to_nitorch(b, 'enum')
-                for b in make_list(bound)]
+        fmg_grid as _c_fmg_grid)
 
 
     def c_regulariser(input, weight=None, hessian=None, dim=None,
@@ -112,7 +102,7 @@ if COMPILED_BACKEND == 'C':
         output : (N, *shape, D) tensor
 
         """
-        bound = _grid_bound_to_enum(bound)
+        bound = bound_to_nitorch(make_list(bound), 'enum')
         voxel_size = vector_to_list(voxel_size, float) or [1.]
         # The C++ bindings expect [N, C, *shape] so we must shuffle dimensions
         dim = input.shape[-1]
@@ -236,7 +226,7 @@ if COMPILED_BACKEND == 'C':
         output : (N, *shape, D) tensor
 
         """
-        bound = _grid_bound_to_enum(bound)
+        bound = bound_to_nitorch(make_list(bound), 'enum')
         dim = gradient.shape[-1]
         pad_dim = dim + 2 - gradient.dim()
         while gradient.dim() < dim+2: gradient = gradient.unsqueeze(0)
@@ -356,7 +346,7 @@ if COMPILED_BACKEND == 'C':
         output : (N, *shape, D) tensor
 
         """
-        bound = _grid_bound_to_enum(bound)
+        bound = bound_to_nitorch(make_list(bound), 'enum')
         dim = gradient.shape[-1]
         pad_dim = dim + 2 - gradient.dim()
         while gradient.dim() < dim+2: gradient = gradient.unsqueeze(0)
@@ -478,7 +468,7 @@ if COMPILED_BACKEND == 'C':
         output : (N, *shape, D) tensor
 
         """
-        bound = _grid_bound_to_enum(bound)
+        bound = bound_to_nitorch(make_list(bound), 'enum')
         dim = gradient.shape[-1]
         pad_dim = dim + 2 - gradient.dim()
         while gradient.dim() < dim+2: gradient = gradient.unsqueeze(0)
@@ -612,7 +602,7 @@ if COMPILED_BACKEND == 'C':
         output : (N, *shape, D) tensor
 
         """
-        bound = _grid_bound_to_enum(bound)
+        bound = bound_to_nitorch(make_list(bound), 'enum')
         dim = gradient.shape[-1]
         pad_dim = dim + 2 - gradient.dim()
         while gradient.dim() < dim+2: gradient = gradient.unsqueeze(0)

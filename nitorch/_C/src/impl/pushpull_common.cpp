@@ -4,19 +4,17 @@
 // `bounds.h` and `interpolation.h`. These parameters can be specified 
 // per dimension.
 // Isotorpic 0-th and 1-st order interpolation have their own (faster)
-// implementations. Sliding boundary conditions are also implemented 
-// separately.
+// implementations.
+// Sliding boundary conditions (displacement fields: along axis d,
+// component d is dst2 and the other components dct2) are implemented by
+// nitorch._C.grid, which applies these kernels to each component with
+// its own boundary conditions. On its own, BoundType::Sliding is the
+// dst2 of the normal component.
 
 // TODO:
 // . [DONE] generic 3d
 // . [DONE] generic 2d
 // . [DONE] generic 1d
-// . sliding nearest 3d
-// . sliding nearest 2d
-// . sliding linear 3d
-// . sliding linear 2d
-// . slinding generic 3d
-// . sliding generic 2d
 // . [DONE] spatial gradient mode (without mutliplication with output gradient)
 // . [DONE] second order gradients (backward pass for spatial gradients)
 // . performance tests
@@ -690,12 +688,6 @@ private:
     scalar_t x, offset_t w, offset_t n) const;
   NI_DEVICE void interpolate1d_linear(
     scalar_t x, offset_t w, offset_t n) const;
-  NI_DEVICE void interpolate1d_sliding(
-    scalar_t x, offset_t w, offset_t n) const {/*TODO*/}
-  NI_DEVICE void interpolate1d_sliding_nearest(
-    scalar_t x, offset_t w, offset_t n) const {/*TODO*/}
-  NI_DEVICE void interpolate1d_sliding_linear(
-    scalar_t x, offset_t w, offset_t n) const {/*TODO*/}
   NI_DEVICE void interpolate2d(
     scalar_t x, scalar_t y,
     offset_t w, offset_t h, offset_t n) const;
@@ -705,15 +697,6 @@ private:
   NI_DEVICE void interpolate2d_bilinear(
     scalar_t x, scalar_t y,
     offset_t w, offset_t h,  offset_t n) const;
-  NI_DEVICE void interpolate2d_sliding(
-    scalar_t x, scalar_t y,
-    offset_t w, offset_t h, offset_t n) const {/*TODO*/}
-  NI_DEVICE void interpolate2d_sliding_nearest(
-    scalar_t x, scalar_t y, 
-    offset_t w, offset_t h, offset_t n) const {/*TODO*/}
-  NI_DEVICE void interpolate2d_sliding_bilinear(
-    scalar_t x, scalar_t y,
-    offset_t w, offset_t h, offset_t n) const {/*TODO*/}
   NI_DEVICE void interpolate3d(
     scalar_t x, scalar_t y, scalar_t z, 
     offset_t w, offset_t h, offset_t d, offset_t n) const;
@@ -723,15 +706,6 @@ private:
   NI_DEVICE void interpolate3d_trilinear(
     scalar_t x, scalar_t y, scalar_t z, 
     offset_t w, offset_t h, offset_t d, offset_t n) const;
-  NI_DEVICE void interpolate3d_sliding(
-    scalar_t x, scalar_t y, scalar_t z, 
-    offset_t w, offset_t h, offset_t d, offset_t n) const {/*TODO*/}
-  NI_DEVICE void interpolate3d_sliding_nearest(
-    scalar_t x, scalar_t y, scalar_t z, 
-    offset_t w, offset_t h, offset_t d, offset_t n) const {/*TODO*/}
-  NI_DEVICE void interpolate3d_sliding_trilinear(
-    scalar_t x, scalar_t y, scalar_t z, 
-    offset_t w, offset_t h, offset_t d, offset_t n) const {/*TODO*/}
 
   // ~~~ OPTIONS ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
   int               dim;            // dimensionality (2 or 3)
@@ -958,19 +932,11 @@ void PushPullImpl<scalar_t,offset_t>
   }
 
   // Next step
-  if (bound0 == BoundType::Sliding) {
-    if (iso) switch (static_cast<int>(interpolation0)) {
-      case 0: return interpolate3d_sliding_nearest(x, y, z, w, h, d, n);
-      case 1: return interpolate3d_sliding_trilinear(x, y, z, w, h, d, n);
-    }
-    return interpolate3d_sliding(x, y, z, w, h, d, n);
-  } else {
-    if (iso) switch (static_cast<int>(interpolation0)) {
-      case 0: return interpolate3d_nearest(x, y, z, w, h, d, n);
-      case 1: return interpolate3d_trilinear(x, y, z, w, h, d, n);
-    }
-    return interpolate3d(x, y, z, w, h, d, n);
+  if (iso) switch (static_cast<int>(interpolation0)) {
+    case 0: return interpolate3d_nearest(x, y, z, w, h, d, n);
+    case 1: return interpolate3d_trilinear(x, y, z, w, h, d, n);
   }
+  return interpolate3d(x, y, z, w, h, d, n);
 }
 
 template <typename scalar_t, typename offset_t> NI_DEVICE
@@ -1008,19 +974,11 @@ void PushPullImpl<scalar_t,offset_t>
   }
 
   // Next step
-  if (bound0 == BoundType::Sliding) {
-    if (iso) switch (static_cast<int>(interpolation0)) {
-      case 0: return interpolate2d_sliding_nearest(x, y, w, h, n);
-      case 1: return interpolate2d_sliding_bilinear(x, y, w, h, n);
-    }
-    return interpolate2d_sliding(x, y, w, h, n);
-  } else {
-    if (iso) switch (static_cast<int>(interpolation0)) {
-      case 0: return interpolate2d_nearest(x, y, w, h, n);
-      case 1: return interpolate2d_bilinear(x, y, w, h, n);
-    } 
-    return interpolate2d(x, y, w, h, n);
-  }
+  if (iso) switch (static_cast<int>(interpolation0)) {
+    case 0: return interpolate2d_nearest(x, y, w, h, n);
+    case 1: return interpolate2d_bilinear(x, y, w, h, n);
+  } 
+  return interpolate2d(x, y, w, h, n);
  
 }
 
@@ -1054,19 +1012,11 @@ void PushPullImpl<scalar_t,offset_t>
   }
 
   // Next step
-  if (bound0 == BoundType::Sliding) {
-    if (iso) switch (static_cast<int>(interpolation0)) {
-      case 0: return interpolate1d_sliding_nearest(x, w, n);
-      case 1: return interpolate1d_sliding_linear(x, w, n);
-    }
-    return interpolate1d_sliding(x, w, n);
-  } else {
-    if (iso) switch (static_cast<int>(interpolation0)) {
-      case 0: return interpolate1d_nearest(x, w, n);
-      case 1: return interpolate1d_linear(x, w, n);
-    }
-    return interpolate1d(x, w, n);
+  if (iso) switch (static_cast<int>(interpolation0)) {
+    case 0: return interpolate1d_nearest(x, w, n);
+    case 1: return interpolate1d_linear(x, w, n);
   }
+  return interpolate1d(x, w, n);
 
 }
 
