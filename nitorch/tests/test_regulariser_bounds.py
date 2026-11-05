@@ -7,15 +7,22 @@ where `D_t` are finite differences of the bound-extended field and
 (`_regulariser_reference`): one period of the extended field, or the
 rows of the lattice, for every boundary condition, on the backend in use
 (TorchScript or compiled): operators, convolutions and solvers.
+
+Displacement grids also have 'sliding' boundary conditions (a geometric
+reflection: the component normal to the border is antisymmetric, the
+others symmetric), whose linear-elastic energy is that of the extended
+field, contrary to the other mirrors.
 """
 import torch
 import pytest
 from nitorch import spatial
 from nitorch.core import utils
 from nitorch.tests import _regulariser_reference as ref
+from nitorch.spatial._regularisers import c_solvers
 
 dt = torch.double
 BOUNDS = ['dft', 'dct2', 'dst2', 'dct1', 'dst1', 'zero', 'replicate']
+GRID_BOUNDS = BOUNDS + ['sliding']
 MIRRORS = ('dct2', 'dst2', 'dct1', 'dst1')
 SHAPES = [(6, 5), (5, 4, 4)]
 VX = [1.0, 1.3, 0.8]
@@ -87,6 +94,8 @@ def _grid_kwargs(case):
 def _mixed(bound, dim):
     if bound == 'mixed':
         return ['dct1', 'replicate', 'dst1'][:dim]
+    if bound == 'mixed-sliding':
+        return ['sliding', 'dft', 'zero'][:dim]
     return bound
 
 
@@ -123,6 +132,56 @@ def test_lattice_lame_is_the_period_energy(shape, bound):
         assert torch.allclose(A, B, atol=1e-10), name
 
 
+@pytest.mark.parametrize('shape', [(5, 4), (4, 3, 3)])
+def test_sliding_is_a_reflection(shape):
+    """One period of the sliding extension along an axis is the field
+    followed by its mirror image (as a displacement field)"""
+    dim = len(shape)
+    torch.manual_seed(0)
+    v = torch.randn([*shape, dim], dtype=dt)
+    for d in range(dim):
+        bound = ['dft'] * dim
+        bound[d] = 'sliding'
+        ext = []
+        for k, cbound in enumerate(ref.component_bounds(bound, dim, dim)):
+            E = ref.kron([ref.axis(n, b)[0] for n, b in zip(shape, cbound)])
+            shape_ext = list(shape)
+            shape_ext[d] *= 2
+            ext.append((E @ v[..., k].flatten()).reshape(shape_ext))
+        ext = torch.stack(ext, -1)
+        first, second = ext.split(shape[d], d)
+        assert torch.equal(first, v)
+        assert torch.equal(second, ref.reflect(v, d))
+
+
+@pytest.mark.parametrize('shape', [(5,), (5, 4), (4, 3, 3)])
+@pytest.mark.parametrize('bound', ['sliding', 'mixed-sliding'])
+@pytest.mark.parametrize('weighted', [False, True])
+def test_lattice_sliding_is_the_period_energy(shape, bound, weighted):
+    """With sliding boundaries, every grid energy, including the
+    linear-elastic one, is that of one period of the extended field"""
+    dim = len(shape)
+    bound = _mixed(bound, dim)
+    weights = torch.rand(shape, dtype=dt) + 0.5 if weighted else None
+    for name, case in GRID_CASES.items():
+        terms = grid_terms(dim, VX, **case)
+        A = ref.operator(shape, bound, terms, dim, weights)
+        B = grid_matrix(shape, bound, terms, weights)
+        assert torch.allclose(A, B, atol=1e-10), name
+
+
+@pytest.mark.parametrize('shape', [(5, 4), (4, 3, 3)])
+def test_lattice_lame_mirrors_are_not_the_period_energy(shape):
+    """Control: extending every component evenly (dct2) is not a
+    reflection, and its linear-elastic energy is not that of the
+    extended field"""
+    dim = len(shape)
+    terms = grid_terms(dim, VX, **GRID_CASES['shear'])
+    A = ref.operator(shape, 'dct2', terms, dim)
+    B = grid_matrix(shape, 'dct2', terms)
+    assert not torch.allclose(A, B, atol=1e-6)
+
+
 # ----------------------------------------------------------------------
 #   TorchScript energies
 # ----------------------------------------------------------------------
@@ -145,7 +204,7 @@ def test_field_energies(shape, bound, weighted):
 
 
 @pytest.mark.parametrize('shape', [(5, 4), (4, 3, 3), (1, 4)])
-@pytest.mark.parametrize('bound', BOUNDS + ['mixed'])
+@pytest.mark.parametrize('bound', GRID_BOUNDS + ['mixed', 'mixed-sliding'])
 @pytest.mark.parametrize('weighted', [False, True])
 def test_grid_energies(shape, bound, weighted):
     dim = len(shape)
@@ -165,7 +224,7 @@ def test_grid_energies(shape, bound, weighted):
 
 
 @pytest.mark.parametrize('shape', [(5, 4), (4, 3, 3)])
-@pytest.mark.parametrize('bound', BOUNDS)
+@pytest.mark.parametrize('bound', GRID_BOUNDS)
 def test_operators_symmetric_psd(shape, bound):
     dim = len(shape)
     weights = torch.rand(shape, dtype=dt) + 0.5
@@ -202,7 +261,7 @@ def test_regulariser(shape, bound, weighted):
 
 
 @pytest.mark.parametrize('shape', SHAPES)
-@pytest.mark.parametrize('bound', BOUNDS)
+@pytest.mark.parametrize('bound', GRID_BOUNDS)
 @pytest.mark.parametrize('weighted', [False, True])
 @pytest.mark.parametrize('kernel', [False, True])
 def test_regulariser_grid(shape, bound, weighted, kernel):
@@ -225,6 +284,58 @@ def test_regulariser_grid(shape, bound, weighted, kernel):
             vflat = v.movedim(-1, 0).flatten()
             assert torch.allclose(target, (A @ vflat).reshape(dim, *shape)
                                   .movedim(0, -1), atol=1e-9), name
+
+
+@pytest.mark.parametrize('shape', SHAPES)
+@pytest.mark.parametrize('backend', ['ts', 'kernel', 'C'])
+@pytest.mark.parametrize('bound', ['sliding', 'mixed-sliding'])
+def test_regulariser_grid_sliding_backends(shape, backend, bound):
+    """Every grid energy with sliding boundaries is the dense period
+    energy, on each backend: TorchScript (explicit operator), sparse
+    convolution and compiled"""
+    dim = len(shape)
+    vx = VX[:dim]
+    bound = _mixed(bound, dim)
+    torch.manual_seed(0)
+    v = torch.randn([*shape, dim], dtype=dt)
+    vflat = v.movedim(-1, 0).flatten()
+    for name, case in GRID_CASES.items():
+        A = ref.operator(shape, bound, grid_terms(dim, vx, **case), dim)
+        target = (A @ vflat).reshape(dim, *shape).movedim(0, -1)
+        opt = dict(**_grid_kwargs(case), voxel_size=vx, bound=bound)
+        if backend == 'C':
+            if not c_solvers:
+                pytest.skip('compiled backend not available')
+            y = c_solvers.c_regulariser_grid(
+                v, absolute=opt['absolute'], membrane=opt['membrane'],
+                bending=opt['bending'], lame=opt['lame'],
+                voxel_size=vx, bound=bound)
+        elif backend == 'kernel':
+            ker = spatial.regulariser_grid_kernel(
+                dim, **_grid_kwargs(case), voxel_size=vx, dtype=dt)
+            y = spatial.spconv(v.movedim(-1, -dim-1), ker, bound=bound,
+                               dim=dim).movedim(-dim-1, -1)
+        else:
+            # (the compiled backend is not used with autograd)
+            vg = v.clone().requires_grad_()
+            y = spatial.regulariser_grid(vg, **opt).detach()
+        assert torch.allclose(y, target, atol=1e-9), name
+
+
+def test_sliding_needs_a_grid():
+    x = torch.randn([2, 6, 5], dtype=dt)
+    with pytest.raises(ValueError):
+        spatial.regulariser(x, membrane=1, bound='sliding', dim=2)
+    with pytest.raises(ValueError):
+        spatial.membrane(x, bound='sliding', dim=2)
+    with pytest.raises(ValueError):
+        spatial.solve_field(torch.ones_like(x), x, membrane=1, dim=2,
+                            bound='sliding')
+    with pytest.raises(ValueError):
+        ker = spatial.regulariser_kernel(2, membrane=1, dtype=dt)
+        spatial.spconv(x, ker, bound='sliding', dim=2)
+    with pytest.raises(ValueError):
+        utils.pad(x, [1, 1], mode='sliding', side='both')
 
 
 @pytest.mark.parametrize('bound', BOUNDS)
@@ -254,6 +365,8 @@ def test_spconv_is_the_stencil_on_the_extension(bound, name):
 # a control (dft) run by default; all bounds run with --runslow.
 SOLVER_BOUNDS = [b if b in ('dft', 'dct1', 'replicate')
                  else pytest.param(b, marks=pytest.mark.slow) for b in BOUNDS]
+# sliding boundaries (grids only) have their own stencil signs: always run
+GRID_SOLVER_BOUNDS = SOLVER_BOUNDS + ['sliding']
 SOLVER_ITER = dict(cg=50, relax=200, kernel=200)
 
 
@@ -284,7 +397,7 @@ def test_solve_field(bound, optim, name):
     assert _residual(A, h, x, g) < 1e-6
 
 
-@pytest.mark.parametrize('bound', SOLVER_BOUNDS)
+@pytest.mark.parametrize('bound', GRID_SOLVER_BOUNDS)
 @pytest.mark.parametrize('optim', ['cg', 'relax', 'kernel', 'fmg'])
 @pytest.mark.parametrize('name', ['membrane', 'bending', 'lame'])
 def test_solve_grid(bound, optim, name):

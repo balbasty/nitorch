@@ -26,7 +26,10 @@ def spconv(input, kernel, step=1, start=0, stop=None, inplace=False, bound='dct2
     step : [sequence of] int, default=1
         Equivalent to spconv(x)[start:stop:step]
     bound : [sequence of] str, default='dct2'
-        Boundary condition (per spatial dimension).
+        Boundary condition (per spatial dimension). With 'sliding'
+        (displacement grids), the input must have one channel per
+        spatial dimension, each extended with its own boundary conditions
+        (`core.bounds.for_component`).
     dim : int, default=kernel.dim()
         Number of spatial dimensions.
 
@@ -93,7 +96,17 @@ def spconv(input, kernel, step=1, start=0, stop=None, inplace=False, bound='dct2
     # sign, or is zero), and convolve the extended input.
     radius = [k // 2 for k in kernel_size]
     bound = core.py.ensure_list(bound, dim)
-    extended = core.utils.pad(input, radius, mode=bound, side='both')
+    if core.bounds.has_sliding(bound):
+        # each component of a displacement grid has its own extension
+        if channel_in is None or input.shape[-dim-1] != dim:
+            raise ValueError('Sliding boundary conditions need a displacement '
+                             'grid (one channel per spatial dimension)')
+        extended = torch.stack([
+            core.utils.pad(input.select(-dim-1, c), radius, side='both',
+                           mode=core.bounds.for_component(bound, c))
+            for c in range(dim)], -dim-1)
+    else:
+        extended = core.utils.pad(input, radius, mode=bound, side='both')
 
     # Numeric magic to (hopefully) avoid floating point inaccuracy:
     # the central weights of the kernels that map a channel onto itself

@@ -1115,6 +1115,10 @@ def pad(inp, padsize, mode='constant', value=0, side=None, adjoint=False):
     mode = py.ensure_list(mode)
     mode = mode[:1] * max(0, inp.dim()-len(mode)) + mode
     mode = list(map(bounds.to_nitorch, mode))
+    if 'sliding' in mode:
+        raise ValueError("'sliding' depends on the component of a displacement "
+                         "field: pad each component with "
+                         "`bounds.for_component(bound, comp)`")
     if adjoint:
         bound = [getattr(bounds, m) for m in mode]
         return _pad_bound_adjoint(inp, padpre, padpost, bound)

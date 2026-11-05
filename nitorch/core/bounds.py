@@ -15,6 +15,13 @@ dct1        mirror        reflection(align_corners=False)                       
 dft         wrap                                            circular                  c  d | a b c d |  a  b
 dst2                                                        antireflect, dirichlet   -b -a | a b c d | -d -c
 dst1                                                        antimirror               -a  0 | a b c d |  0 -d
+=========   ===========   ===============================   =======================   =======================
+
+Displacement fields may also use 'sliding' boundary conditions, which
+reflect the vector field geometrically: along a sliding axis `d`, the
+component `d` (normal to the border) is antisymmetric ('dst2') and the
+other components are symmetric ('dct2'). Each component of the field
+then has its own boundary conditions (`for_component`).
 """
 import torch
 from nitorch._C.grid import BoundType
@@ -26,6 +33,8 @@ pytorch_bounds = ('nearest', 'zero', 'reflection')
 other_bounds = ('repeat', 'zeros', 'neumann', 'circular',
                 'antireflect', 'dirichlet', 'antimirror')
 all_bounds = (*nitorch_bounds, *scipy_bounds, *pytorch_bounds, *other_bounds)
+# boundary conditions of displacement fields only
+vector_bounds = ('sliding',)
 
 
 def to_nitorch(bound, as_enum=False):
@@ -64,6 +73,8 @@ def to_nitorch(bound, as_enum=False):
             obound.append('dst2')
         elif b in ('dst1', 'antimirror', BoundType.dst1):
             obound.append('dst1')
+        elif b == 'sliding' or getattr(b, 'name', None) == 'sliding':
+            obound.append('sliding')
         else:
             raise ValueError(f'Unknown boundary condition {b}')
     if as_enum:
@@ -80,8 +91,8 @@ def even(bound):
     weights), given the boundary condition of the field it belongs to.
 
     Such a quantity is never negated outside of the field of view
-    ('dst2' -> 'dct2'), and takes the value of the nearest voxel where the
-    field is zero ('dst1', 'zero' -> 'replicate').
+    ('dst2', 'sliding' -> 'dct2'), and takes the value of the nearest
+    voxel where the field is zero ('dst1', 'zero' -> 'replicate').
 
     Parameters
     ----------
@@ -96,8 +107,39 @@ def even(bound):
     if isinstance(bound, (list, tuple)):
         return type(bound)(even(b) for b in bound)
     bound = to_nitorch(bound)
-    return {'dst2': 'dct2', 'dst1': 'replicate',
+    return {'dst2': 'dct2', 'sliding': 'dct2', 'dst1': 'replicate',
             'zero': 'replicate'}.get(bound, bound)
+
+
+def has_sliding(bound):
+    """Whether any axis has a sliding boundary condition"""
+    return any(to_nitorch(b) == 'sliding'
+               for b in (bound if isinstance(bound, (list, tuple)) else [bound]))
+
+
+def for_component(bound, comp):
+    """Boundary condition of each axis for one component of a
+    displacement field.
+
+    Along a 'sliding' axis `d`, the component `d` (normal to the border)
+    is antisymmetric ('dst2') and the other components are symmetric
+    ('dct2'). The other boundary conditions are shared by all components.
+
+    Parameters
+    ----------
+    bound : list of bound_like
+        Boundary condition of each axis
+    comp : int
+        Component of the displacement field (the axis it points along)
+
+    Returns
+    -------
+    bound : list of str
+        Boundary condition of each axis, in NITorch's convention
+
+    """
+    return [('dst2' if d == comp else 'dct2') if b == 'sliding' else b
+            for d, b in enumerate(to_nitorch(list(bound)))]
 
 
 def to_scipy(bound):

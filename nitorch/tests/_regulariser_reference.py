@@ -32,6 +32,12 @@ energy of a displacement grid only has a periodic counterpart with
 extended with the same parity, which is not the mirror image of a
 displacement field, and the energy is defined by the rows of the lattice.
 
+With 'sliding' boundary conditions (displacement grids), each component
+has its own extension: along a sliding axis `d`, the component `d` is
+extended antisymmetrically ('dst2') and the others symmetrically
+('dct2'), so that `E` is block-diagonal across components. All
+components share the period, the rows and their weights.
+
 Both are independent from the implementation (no padding, no finite
 difference routine), and only meant for small fields.
 """
@@ -120,6 +126,45 @@ def expand_sides(terms):
     return out
 
 
+def component_bounds(bound, dim, ncomp):
+    """Boundary condition of each axis, for each component.
+
+    Along a 'sliding' axis `d`, the component `d` is antisymmetric
+    ('dst2') and the other ones symmetric ('dct2').
+    """
+    if isinstance(bound, str):
+        bound = [bound] * dim
+    bound = list(bound)
+    if 'sliding' in bound and ncomp != dim:
+        raise ValueError('sliding needs one component per axis')
+    return [[('dst2' if d == k else 'dct2') if b == 'sliding' else b
+             for d, b in enumerate(bound)] for k in range(ncomp)]
+
+
+def _assemble(axes, shape, terms, ncomp, weights, stencil_fn):
+    """Operator from the extension, row weights and weight extension of
+    each axis (one list of axes per component)"""
+    Es = [kron([a[0] for a in caxes]) for caxes in axes]
+    rows = kron([a[1][:, None] for a in axes[0]]).flatten()
+    Wx = kron([a[2] for a in axes[0]])
+    for caxes in axes[1:]:
+        # the components share their rows and row weights
+        assert torch.equal(kron([a[1][:, None] for a in caxes]).flatten(), rows)
+        assert torch.equal(kron([a[2] for a in caxes]), Wx)
+    if weights is not None:
+        rows = rows * (Wx @ weights.flatten().to(dt))
+    terms = expand_sides(terms)
+    N = Es[0].shape[1]
+    A = torch.zeros(ncomp * N, ncomp * N, dtype=dt)
+    for coef, parts in terms:
+        D = torch.zeros(rows.shape[0], ncomp * N, dtype=dt)
+        for comp, kinds, scale in parts:
+            K = stencil_fn(kinds)
+            D[:, comp * N:(comp + 1) * N] += scale * (K @ Es[comp])
+        A += coef * D.T @ (rows[:, None] * D)
+    return A
+
+
 def operator(shape, bound, terms, ncomp=1, weights=None):
     """Dense operator of `terms`, from one period of the extended field
 
@@ -127,25 +172,11 @@ def operator(shape, bound, terms, ncomp=1, weights=None):
     the components stacked along the first dimension.
     """
     dim = len(shape)
-    if isinstance(bound, str):
-        bound = [bound] * dim
-    axes = [axis(n, b) for n, b in zip(shape, bound)]
-    E = kron([a[0] for a in axes])
-    rows = kron([a[1][:, None] for a in axes]).flatten()
-    if weights is not None:
-        Wx = kron([a[2] for a in axes])
-        rows = rows * (Wx @ weights.flatten().to(dt))
-    terms = expand_sides(terms)
-    Ps = [a[0].shape[0] for a in axes]
-    N = E.shape[1]
-    A = torch.zeros(ncomp * N, ncomp * N, dtype=dt)
-    for coef, parts in terms:
-        D = torch.zeros(E.shape[0], ncomp * N, dtype=dt)
-        for comp, kinds, scale in parts:
-            K = kron([stencil(P, k) for P, k in zip(Ps, kinds)])
-            D[:, comp * N:(comp + 1) * N] += scale * (K @ E)
-        A += coef * D.T @ (rows[:, None] * D)
-    return A
+    axes = [[axis(n, b) for n, b in zip(shape, cbound)]
+            for cbound in component_bounds(bound, dim, ncomp)]
+    Ps = [a[0].shape[0] for a in axes[0]]
+    return _assemble(axes, shape, terms, ncomp, weights,
+                     lambda kinds: kron([stencil(P, k) for P, k in zip(Ps, kinds)]))
 
 
 # ----------------------------------------------------------------------
@@ -220,23 +251,21 @@ def lattice_stencil(n, kind):
 def lattice_operator(shape, bound, terms, ncomp=1, weights=None):
     """Dense operator of `terms`, from the rows of the lattice"""
     dim = len(shape)
-    if isinstance(bound, str):
-        bound = [bound] * dim
-    axes = [lattice_axis(n, b) for n, b in zip(shape, bound)]
-    E = kron([a[0] for a in axes])
-    rows = kron([a[1][:, None] for a in axes]).flatten()
-    if weights is not None:
-        rows = rows * (kron([a[2] for a in axes]) @ weights.flatten().to(dt))
-    terms = expand_sides(terms)
-    N = E.shape[1]
-    A = torch.zeros(ncomp * N, ncomp * N, dtype=dt)
-    for coef, parts in terms:
-        D = torch.zeros(rows.shape[0], ncomp * N, dtype=dt)
-        for comp, kinds, scale in parts:
-            K = kron([lattice_stencil(n, k) for n, k in zip(shape, kinds)])
-            D[:, comp * N:(comp + 1) * N] += scale * (K @ E)
-        A += coef * D.T @ (rows[:, None] * D)
-    return A
+    axes = [[lattice_axis(n, b) for n, b in zip(shape, cbound)]
+            for cbound in component_bounds(bound, dim, ncomp)]
+    return _assemble(axes, shape, terms, ncomp, weights,
+                     lambda kinds: kron([lattice_stencil(n, k)
+                                         for n, k in zip(shape, kinds)]))
+
+
+def reflect(v, axis):
+    """Mirror image of a displacement grid (..., *spatial, dim) about a
+    plane normal to `axis`: the field is flipped along `axis` and its
+    component `axis` changes sign."""
+    dim = v.shape[-1]
+    v = v.flip(v.dim() - dim - 1 + axis).clone()
+    v[..., axis].neg_()
+    return v
 
 
 # ----------------------------------------------------------------------

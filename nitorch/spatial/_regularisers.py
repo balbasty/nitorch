@@ -51,20 +51,40 @@ else:
     c_solvers = None
 
 
+# Boundary conditions with which the stencil (convolution) of the
+# linear-elastic energy, applied to the extended grid, is the exact
+# operator (see "Exact operators"). With dft, zero and sliding, this is
+# also the energy of (one period of) the extended grid. The other mirrors
+# (dct2, dst2, dct1, dst1) extend every component with the same parity,
+# which is not the mirror image of a displacement field: their energy is
+# defined by the rows of the lattice.
+_LAME_EXACT_BOUNDS = ('dft', 'dst1', 'zero', 'sliding')
+
+
+def _lame_is_exact(bound):
+    return all(_bounds.to_nitorch(b) in _LAME_EXACT_BOUNDS
+               for b in core.py.make_list(bound))
+
+
+def _no_sliding(bound):
+    """Sliding boundary conditions only exist for displacement grids"""
+    if _bounds.has_sliding(bound):
+        raise ValueError("Sliding boundary conditions only apply to "
+                         "displacement grids (`*_grid` functions)")
+
+
 def _c_supports(weights=None, bending=0, lame=0, bound=None):
     """Whether the compiled solvers implement this problem.
 
     They do not implement per-penalty weight maps (dict), nor weighted
     (RLS) bending or linear-elastic energies. Their linear-elastic
-    stencil is only exact for dft, dst1 and zero boundaries (at the
-    borders of the other ones, its cross-component terms are not those
-    of "Exact operators" in this module). The TorchScript implementations are
-    used instead.
+    stencil is only exact for dft, dst1, zero and sliding boundaries (at
+    the borders of the other ones, its cross-component terms are not
+    those of "Exact operators" in this module). The TorchScript
+    implementations are used instead.
     """
     if any(core.py.ensure_list(lame)) and bound is not None:
-        from nitorch._C.grid import bound_to_nitorch
-        names = bound_to_nitorch(core.py.make_list(bound), as_type='str')
-        if any(b not in ('dft', 'dst1', 'zero') for b in names):
+        if not _lame_is_exact(bound):
             return False
     if weights is None:
         return True
@@ -118,10 +138,22 @@ def _voxel_size_list(voxel_size, dim):
 # computed on the padded array, whose padding is then added back onto
 # the voxels it copies (`core.utils.pad(..., adjoint=True)`).
 #
+# Displacement grids may also use 'sliding' boundary conditions, which
+# reflect the vector field geometrically: along a sliding axis `d`, the
+# component `d` (normal to the border) is antisymmetric ('dst2') and the
+# other components are symmetric ('dct2'), so that each component has its
+# own boundary conditions (`core.bounds.for_component`); their rows have
+# the weights of dct2/dst2. Contrary to an even extension of every
+# component, the extended field is then the mirror image of a
+# displacement field, and its linear-elastic energy (whose cross terms
+# `d_i u_j` are odd under a reflection when exactly one of `i`, `j` is
+# `d`) is also that of one period. There is no whole-sample (dct1/dst1)
+# counterpart.
+#
 # Applying the stencil `L = D'D` to the extended field and reading it at
 # the voxels (as convolution-based implementations do) is equivalent
-# for 'dft', 'dct2', 'dst2', 'dst1' and 'zero', but not for 'dct1' and
-# 'replicate' (see `_correct_stencil`).
+# for 'dft', 'dct2', 'dst2', 'sliding', 'dst1' and 'zero', but not for
+# 'dct1' and 'replicate' (see `_correct_stencil`).
 
 # Weight of the ghost rows of each boundary condition
 _GHOST_WEIGHT = {'dst1': 0.5, 'zero': 1.}
@@ -197,6 +229,13 @@ def _quadratic(xs, terms, bound, dim, weights=None):
     shape = xs[0].shape[-dim:]
     backend = dict(dtype=xs[0].dtype, device=xs[0].device)
     bound = _normalise_bound(bound, dim)
+    if 'sliding' in bound:
+        if len(xs) != dim:
+            raise ValueError('Sliding boundary conditions only apply to '
+                             'displacement grids (one component per axis)')
+        cbound = [_bounds.for_component(bound, c) for c in range(dim)]
+    else:
+        cbound = [bound] * len(xs)
 
     # Axes with weighted ghost rows are padded, and their rows computed on
     # the padded array (whose own boundary condition is then irrelevant:
@@ -205,9 +244,12 @@ def _quadratic(xs, terms, bound, dim, weights=None):
     # forward difference of the field.
     half = [any(k[d] == 'h' for _, parts in terms for _, k, _ in parts)
             for d in range(dim)]
-    margin = [2 if b in _GHOST_WEIGHT or (h and b not in _HALF_UNPADDED)
-              else 0 for b, h in zip(bound, half)]
-    rbound = ['zero' if m else b for b, m in zip(bound, margin)]
+    margin = [2 if any(cb[d] in _GHOST_WEIGHT or
+                       (half[d] and cb[d] not in _HALF_UNPADDED)
+                       for cb in cbound) else 0
+              for d in range(dim)]
+    rbound = [['zero' if m else b for b, m in zip(cb, margin)]
+              for cb in cbound]
     padded = any(margin)
 
     # row weights of each axis (None if all ones), and the weights of its
@@ -230,7 +272,8 @@ def _quadratic(xs, terms, bound, dim, weights=None):
                                      mode=_bounds.even(bound))
 
     if padded:
-        xs = [core.utils.pad(x, margin, side='both', mode=bound) for x in xs]
+        xs = [core.utils.pad(x, margin, side='both', mode=cb)
+              for x, cb in zip(xs, cbound)]
 
     # Along a half-voxel axis, the weight of a row is the average of the
     # weights of its two neighbouring (voxel) rows: it is computed on the
@@ -287,10 +330,10 @@ def _quadratic(xs, terms, bound, dim, weights=None):
             key = (c, kinds)
             if key in shared:
                 if key not in cache:
-                    cache[key] = _rows(xs[c], kinds, rbound, dim)
+                    cache[key] = _rows(xs[c], kinds, rbound[c], dim)
                 r = cache[key]
             else:
-                r = _rows(xs[c], kinds, rbound, dim)
+                r = _rows(xs[c], kinds, rbound[c], dim)
             if row is None:
                 # (a new tensor: `r` may be cached, or be the field itself)
                 row = r.mul(scale)
@@ -314,24 +357,25 @@ def _quadratic(xs, terms, bound, dim, weights=None):
                     r = row.mul(alpha)
                 else:
                     r = row.mul_(alpha) if alpha != 1 else row
-                y = _rows_t(r, kinds, rbound, dim)
+                y = _rows_t(r, kinds, rbound[c], dim)
                 ys[c] = y if ys[c] is None else iadd(ys[c], y)
     for (c, kinds), r in acc.items():
-        y = _rows_t(r, kinds, rbound, dim)
+        y = _rows_t(r, kinds, rbound[c], dim)
         ys[c] = y if ys[c] is None else iadd(ys[c], y)
 
     out = []
-    for y, x in zip(ys, xs):
+    for y, x, cb in zip(ys, xs, cbound):
         if y is None:
             y = torch.zeros_like(x)
         if padded:
-            y = core.utils.pad(y, margin, side='both', mode=bound, adjoint=True)
+            y = core.utils.pad(y, margin, side='both', mode=cb, adjoint=True)
         out.append(y)
     return out
 
 
 def _field_op(field, terms, bound, dim, weights=None):
     """Apply a quadratic regulariser to a (..., *spatial) field"""
+    _no_sliding(bound)
     return _quadratic([field], terms, bound, dim, weights)[0]
 
 
@@ -428,8 +472,7 @@ def _kernel_supports(lame, bound, dim):
     energy exactly with these boundary conditions (see `_c_supports`)"""
     if not any(core.py.ensure_list(lame)):
         return True
-    return all(b in ('dft', 'dst1', 'zero')
-               for b in _normalise_bound(bound, dim))
+    return _lame_is_exact(_normalise_bound(bound, dim))
 
 
 def _needs_correction(bound, dim, bending=0):
@@ -584,6 +627,7 @@ def absolute(field, weights=None, bound='dct2', dim=None):
 
     """
     dim = dim or field.dim()
+    _no_sliding(bound)
     if 'dct1' in _normalise_bound(bound, dim):
         return _field_op(field, _terms_absolute(dim), bound, dim, weights)
     if weights is not None:
@@ -663,7 +707,11 @@ def membrane_grid(grid, voxel_size=1, bound='dft', weights=None):
     ----------
     grid : (..., *spatial, dim) tensor
     voxel_size : float or sequence[float], default=1
-    bound : str, default='dft'
+    bound : [sequence of] str, default='dft'
+        Boundary condition of each axis. 'sliding' reflects the grid
+        geometrically: along a sliding axis `d`, the component `d` is
+        antisymmetric ('dst2') and the others are symmetric ('dct2')
+        (see "Exact operators" in `nitorch.spatial._regularisers`).
     weights : (..., *spatial) tensor, optional
 
     Returns
@@ -714,7 +762,11 @@ def bending_grid(grid, voxel_size=1, bound='dft', weights=None):
     ----------
     grid : (..., *spatial, dim) tensor
     voxel_size : float or sequence[float], default=1
-    bound : str, default='dft'
+    bound : [sequence of] str, default='dft'
+        Boundary condition of each axis. 'sliding' reflects the grid
+        geometrically: along a sliding axis `d`, the component `d` is
+        antisymmetric ('dst2') and the others are symmetric ('dct2')
+        (see "Exact operators" in `nitorch.spatial._regularisers`).
     weights : (..., *spatial) tensor, optional
 
     Returns
@@ -741,16 +793,25 @@ def lame_shear(grid, voxel_size=1, bound='dft', weights=None):
        diagonal).
     .. Formaly: `<f, Lf> = \int \sum_i (df_i/dx_i)^2
                                 + \sum_{j > i} (df_j/dx_i + df_i/dx_j)^2 dx
-    .. All components share the boundary condition of each axis, and
-       the energy is that of the rows centred on the voxels (and ghost
-       voxels), with the row weights of
-       "Exact operators" in `nitorch.spatial._regularisers`.
+    .. With 'dft', 'zero' and 'sliding' boundary conditions, the energy
+       is that of (one period of) the extended field. 'sliding' reflects
+       the grid geometrically about the borders (its normal component is
+       antisymmetric, its tangent components symmetric): it is the only
+       mirror whose linear-elastic energy is that of the extended field.
+       With the other boundary conditions, all components share the
+       boundary condition of each axis, and the energy is that of the
+       rows centred on the voxels (and ghost voxels), with the row
+       weights of "Exact operators" in `nitorch.spatial._regularisers`.
 
     Parameters
     ----------
     grid : (..., *spatial, dim) tensor
     voxel_size : float or sequence[float], default=1
-    bound : str, default='dft'
+    bound : [sequence of] str, default='dft'
+        Boundary condition of each axis. 'sliding' reflects the grid
+        geometrically: along a sliding axis `d`, the component `d` is
+        antisymmetric ('dst2') and the others are symmetric ('dct2')
+        (see "Exact operators" in `nitorch.spatial._regularisers`).
     weights : (..., *spatial) tensor, optional
 
     Returns
@@ -774,16 +835,25 @@ def lame_div(grid, voxel_size=1, bound='dft', weights=None):
     .. It penalizes the square of the trace of the Jacobian
        (i.e., volume changes)
     .. Formally: `<f, Lf> = \int [(\sum_i df_i/dx_i)^2 - \sum_i (df_i/dx_i)^2] dx
-    .. All components share the boundary condition of each axis, and
-       the energy is that of the rows centred on the voxels (and ghost
-       voxels), with the row weights of
-       "Exact operators" in `nitorch.spatial._regularisers`.
+    .. With 'dft', 'zero' and 'sliding' boundary conditions, the energy
+       is that of (one period of) the extended field. 'sliding' reflects
+       the grid geometrically about the borders (its normal component is
+       antisymmetric, its tangent components symmetric): it is the only
+       mirror whose linear-elastic energy is that of the extended field.
+       With the other boundary conditions, all components share the
+       boundary condition of each axis, and the energy is that of the
+       rows centred on the voxels (and ghost voxels), with the row
+       weights of "Exact operators" in `nitorch.spatial._regularisers`.
 
     Parameters
     ----------
     grid : (..., *spatial, dim) tensor
     voxel_size : float or sequence[float], default=1 (actually unused)
-    bound : str, default='dft'
+    bound : [sequence of] str, default='dft'
+        Boundary condition of each axis. 'sliding' reflects the grid
+        geometrically: along a sliding axis `d`, the component `d` is
+        antisymmetric ('dst2') and the others are symmetric ('dct2')
+        (see "Exact operators" in `nitorch.spatial._regularisers`).
     weights : (..., *spatial) tensor, optional
 
     Returns
@@ -1277,7 +1347,11 @@ def regulariser_grid(v, absolute=0, membrane=0, bending=0, lame=0,
     lame : (float, float), default=0
     factor : float, default=1
     voxel_size : [sequence of] float, default=1
-    bound : str, default='dft'
+    bound : [sequence of] str, default='dft'
+        Boundary condition of each axis. 'sliding' reflects the grid
+        geometrically: along a sliding axis `d`, the component `d` is
+        antisymmetric ('dst2') and the others are symmetric ('dct2')
+        (see "Exact operators" in `nitorch.spatial._regularisers`).
     weights : [dict of] (..., *spatial) tensor, optional
         If a dict: keys must be in {'absolute', 'membrane', 'bending', 'lame'}
         Else: the same weight map is shared across penalties.
@@ -1514,6 +1588,7 @@ def regulariser(x, absolute=0, membrane=0, bending=0, factor=1,
     Lx : (..., K, *spatial) tensor
 
     """
+    _no_sliding(bound)
     if not (absolute or membrane or bending):
         return torch.zeros_like(x)
 

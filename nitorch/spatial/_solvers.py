@@ -52,7 +52,8 @@ from ._regularisers import (absolute, membrane, bending,
                             regulariser_grid_diag,
                             regulariser_grid_kernel, regulariser_kernel,
                             regulariser_grid, _c_supports, _kernel_supports,
-                            _correct_grid_stencil, _correct_field_stencil)
+                            _correct_grid_stencil, _correct_field_stencil,
+                            _no_sliding)
 from nitorch.core import bounds as _bounds
 from ._spconv import spconv
 if compiled_backend == 'C':
@@ -700,11 +701,22 @@ class _GridFMG(_FMG):
         self.factor = factor
         self.voxel_size = voxel_size
 
+    def _per_component(self, fn, x, grid, shape):
+        """Resample a grid (..., *spatial, dim), each component with its
+        own boundary conditions (they differ along 'sliding' axes)"""
+        if not _bounds.has_sliding(self.bound):
+            return fn(x, shape, bound=self.bound, dim=self.dim, grid=grid)
+        bound = py.ensure_list(self.bound, self.dim)
+        return torch.cat([
+            fn(x[..., k:k+1], shape, dim=self.dim, grid=grid,
+               bound=_bounds.for_component(bound, k))
+            for k in range(x.shape[-1])], -1)
+
     def prolong_g(self, x, grid, shape):
         shape0 = x.shape[-self.dim-1:-1]
         scale = [s/s0 for s0, s in zip(shape0, shape)]
         scale = torch.as_tensor(scale, **utils.backend(x))
-        x = prolong(x, shape, bound=self.bound, dim=self.dim, grid=grid)
+        x = self._per_component(prolong, x, grid, shape)
         x = x.mul_(scale)
         return x
 
@@ -725,7 +737,7 @@ class _GridFMG(_FMG):
         shape0 = x.shape[-self.dim-1:-1]
         scale = [s0/s for s0, s in zip(shape0, shape)]
         scale = torch.as_tensor(scale, **utils.backend(x))
-        x = restrict(x, shape, bound=self.bound, dim=self.dim, grid=grid)
+        x = self._per_component(restrict, x, grid, shape)
         x = x.mul_(scale)
         return x
 
@@ -999,7 +1011,10 @@ def solve_grid_fmg(hessian, gradient, absolute=0, membrane=0, bending=0,
     lame : (float, float), default=0
     factor : float, default=1
     voxel_size : float or sequence[float], default=1
-    bound : str, default='dft'
+    bound : [sequence of] str, default='dft'
+        Boundary condition of each axis, or 'sliding' (the
+        component normal to the border is antisymmetric, the
+        others symmetric; see `nitorch.spatial._regularisers`).
 
     Optimization
     ------------
@@ -1076,6 +1091,7 @@ def solve_field_fmg(hessian, gradient, weights=None, voxel_size=1, bound='dct2',
     solution : (..., K, *spatial) tensor
 
     """
+    _no_sliding(bound)
     if isinstance(membrane, (list, tuple)):
         has_membrane = any(membrane)
     else:
@@ -1173,6 +1189,7 @@ def solve_field(hessian, gradient, weights=None, dim=None,
     solution : (..., K, *spatial) tensor
 
     """
+    _no_sliding(bound)
     if isinstance(membrane, (list, tuple)):
         has_membrane = any(membrane)
     else:
@@ -1374,7 +1391,10 @@ def solve_grid(hessian, gradient, absolute=0, membrane=0, bending=0,
     lame : (float, float), default=0
     factor : float, default=1
     voxel_size : float or sequence[float], default=1
-    bound : str, default='dft'
+    bound : [sequence of] str, default='dft'
+        Boundary condition of each axis, or 'sliding' (the
+        component normal to the border is antisymmetric, the
+        others symmetric; see `nitorch.spatial._regularisers`).
 
     Optimization
     ------------
@@ -1508,7 +1528,10 @@ def solve_grid_kernel(hessian, gradient, absolute=0, membrane=0, bending=0,
     lame : (float, float), default=0
     factor : float, default=1
     voxel_size : float or sequence[float], default=1
-    bound : str, default='dft'
+    bound : [sequence of] str, default='dft'
+        Boundary condition of each axis, or 'sliding' (the
+        component normal to the border is antisymmetric, the
+        others symmetric; see `nitorch.spatial._regularisers`).
 
     Optimization
     ------------
@@ -1642,6 +1665,7 @@ def solve_field_kernel(hessian, gradient, dim=None,
     solution : (..., K, *spatial) tensor
 
     """
+    _no_sliding(bound)
     if not (membrane or bending):
         return solve_field_closedform(hessian, gradient,
                                       absolute=absolute, factor=factor)
