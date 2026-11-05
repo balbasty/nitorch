@@ -40,3 +40,30 @@ def test_grid_pull_labels_prefilter(order):
                     extrapolate=True, prefilter=True)
     assert out.dtype == lab.dtype
     assert torch.equal(out, lab)
+
+
+@pytest.mark.parametrize('bound', ['dct1', 'dct2', 'dst1', 'dst2', 'dft',
+                                   'zero', 'replicate'])
+@pytest.mark.parametrize('n', [1, 2, 4, 5])
+def test_ts_pushpull_bounds_are_the_extension(bound, n):
+    # The TorchScript backend (whatever the compiled backend) samples the
+    # extension of the field at integer coordinates, and pushes onto it
+    # with the transpose. Its sine bounds used a true division instead
+    # of a floor division, which flipped the sign of voxels near the
+    # upper border, and dst1 zeroed the first voxel.
+    from nitorch._C import _ts
+    from nitorch._C.grid import bound_to_nitorch
+    from nitorch.core import utils
+    if bound in ('dst1', 'dct1') and n == 1:
+        pytest.skip('degenerate')
+    torch.manual_seed(0)
+    m = 2 * n + 3
+    coords = torch.arange(-m, n + m, dtype=torch.double)
+    x = torch.randn([1, 1, n], dtype=torch.double)
+    b = [bound_to_nitorch(bound, 'int')]
+    y = _ts.grid_pull(x, coords[None, :, None], b, [1], 1)
+    assert torch.allclose(y, utils.pad(x, [m], mode=bound, side='both'))
+    z = torch.randn([1, 1, n + 2 * m], dtype=torch.double)
+    y = _ts.grid_push(z, coords[None, :, None], [n], b, [1], 1)
+    assert torch.allclose(y, utils.pad(z, [m], mode=bound, side='both',
+                                       adjoint=True))
