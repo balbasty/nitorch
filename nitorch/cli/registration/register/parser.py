@@ -221,6 +221,13 @@ usage:
                                         [dft] (circulant), dct2 (free), dct1, dst2,
                                         dst1, zero (identity at the edges).
                                         shoot only supports dft.
+    Shoot options:
+        --exact [BOOL]                  Exact geodesic shooting [false]: transport the
+                                        initial momentum along the integrated warp at
+                                        each step (spatial.shoot(fast=False)), which
+                                        converges to the geodesic as --steps grows.
+                                        Default (fast): chained one-step transports,
+                                        cheaper but biased (does not converge).
 
 @optim options:
     NAME can take values:
@@ -763,6 +770,13 @@ nonlin.add_option('inversion', '--inversion', nargs=1, default='default',
 nonlin.add_option('bound', '--bound', nargs=1, default='dft',
                   validation=cli.Validations.choice(nonlin_bounds),
                   help='Boundary conditions of the nonlinear field')
+# shoot only (svf/smalldef have no such option: `--exact` is rejected)
+nonlin.add_suboption('shoot', 'exact', '--exact', nargs='?', default=False,
+                     convert=cli.Conversions.strict_bool,
+                     action=cli.Actions.store_true,
+                     help='Exact geodesic shooting (`spatial.shoot('
+                          'fast=False)`): converges to the geodesic as the '
+                          'number of steps grows, unlike the default')
 nonlin.add_group(optim)
 
 

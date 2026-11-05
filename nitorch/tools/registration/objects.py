@@ -1593,7 +1593,7 @@ class NonLinModel(TransformationModel):
         kwargs.setdefault('bound', self.bound)
         dat = self.dat.downsample(factor, **kwargs)
         obj = type(self)(dat, self.factor, self.penalty, self.steps,
-                         inversion=self.inversion, bound=self.bound)
+                         **self._init_options())
         if self.kernel is not None:
             obj.set_kernel()
         return obj
@@ -1610,10 +1610,15 @@ class NonLinModel(TransformationModel):
         kwargs.setdefault('bound', self.bound)
         dat = self.dat.upsample(factor, **kwargs)
         obj = type(self)(dat, self.factor, self.penalty, self.steps,
-                         inversion=self.inversion, bound=self.bound)
+                         **self._init_options())
         if self.kernel is not None:
             obj.set_kernel()
         return obj
+
+    def _init_options(self):
+        """Options (other than data and penalty) that copies of this
+        model (pyramid levels) must keep"""
+        return dict(inversion=self.inversion, bound=self.bound)
 
     def _prm_as_str(self):
         s = []
@@ -1642,6 +1647,31 @@ class ShootModel(NonLinModel):
                 f'FFT), not {bound!r}')
         return bound
 
+    def __init__(self, *args, fast=True, **kwargs):
+        """
+
+        Parameters
+        ----------
+        fast : bool, default=True
+            Integration scheme of the geodesic (`spatial.shoot(fast=)`).
+            True: chain one-step transports of the momentum (cheaper,
+            but it does not converge to the geodesic as `steps` grows).
+            False: transport the initial momentum along the integrated
+            warp at each step ("exact" scheme, converges).
+        Other parameters: see `NonLinModel`.
+        """
+        self.fast = bool(fast)
+        super().__init__(*args, **kwargs)
+
+    def _init_options(self):
+        return dict(super()._init_options(), fast=self.fast)
+
+    def _prm_as_str(self):
+        s = super()._prm_as_str()
+        if not self.fast:
+            s += ['fast=False']
+        return s
+
     def set_dat(self, dat, affine=None, **backend):
         super().set_dat(dat, affine, **backend)
         self.reset_kernel()
@@ -1658,7 +1688,8 @@ class ShootModel(NonLinModel):
             grid = spatial.shoot(v, self.kernel, steps=self.steps,
                                  factor=factor / py.prod(self.shape),
                                  voxel_size=self.voxel_size, **penalty,
-                                 displacement=True, inversion=self.inversion)
+                                 displacement=True, inversion=self.inversion,
+                                 fast=self.fast)
         else:
             grid = self._cache
         if cache_result:
@@ -1686,7 +1717,8 @@ class ShootModel(NonLinModel):
             _, grid = spatial.shoot(v, self.kernel, steps=self.steps,
                                     factor=factor / py.prod(self.shape),
                                     voxel_size=self.voxel_size, **penalty,
-                                    return_inverse=True, displacement=True)
+                                    return_inverse=True, displacement=True,
+                                    fast=self.fast)
         else:
             grid = self._icache
         if cache_result:
@@ -1714,7 +1746,8 @@ class ShootModel(NonLinModel):
                                         factor=factor / py.prod(self.shape),
                                         voxel_size=self.voxel_size, **penalty,
                                         return_inverse=True, displacement=True,
-                                        inversion=self.inversion)
+                                        inversion=self.inversion,
+                                        fast=self.fast)
         if cache_result:
             self._cache = grid
             self._icache = igrid
@@ -2109,6 +2142,7 @@ class Nonlin2dModel(NonLinModel):
     steps = property(lambda self: self._model.steps)
     inversion = property(lambda self: self._model.inversion)
     bound = property(lambda self: self._model.bound)
+    fast = property(lambda self: getattr(self._model, 'fast', True))
     kernel = property(lambda self: self._model.kernel)
     dat = property(lambda self: self._model.dat)
     affine = property(lambda self: self._model.affine)

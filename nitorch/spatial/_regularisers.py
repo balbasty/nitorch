@@ -49,6 +49,17 @@ else:
     c_solvers = None
 
 
+def _c_supports(weights=None, bending=0, lame=0):
+    """Whether the compiled solvers implement this problem: they do not
+    implement per-penalty weight maps (dict), nor weighted (RLS)
+    bending or linear-elastic energies (the TorchScript solvers do)."""
+    if weights is None:
+        return True
+    if isinstance(weights, dict):
+        return False
+    return not (any(core.py.ensure_list(bending)) or any(core.py.ensure_list(lame)))
+
+
 def _mul_(x, y):
     """Smart in-place multiplication"""
     if torch.is_tensor(y) and y.requires_grad:
@@ -1062,7 +1073,8 @@ def regulariser_grid(v, absolute=0, membrane=0, bending=0, lame=0,
     if not (absolute or membrane or bending or any(ensure_list(lame))):
         return torch.zeros_like(v)
 
-    if c_solvers and not v.requires_grad:
+    if (c_solvers and not v.requires_grad
+            and _c_supports(weights, bending, lame)):
         return c_solvers.c_regulariser_grid(
             v, weights, None,
             absolute, membrane, bending, lame, factor,
@@ -1081,7 +1093,7 @@ def regulariser_grid(v, absolute=0, membrane=0, bending=0, lame=0,
     absolute = absolute * factor
     membrane = membrane * factor
     bending = bending * factor
-    lame = make_vector(lame, 2).tolist()
+    lame = make_vector(lame, 2, dtype=torch.double).tolist()  # no float32 rounding
     lame = [l*factor for l in lame]
     fdopt = dict(bound=bound, voxel_size=voxel_size)
     if isinstance(weights, dict):
@@ -1192,7 +1204,7 @@ def regulariser_grid_diag(dim, absolute=0, membrane=0, bending=0, lame=0,
     vx = make_vector(voxel_size, dim, **backend)
     vx2 = vx.square()
     ivx2 = vx2.reciprocal()
-    lame = make_vector(lame, 2).tolist()
+    lame = make_vector(lame, 2, dtype=torch.double).tolist()  # no float32 rounding
     opt = dict(voxel_size=vx, bound=bound, dim=dim)
 
     def mul(w, x):
@@ -1272,7 +1284,8 @@ def regulariser(x, absolute=0, membrane=0, bending=0, factor=1,
         return torch.zeros_like(x)
 
     dim = dim or (x.dim() - 1)
-    if c_solvers and not x.requires_grad:
+    if (c_solvers and not x.requires_grad
+            and _c_supports(weights, bending)):
         return c_solvers.c_regulariser(
             x, weights, None, dim,
             absolute, membrane, bending, factor,

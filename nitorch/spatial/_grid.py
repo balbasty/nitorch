@@ -7,7 +7,7 @@ from nitorch.core.utils import make_vector
 from nitorch.core.py import make_list, prod
 from nitorch._C.grid import (
     GridPull, GridPush, GridCount, GridGrad,
-    BoundType, InterpolationType,
+    BoundType, InterpolationType, COMPILED_BACKEND,
     SplineCoeff, SplineCoeffND
 )
 from ._affine import affine_resize, affine_lmdiv, _resize_shape_single
@@ -100,6 +100,11 @@ def _preproc(grid, input=None, mode=None):
             /!\ This *can* trigger large allocations /!\
     """
     dim = grid.shape[-1]
+    if grid.dim() < dim + 1:
+        # fewer output spatial dimensions than `dim`: left-pad them with
+        # singletons (what the TorchScript kernels do implicitly; the
+        # compiled ones require it)
+        grid = grid.reshape([*([1] * (dim + 1 - grid.dim())), *grid.shape])
     if input is None:
         spatial = grid.shape[-dim-1:-1]
         batch = grid.shape[:-dim-1]
@@ -122,6 +127,11 @@ def _preproc(grid, input=None, mode=None):
     grid = grid.reshape([-1, *grid_spatial, dim])
     input = input.expand([*batch, channel or 1, *input_spatial])
     input = input.reshape([-1, channel or 1, *input_spatial])
+    if (COMPILED_BACKEND == 'C' and input.dtype.is_floating_point
+            and grid.dtype != input.dtype):
+        # the compiled kernels require a common dtype; the output has the
+        # dtype of the input, as with the TorchScript kernels
+        grid = grid.to(input.dtype)
 
     out_channel = [channel] if channel else ([1] if batch else [])
     info = dict(batch=batch, channel=out_channel, dim=dim)

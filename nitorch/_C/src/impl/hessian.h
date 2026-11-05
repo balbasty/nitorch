@@ -417,7 +417,10 @@ struct HessianUtils<HessianType::Sym, MaxC>: HessianCommonSym<MaxC>
     }                                                                       \
   }()
 
-// If 2 channels (logC = 1) -> only None, Eye and ESTATICS needed
+// If 2 channels (logC = 1) -> None, Eye, Diag (CC == C == 2) and
+// ESTATICS (CC == 3, which is also the full symmetric 2x2 matrix) needed.
+// (Diag used to fall through to ESTATICS, which reads 2C-1 = 3 values
+// from a 2-channel Hessian: out-of-bounds reads.)
 #define NI_DISPATCH_HESSIAN_TYPE1(TYPE, ...)                                \
   [&] {                                                                     \
     const auto& the_type = TYPE;                                            \
@@ -425,6 +428,7 @@ struct HessianUtils<HessianType::Sym, MaxC>: HessianCommonSym<MaxC>
     switch (the_type) {                                                     \
       NI_CASE_HESSIAN(HessianType::None,     __VA_ARGS__)                   \
       NI_CASE_HESSIAN(HessianType::Eye,      __VA_ARGS__)                   \
+      NI_CASE_HESSIAN(HessianType::Diag,     __VA_ARGS__)                   \
       NI_DFLT_HESSIAN(HessianType::ESTATICS, __VA_ARGS__)                   \
     }                                                                       \
   }()
