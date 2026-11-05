@@ -46,7 +46,6 @@ def spconv(input, kernel, step=1, start=0, stop=None, inplace=False, bound='dct2
             out[c] = conv(inp[c], ker)
 
     """
-    from ._quadform import Lattice
 
     # get kernel dimensions
     dim = dim or kernel.dim()
@@ -93,8 +92,8 @@ def spconv(input, kernel, step=1, start=0, stop=None, inplace=False, bound='dct2
     # boundary condition (each extended sample copies a voxel, flips its
     # sign, or is zero), and convolve the extended input.
     radius = [k // 2 for k in kernel_size]
-    lattice = Lattice(spatial_shape, bound, device=input.device, margin=radius)
-    extended = lattice.extend(input)
+    bound = core.py.ensure_list(bound, dim)
+    extended = core.utils.pad(input, radius, mode=bound, side='both')
 
     # Numeric magic to (hopefully) avoid floating point inaccuracy:
     # the central weights of the kernels that map a channel onto itself

@@ -53,7 +53,7 @@ from ._regularisers import (absolute, membrane, bending,
                             regulariser_grid_kernel, regulariser_kernel,
                             regulariser_grid, _c_supports, _kernel_supports,
                             _correct_grid_stencil, _correct_field_stencil)
-from ._quadform import weight_bound
+from nitorch.core import bounds as _bounds
 from ._spconv import spconv
 if compiled_backend == 'C':
     import nitorch._C.solve as c_solvers
@@ -267,7 +267,7 @@ class _FMG:
     def even_bound(self):
         # Hessians and weights are even (they are never negated outside
         # of the field of view): 'dst2' -> 'dct2', 'dst1'/'zero' -> 'replicate'
-        return weight_bound(self.bound, self.dim)
+        return _bounds.even(py.ensure_list(self.bound, self.dim))
 
     def prolong(self, x, grid, shape):
         return prolong(x, shape, bound=self.bound, dim=self.dim, grid=grid)

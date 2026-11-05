@@ -223,7 +223,7 @@ static NI_INLINE NI_DEVICE int8_t sign(BoundType bound_type, size_t coord, size_
 // ---------------------------------------------------------------------
 // The regularisers apply their stencil `L = K'K` to the bound-extended
 // field and read it at the voxels. This equals the exact operator
-// `E' K' diag(omega) K E` (see nitorch/spatial/_quadform.py) for dft,
+// `D' diag(omega) D` ("Exact operators" in nitorch/spatial/_regularisers.py) for dft,
 // dct2, dst2, dst1 and zero, but not for:
 // - dct1, which mirrors the field about its border voxels: they appear
 //   once per period and the other voxels twice, so that their rows must

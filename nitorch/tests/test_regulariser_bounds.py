@@ -1,16 +1,18 @@
 """Exact boundary conditions of the regularisers.
 
-The operator of each regulariser is `A = E' K' diag(omega w) K E`
-(see `nitorch.spatial._quadform`). It is compared to a dense reference
-built from its definition on one explicit period of the extended field
-(`_quadform_reference`), for every boundary condition, on the backend in
-use (TorchScript or compiled): operators, convolutions and solvers.
+The operator of each regulariser is `sum_t c_t D_t' diag(omega w) D_t`,
+where `D_t` are finite differences of the bound-extended field and
+`omega` row weights (see "Exact operators" in
+`nitorch.spatial._regularisers`). It is compared to dense references
+(`_regulariser_reference`): one period of the extended field, or the
+rows of the lattice, for every boundary condition, on the backend in use
+(TorchScript or compiled): operators, convolutions and solvers.
 """
 import torch
 import pytest
 from nitorch import spatial
-from nitorch.spatial import _quadform as qf
-from nitorch.tests import _quadform_reference as ref
+from nitorch.core import utils
+from nitorch.tests import _regulariser_reference as ref
 
 dt = torch.double
 BOUNDS = ['dft', 'dct2', 'dst2', 'dct1', 'dst1', 'zero', 'replicate']
@@ -21,44 +23,47 @@ VX = [1.0, 1.3, 0.8]
 
 def field_terms(dim, vx, a=0, m=0, b=0):
     terms = []
-    for coef, fn in ((a, qf.terms_absolute(dim)),
-                     (m, qf.terms_membrane(dim, vx)),
-                     (b, qf.terms_bending(dim, vx))):
+    for coef, fn in ((a, ref.terms_absolute(dim)),
+                     (m, ref.terms_membrane(dim, vx)),
+                     (b, ref.terms_bending(dim, vx))):
         if coef:
             terms += [(c * coef, p) for c, p in fn]
     return terms
 
 
 def grid_terms(dim, vx, a=0, m=0, b=0, shear=0, div=0):
-    terms = []
-    for k in range(dim):
-        for coef, part in field_terms(dim, vx, a, m, b):
-            terms.append((coef * vx[k] ** 2,
-                          [(k, kinds, s) for _, kinds, s in part]))
+    terms = ref.per_component(dim, field_terms(dim, vx, a, m, b), vx)
     if shear:
-        terms += [(c * shear, p) for c, p in qf.terms_lame_shear(dim, vx)]
+        terms += [(c * shear, p) for c, p in ref.terms_lame_shear(dim, vx)]
     if div:
-        terms += [(c * div, p) for c, p in qf.terms_lame_div(dim)]
+        terms += [(c * div, p) for c, p in ref.terms_lame_div(dim)]
     return terms
 
 
-def grid_target(v, bound, terms, weights=None):
-    """Exact operator applied to a grid. With mirror boundaries, the
+def grid_matrix(shape, bound, terms, weights=None):
+    """Exact operator of a grid energy. With mirror boundaries, the
     linear-elastic energy has no periodic counterpart (its components
     are all extended evenly, which is not the reflection of a
     displacement field): it is defined by the rows of the lattice."""
+    return ref.lattice_operator(shape, bound, terms, len(shape), weights)
+
+
+def grid_target(v, bound, terms, weights=None):
+    """Exact operator applied to a (*shape, dim) grid"""
     shape, dim = v.shape[:-1], v.shape[-1]
-    lattice = qf.Lattice(shape, bound)
-    ys = qf.quadform(list(v.unbind(-1)), terms, lattice, weights)
-    return torch.stack(ys, -1)
+    A = grid_matrix(shape, bound, terms, weights)
+    return (A @ v.movedim(-1, 0).flatten()).reshape(dim, *shape).movedim(0, -1)
 
 
-def grid_matrix(shape, bound, terms, weights=None):
-    dim = len(shape)
-    n = dim * torch.Size(shape).numel()
-    eye = torch.eye(n, dtype=dt).reshape(n, dim, *shape).movedim(1, -1)
-    return torch.stack([grid_target(e, bound, terms, weights)
-                        .movedim(-1, 0).flatten() for e in eye], 1)
+def apply_matrix(fn, shape, ncomp=None):
+    """Dense matrix of a linear function of a (*shape[, ncomp]) tensor"""
+    n = torch.Size(shape).numel() * (ncomp or 1)
+    eye = torch.eye(n, dtype=dt)
+    if ncomp:
+        eye = eye.reshape(n, ncomp, *shape).movedim(1, -1)
+        return torch.stack([fn(e).movedim(-1, 0).flatten() for e in eye], 1)
+    eye = eye.reshape(n, *shape)
+    return torch.stack([fn(e).flatten() for e in eye], 1)
 
 
 FIELD_CASES = dict(absolute=dict(a=1), membrane=dict(m=1), bending=dict(b=1),
@@ -79,34 +84,35 @@ def _grid_kwargs(case):
                 lame=(case.get('shear', 0), case.get('div', 0)))
 
 
+def _mixed(bound, dim):
+    if bound == 'mixed':
+        return ['dct1', 'replicate', 'dst1'][:dim]
+    return bound
+
+
 # ----------------------------------------------------------------------
-#   The TorchScript engine is the definition
+#   The references agree
 # ----------------------------------------------------------------------
 
-@pytest.mark.parametrize('shape', [(5,), (5, 4), (4, 3, 3)])
+@pytest.mark.parametrize('shape', [(5,), (5, 4), (4, 3, 3), (1, 4), (2, 3)])
 @pytest.mark.parametrize('bound', BOUNDS + ['mixed'])
 @pytest.mark.parametrize('weighted', [False, True])
-def test_engine_is_the_period_energy(shape, bound, weighted):
+def test_lattice_is_the_period_energy(shape, bound, weighted):
     """The row weights make the energy of the rows of the lattice that of
     one period of the extended field (fields; grids without coupling)"""
     dim = len(shape)
-    if bound == 'mixed':
-        bound = ['dct1', 'replicate', 'dst1'][:dim]
+    bound = _mixed(bound, dim)
     weights = torch.rand(shape, dtype=dt) + 0.5 if weighted else None
-    lattice = qf.Lattice(shape, bound)
-    n = torch.Size(shape).numel()
     for name, case in FIELD_CASES.items():
         terms = field_terms(dim, VX, **case)
         A = ref.operator(shape, bound, terms, 1, weights)
-        eye = torch.eye(n, dtype=dt).reshape(n, *shape)
-        B = torch.stack([qf.quadform([e], terms, lattice, weights)[0].flatten()
-                         for e in eye], 1)
+        B = ref.lattice_operator(shape, bound, terms, 1, weights)
         assert torch.allclose(A, B, atol=1e-10), name
 
 
 @pytest.mark.parametrize('shape', [(5, 4), (4, 3, 3)])
 @pytest.mark.parametrize('bound', ['dft', 'zero', 'replicate'])
-def test_engine_lame_is_the_period_energy(shape, bound):
+def test_lattice_lame_is_the_period_energy(shape, bound):
     """Without mirrors, the linear-elastic energy is also that of the
     extended field"""
     dim = len(shape)
@@ -117,13 +123,58 @@ def test_engine_lame_is_the_period_energy(shape, bound):
         assert torch.allclose(A, B, atol=1e-10), name
 
 
+# ----------------------------------------------------------------------
+#   TorchScript energies
+# ----------------------------------------------------------------------
+
+@pytest.mark.parametrize('shape', [(5,), (5, 4), (4, 3, 3), (1, 4), (2, 3)])
+@pytest.mark.parametrize('bound', BOUNDS + ['mixed'])
+@pytest.mark.parametrize('weighted', [False, True])
+def test_field_energies(shape, bound, weighted):
+    dim = len(shape)
+    bound = _mixed(bound, dim)
+    weights = torch.rand(shape, dtype=dt) + 0.5 if weighted else None
+    vx = VX[:dim]
+    opt = dict(bound=bound, dim=dim, weights=weights)
+    for name, fn in (('absolute', lambda e: spatial.absolute(e, **opt)),
+                     ('membrane', lambda e: spatial.membrane(e, voxel_size=vx, **opt)),
+                     ('bending', lambda e: spatial.bending(e, voxel_size=vx, **opt))):
+        A = ref.operator(shape, bound, field_terms(dim, vx, **{name[0]: 1}),
+                         1, weights)
+        assert torch.allclose(apply_matrix(fn, shape), A, atol=1e-10), name
+
+
+@pytest.mark.parametrize('shape', [(5, 4), (4, 3, 3), (1, 4)])
+@pytest.mark.parametrize('bound', BOUNDS + ['mixed'])
+@pytest.mark.parametrize('weighted', [False, True])
+def test_grid_energies(shape, bound, weighted):
+    dim = len(shape)
+    bound = _mixed(bound, dim)
+    weights = torch.rand(shape, dtype=dt) + 0.5 if weighted else None
+    vx = VX[:dim]
+    opt = dict(bound=bound, weights=weights, voxel_size=vx)
+    fns = dict(absolute=(spatial.absolute_grid, dict(a=1)),
+               membrane=(spatial.membrane_grid, dict(m=1)),
+               bending=(spatial.bending_grid, dict(b=1)),
+               shear=(spatial.lame_shear, dict(shear=1)),
+               div=(spatial.lame_div, dict(div=1)))
+    for name, (fn, case) in fns.items():
+        A = grid_matrix(shape, bound, grid_terms(dim, vx, **case), weights)
+        B = apply_matrix(lambda e: fn(e, **opt), shape, dim)
+        assert torch.allclose(A, B, atol=1e-10), name
+
+
 @pytest.mark.parametrize('shape', [(5, 4), (4, 3, 3)])
 @pytest.mark.parametrize('bound', BOUNDS)
 def test_operators_symmetric_psd(shape, bound):
     dim = len(shape)
     weights = torch.rand(shape, dtype=dt) + 0.5
     for name, case in GRID_CASES.items():
-        A = grid_matrix(shape, bound, grid_terms(dim, VX, **case), weights)
+        # (the compiled backend is not used with autograd)
+        fn = lambda e: spatial.regulariser_grid(
+            e.requires_grad_(), **_grid_kwargs(case), voxel_size=VX[:dim],
+            bound=bound, weights=weights).detach()
+        A = apply_matrix(fn, shape, dim)
         assert torch.allclose(A, A.T, atol=1e-10), name
         assert torch.linalg.eigvalsh(A).min() > -1e-10, name
 
@@ -183,8 +234,7 @@ def test_spconv_is_the_stencil_on_the_extension(bound, name):
     torch.manual_seed(0)
     x = torch.randn([1, *shape], dtype=dt)
     ker = spatial.regulariser_kernel(2, **{name: 1}, dtype=dt).to_dense()
-    lattice = qf.Lattice(shape, bound, margin=2)
-    ext = lattice.extend(x[0])
+    ext = utils.pad(x[0], [2, 2], mode=bound, side='both')
     target = torch.zeros(shape, dtype=dt)
     c = [k // 2 for k in ker.shape]
     for i in range(ker.shape[0]):
