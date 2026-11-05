@@ -198,6 +198,7 @@ static NI_INLINE NI_DEVICE int64_t index(BoundType bound_type, size_t coord, siz
     case BoundType::DCT2:       return _index::reflect2(coord, size);
     case BoundType::DST1:       return _index::reflect1s(coord, size);
     case BoundType::DST2:       return _index::reflect2(coord, size);
+    case BoundType::Sliding:    return _index::reflect2(coord, size);
     case BoundType::DFT:        return _index::circular(coord, size);
     case BoundType::Zero:       return _index::inbounds(coord, size);
     default:                    return _index::inbounds(coord, size);
@@ -212,6 +213,8 @@ static NI_INLINE NI_DEVICE int8_t sign(BoundType bound_type, size_t coord, size_
     case BoundType::DCT2:       return _sign::constant(coord, size);
     case BoundType::DST1:       return _sign::periodic1(coord, size);
     case BoundType::DST2:       return _sign::periodic2(coord, size);
+    // Sliding: sign of the component normal to the axis (see `slide`)
+    case BoundType::Sliding:    return _sign::periodic2(coord, size);
     case BoundType::DFT:        return _sign::constant(coord, size);
     case BoundType::Zero:       return _sign::inbounds(coord, size);
     default:                    return _sign::inbounds(coord, size);
@@ -251,6 +254,20 @@ replicate_inward(BoundType bound_type, offset_t coord, offset_t size) {
   if (coord == 0)        return  1;
   if (coord == size - 1) return -1;
   return 0;
+}
+
+// Sliding boundary conditions (displacement grids) reflect the vector
+// field geometrically: along a sliding axis, the component normal to the
+// border is antisymmetric (DST2) and the other components symmetric
+// (DCT2). Both have the same indices (`index`). `sign` is the sign of
+// the normal component; this returns the sign of component `comp` along
+// axis `axis`. The stencil applied to this extension is the exact
+// operator (see nitorch/spatial/_quadform.py), including the
+// cross-component terms of the linear-elastic energy.
+static NI_INLINE NI_DEVICE int8_t
+slide(BoundType bound_type, int8_t sign, int axis, int comp) {
+  return (bound_type == BoundType::Sliding && axis != comp)
+         ? static_cast<int8_t>(1) : sign;
 }
 
 // Weights (RLS) are always even: ignore the sign of the boundary

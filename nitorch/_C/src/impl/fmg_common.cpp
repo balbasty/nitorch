@@ -53,18 +53,71 @@ namespace {
   }
 
   // Hessians and weights are even quantities (they are never negated
-  // outside of the field of view): restrict them with dst2 -> dct2 and
-  // dst1/zero -> replicate
+  // outside of the field of view): restrict them with dst2/sliding -> dct2
+  // and dst1/zero -> replicate
   inline std::vector<BoundType> even_bound(const BoundVectorRef & bound)
   {
     std::vector<BoundType> out(bound.begin(), bound.end());
     for (auto & b : out) {
-      if (b == BoundType::DST2)
+      if (b == BoundType::DST2 || b == BoundType::Sliding)
         b = BoundType::DCT2;
       else if (b == BoundType::DST1 || b == BoundType::Zero)
         b = BoundType::Replicate;
     }
     return out;
+  }
+
+  inline bool has_sliding(const BoundVectorRef & bound)
+  {
+    for (auto b : bound)
+      if (b == BoundType::Sliding)
+        return true;
+    return false;
+  }
+
+  // Boundary conditions of the component `c` of a displacement grid:
+  // along a sliding axis `d`, the component `d` (normal to the border) is
+  // antisymmetric (dst2) and the other components symmetric (dct2).
+  inline std::vector<BoundType>
+  component_bound(const BoundVectorRef & bound, int64_t c, int64_t dim)
+  {
+    std::vector<BoundType> out;
+    for (int64_t d = 0; d < dim; ++d) {
+      BoundType b = bound.size() == 0 ? BoundType::DCT2 :
+                    static_cast<size_t>(d) < bound.size() ? bound[d] :
+                    bound[bound.size() - 1];
+      if (b == BoundType::Sliding)
+        b = (d == c) ? BoundType::DST2 : BoundType::DCT2;
+      out.push_back(b);
+    }
+    return out;
+  }
+
+  // Resample each component of a (N, D, *spatial) grid with its own
+  // boundary conditions (they only differ with sliding boundaries)
+  template <typename Fn>
+  inline void per_component(Fn fn, const Tensor & input, const Tensor & output,
+                            const BoundVectorRef & bound)
+  {
+    if (!has_sliding(bound))
+      return (void)fn(input, output, bound);
+    int64_t dim = input.dim() - 2;
+    for (int64_t c = 0; c < input.size(1); ++c) {
+      std::vector<BoundType> cbound = component_bound(bound, c, dim);
+      fn(input.narrow(1, c, 1), output.narrow(1, c, 1), BoundVectorRef(cbound));
+    }
+  }
+
+  inline void fmg_prolongation_grid(const Tensor & input, const Tensor & output,
+                                    const BoundVectorRef & bound)
+  {
+    per_component(fmg_prolongation, input, output, bound);
+  }
+
+  inline void fmg_restriction_grid(const Tensor & input, const Tensor & output,
+                                   const BoundVectorRef & bound)
+  {
+    per_component(fmg_restriction, input, output, bound);
   }
 
   inline void get_shape(const Tensor & x, int64_t s[])
@@ -410,7 +463,7 @@ Tensor fmg_grid_impl(const Tensor & hessian,
   };
   auto prolong_ = [&](const Tensor & x, const Tensor & o)
   {
-    fmg_prolongation(x, o, bound);
+    fmg_prolongation_grid(x, o, bound);
     Tensor view;
     switch (dim) {  // there are no breaks on purpose
       case 3:
@@ -440,7 +493,7 @@ Tensor fmg_grid_impl(const Tensor & hessian,
   {
     if (!o.defined() || o.numel() == 0)
       return;;
-    fmg_restriction(x, o, bound);
+    fmg_restriction_grid(x, o, bound);
     Tensor view;
     switch (dim) {  // there are no breaks on purpose
       case 3:
