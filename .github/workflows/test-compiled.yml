@@ -1,0 +1,81 @@
+name: nitorch-test-compiled
+
+# Tests with the compiled (C++) backend, which the default test workflow
+# does not build (it takes ~15-25 min). Only runs when files that the
+# compiled path depends on change: the C++ sources and their Python
+# bindings (nitorch/_C), the Python code that dispatches to them
+# (nitorch/spatial), the build files, or this workflow.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ master ]
+    paths:
+      - "nitorch/_C/**"
+      - "nitorch/spatial/**"
+      - "setup.py"
+      - "setup_cext.py"
+      - "setup.cfg"
+      - "buildtools.py"
+      - "pyproject.toml"
+      - ".github/workflows/test-compiled.yml"
+  pull_request:
+    branches: [ master ]
+    paths:
+      - "nitorch/_C/**"
+      - "nitorch/spatial/**"
+      - "setup.py"
+      - "setup_cext.py"
+      - "setup.cfg"
+      - "buildtools.py"
+      - "pyproject.toml"
+      - ".github/workflows/test-compiled.yml"
+
+jobs:
+
+  test:
+
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      python-version: '3.12'
+      pytorch-version: '2.5.1'
+
+    steps:
+
+    - uses: actions/checkout@v5
+
+    - name: Set up Python
+      uses: actions/setup-python@v6
+      with:
+        python-version: ${{ env.python-version }}
+
+    - name: Install pip
+      run: |
+        python -m pip install --upgrade pip setuptools wheel
+        if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+        pip install numpy nibabel tifffile scipy wget
+
+    - name: Install PyTorch
+      env:
+        cuda: cpu
+        torch: ${{ env.pytorch-version }}
+      shell: bash
+      run: source ./scripts/actions/install_pytorch_ubuntu.sh
+
+    # Development mode, so that pytest runs in place
+    - name: Build nitorch (compiled backend, CPU)
+      run: |
+        NI_COMPILED_BACKEND="C" NI_USE_CUDA=0 NI_COMPILE_WORKERS=4 \
+          pip install --no-build-isolation -e .
+        # fail early if the compiled backend is not the one in use
+        python -c "
+        import nitorch
+        assert nitorch.compiled_backend == 'C', nitorch.compiled_backend
+        from nitorch._C import spatial
+        print('compiled backend:', nitorch.compiled_backend)"
+
+    - name: Tests
+      run: |
+        pip install pytest pytest-timeout
+        pytest --timeout=600 --durations=20 --ignore nitorch/tests/test_gradcheck_spatial.py
