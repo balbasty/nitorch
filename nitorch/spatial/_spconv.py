@@ -1,3 +1,4 @@
+import itertools
 import torch
 from nitorch import core
 from nitorch.core.utils import unsqueeze
@@ -91,22 +92,61 @@ def spconv(input, kernel, step=1, start=0, stop=None, inplace=False, bound='dct2
     identity = input[slicer]
     output_spatial_shape = identity.shape[-dim:]
 
-    # Extend the input by the radius of the kernel, according to its
-    # boundary condition (each extended sample copies a voxel, flips its
-    # sign, or is zero), and convolve the extended input.
-    radius = [k // 2 for k in kernel_size]
+    # Each tap reads the input shifted by its offset: a view where every
+    # sample is inside the field of view, else the samples given by the
+    # boundary condition (`core.bounds`: source voxel and sign).
     bound = core.py.ensure_list(bound, dim)
+    nb_in = input.shape[-dim-1]
     if core.bounds.has_sliding(bound):
         # each component of a displacement grid has its own extension
-        if channel_in is None or input.shape[-dim-1] != dim:
+        if channel_in is None or nb_in != dim:
             raise ValueError('Sliding boundary conditions need a displacement '
                              'grid (one channel per spatial dimension)')
-        extended = torch.stack([
-            core.utils.pad(input.select(-dim-1, c), radius, side='both',
-                           mode=core.bounds.for_component(bound, c))
-            for c in range(dim)], -dim-1)
+        cbound = [core.bounds.for_component(bound, c) for c in range(dim)]
     else:
-        extended = core.utils.pad(input, radius, mode=bound, side='both')
+        cbound = [core.bounds.to_nitorch(list(bound))] * nb_in
+
+    positions = [range(sz)[slice(str, stp, st)]
+                 for str, stp, st, sz in zip(start, stop, step, spatial_shape)]
+    nbatch = input.dim() - dim - 1   # (without the channel dimension)
+    cache = {}
+
+    def segments(ci, d, offset):
+        # Samples `positions + offset` along axis d, as segments of the
+        # output: (output slice, input slice) where they are inside the
+        # field of view, (output slice, (index, sign)) where they are not.
+        key = (ci, d, offset)
+        if key in cache:
+            return cache[key]
+        pos, n = positions[d], spatial_shape[d]
+        m, st = len(pos), pos.step
+        first = pos.start + offset
+        k0 = min(m, max(0, -(first // st)))             # first inside
+        k1 = max(k0, min(m, (n - 1 - first) // st + 1))  # last inside + 1
+
+        def gather(a, b):
+            idx = torch.arange(first + a * st, first + b * st, st,
+                               device=input.device)
+            idx, sign = getattr(core.bounds, cbound[ci][d])(idx, n)
+            if torch.is_tensor(sign):
+                if bool((sign == 1).all()):
+                    sign = 1
+                else:
+                    shape = [1] * dim
+                    shape[d] = -1
+                    sign = sign.to(input.dtype).reshape(shape)
+            return slice(a, b), (idx, sign)
+
+        segs = []
+        if k0 > 0:
+            segs.append(gather(0, k0))
+        if k1 > k0:
+            segs.append((slice(k0, k1),
+                         slice(first + k0 * st, first + (k1 - 1) * st + 1, st)))
+        if m > k1:
+            segs.append(gather(k1, m))
+        cache[key] = segs
+        return segs
 
     # Numeric magic to (hopefully) avoid floating point inaccuracy:
     # the central weights of the kernels that map a channel onto itself
@@ -115,36 +155,63 @@ def spconv(input, kernel, step=1, start=0, stop=None, inplace=False, bound='dct2
     kernel, w0 = _split_kernel(kernel, dim)
     split_idx = _get_idx_split(kernel.dim(), dim)
 
-    output = None
+    # Peak memory: the output and one shifted copy of the input.
+    grad = torch.is_grad_enabled() and input.requires_grad
+    output = identity.new_zeros([*batch_shape, nb_out, *output_spatial_shape])
     outputs = [0] * nb_out
+    buf = torch.empty_like(identity.select(-dim-1, 0))
     indices = kernel._indices().t().tolist()
-    values = kernel._values()
+    values = kernel._values().tolist()
     for idx, weight in zip(indices, values):
         ci, co, idx = split_idx(idx)
         ci = 0 if ci is None else ci
         co = 0 if co is None else co
-        if input.shape[-dim-1] == 1:
+        if nb_in == 1:
             ci = 0
-        shifted = extended.select(-dim-1, ci)
-        shifted = shifted[(Ellipsis, *[
-            slice(str + i, stp + i, st)
-            for str, stp, st, i in zip(start, stop, step, idx)])]
-        if ci == co:
-            shifted = shifted - identity.select(-dim-1, ci)
-        outputs[co] = outputs[co] + shifted * weight
+        segs = [segments(ci, d, i - k // 2)
+                for d, (i, k) in enumerate(zip(idx, kernel_size))]
+        inp = input.select(-dim-1, ci)
+        ide = identity.select(-dim-1, ci) if ci == co else None
+        if grad:
+            buf = torch.empty_like(identity.select(-dim-1, 0))
+        for region in itertools.product(*segs):
+            out_slices = (Ellipsis, *[seg[0] for seg in region])
+            src = inp[(Ellipsis, *[seg[1] if isinstance(seg[1], slice)
+                                   else slice(None) for seg in region])]
+            for d, (_, seg) in enumerate(region):
+                if isinstance(seg, slice):
+                    continue
+                index, sign = seg
+                src = src.index_select(nbatch + d, index)
+                if not isinstance(sign, int):
+                    src = src * sign if grad else src.mul_(sign)
+            if ide is None:
+                buf[out_slices].copy_(src)
+            elif grad:
+                buf[out_slices].copy_(src - ide[out_slices])
+            else:
+                torch.sub(src, ide[out_slices], out=buf[out_slices])
+        if grad:
+            outputs[co] = outputs[co] + buf * weight
+        else:
+            output.select(-dim-1, co).add_(buf, alpha=weight)
 
     # add weighted identity
-    w0 = torch.as_tensor(w0, dtype=input.dtype, device=input.device)
+    w0 = w0.tolist() if w0.dim() else [w0.item()] * nb_out
     for co in range(nb_out):
-        ci = 0 if input.shape[-dim-1] == 1 else co
+        ci = 0 if nb_in == 1 else co
         if ci >= identity.shape[-dim-1]:
             continue
-        w = w0[co] if w0.dim() else w0
-        out = outputs[co] + identity.select(-dim-1, ci) * w
-        if not torch.is_tensor(out):
-            out = identity.select(-dim-1, ci).new_zeros(output_spatial_shape)
-        outputs[co] = out.expand([*batch_shape, *output_spatial_shape])
-    output = torch.stack(outputs, -dim-1)
+        if grad:
+            outputs[co] = outputs[co] + identity.select(-dim-1, ci) * w0[co]
+        else:
+            output.select(-dim-1, co).add_(identity.select(-dim-1, ci),
+                                           alpha=w0[co])
+    if grad:
+        output = torch.stack([o.expand(output.shape[:-dim-1] + output.shape[-dim:])
+                              if torch.is_tensor(o) else
+                              output.select(-dim-1, 0)
+                              for o in outputs], -dim-1)
 
     if inplace:
         input[slicer].copy_(output)

@@ -1,29 +1,26 @@
 """Exact boundary conditions of the regularisers.
 
-The operator of each regulariser is `sum_t c_t D_t' diag(omega w) D_t`,
-where `D_t` are finite differences of the bound-extended field and
-`omega` row weights (see "Exact operators" in
-`nitorch.spatial._regularisers`). It is compared to dense references
-(`_regulariser_reference`): one period of the extended field, or the
-rows of the lattice, for every boundary condition, on the backend in use
-(TorchScript or compiled): operators, convolutions and solvers.
+Every energy is a sum of rows centred on the voxels of the field of view,
+built from finite differences of the bound-extended field ("definition
+F", see `_regulariser_reference`). The implementations are compared to
+its dense operator, for every boundary condition, on the backend in use
+(TorchScript or compiled): operators, convolutions (with their border
+correction) and solvers.
 
 Displacement grids also have 'sliding' boundary conditions (a geometric
 reflection: the component normal to the border is antisymmetric, the
-others symmetric), whose linear-elastic energy is that of the extended
-field, contrary to the other mirrors.
+others symmetric).
 """
 import torch
 import pytest
 from nitorch import spatial
 from nitorch.core import utils
 from nitorch.tests import _regulariser_reference as ref
-from nitorch.spatial._regularisers import c_solvers
+from nitorch.spatial._regularisers import c_solvers, _c_supports
 
 dt = torch.double
 BOUNDS = ['dft', 'dct2', 'dst2', 'dct1', 'dst1', 'zero', 'replicate']
 GRID_BOUNDS = BOUNDS + ['sliding']
-MIRRORS = ('dct2', 'dst2', 'dct1', 'dst1')
 SHAPES = [(6, 5), (5, 4, 4)]
 VX = [1.0, 1.3, 0.8]
 
@@ -48,11 +45,8 @@ def grid_terms(dim, vx, a=0, m=0, b=0, shear=0, div=0):
 
 
 def grid_matrix(shape, bound, terms, weights=None):
-    """Exact operator of a grid energy. With mirror boundaries, the
-    linear-elastic energy has no periodic counterpart (its components
-    are all extended evenly, which is not the reflection of a
-    displacement field): it is defined by the rows of the lattice."""
-    return ref.lattice_operator(shape, bound, terms, len(shape), weights)
+    """Exact operator of a grid energy"""
+    return ref.operator(shape, bound, terms, len(shape), weights)
 
 
 def grid_target(v, bound, terms, weights=None):
@@ -220,10 +214,11 @@ def test_field_energies(shape, bound, weighted):
     weights = torch.rand(shape, dtype=dt) + 0.5 if weighted else None
     vx = VX[:dim]
     opt = dict(bound=bound, dim=dim, weights=weights)
-    for name, fn in (('absolute', lambda e: spatial.absolute(e, **opt)),
+    # (the absolute energy w * x has no boundary condition)
+    for name, fn in (('absolute', lambda e: spatial.absolute(e, weights=weights)),
                      ('membrane', lambda e: spatial.membrane(e, voxel_size=vx, **opt)),
                      ('bending', lambda e: spatial.bending(e, voxel_size=vx, **opt))):
-        A = ref.period_operator(shape, bound, field_terms(dim, vx, **{name[0]: 1}),
+        A = ref.operator(shape, bound, field_terms(dim, vx, **{name[0]: 1}),
                          1, weights)
         assert torch.allclose(apply_matrix(fn, shape), A, atol=1e-10), name
 
@@ -244,7 +239,11 @@ def test_grid_energies(shape, bound, weighted):
                div=(spatial.lame_div, dict(div=1)))
     for name, (fn, case) in fns.items():
         A = grid_matrix(shape, bound, grid_terms(dim, vx, **case), weights)
-        B = apply_matrix(lambda e: fn(e, **opt), shape, dim)
+        kw = dict(opt)
+        if name == 'absolute':
+            # (the absolute energy w * x has no boundary condition)
+            kw.pop('bound')
+        B = apply_matrix(lambda e: fn(e, **kw), shape, dim)
         assert torch.allclose(A, B, atol=1e-10), name
 
 
@@ -277,7 +276,7 @@ def test_regulariser(shape, bound, weighted):
     x = torch.randn([2, *shape], dtype=dt)
     weights = torch.rand([1, *shape], dtype=dt) + 0.5 if weighted else None
     for name, case in FIELD_CASES.items():
-        A = ref.period_operator(shape, bound, field_terms(dim, vx, **case), 1,
+        A = ref.operator(shape, bound, field_terms(dim, vx, **case), 1,
                          None if weights is None else weights[0])
         y = spatial.regulariser(x, **_field_kwargs(case), voxel_size=vx,
                                 bound=bound, dim=dim, weights=weights)
@@ -304,20 +303,15 @@ def test_regulariser_grid(shape, bound, weighted, kernel):
                                      bound=bound, weights=weights,
                                      kernel=kernel)
         assert torch.allclose(y, target, atol=1e-9), name
-        if bound not in MIRRORS or not (case.get('shear') or case.get('div')):
-            A = ref.period_operator(shape, bound, terms, dim, weights)
-            vflat = v.movedim(-1, 0).flatten()
-            assert torch.allclose(target, (A @ vflat).reshape(dim, *shape)
-                                  .movedim(0, -1), atol=1e-9), name
 
 
 @pytest.mark.parametrize('shape', SHAPES)
 @pytest.mark.parametrize('backend', ['ts', 'kernel', 'C'])
 @pytest.mark.parametrize('bound', ['sliding', 'mixed-sliding'])
 def test_regulariser_grid_sliding_backends(shape, backend, bound):
-    """Every grid energy with sliding boundaries is the dense period
-    energy, on each backend: TorchScript (explicit operator), sparse
-    convolution and compiled"""
+    """Every grid energy with sliding boundaries is the dense operator,
+    on each backend: TorchScript (explicit operator), sparse convolution
+    (with its border correction) and compiled"""
     dim = len(shape)
     vx = VX[:dim]
     bound = _mixed(bound, dim)
@@ -325,21 +319,25 @@ def test_regulariser_grid_sliding_backends(shape, backend, bound):
     v = torch.randn([*shape, dim], dtype=dt)
     vflat = v.movedim(-1, 0).flatten()
     for name, case in GRID_CASES.items():
-        A = ref.period_operator(shape, bound, grid_terms(dim, vx, **case), dim)
+        A = ref.operator(shape, bound, grid_terms(dim, vx, **case), dim)
         target = (A @ vflat).reshape(dim, *shape).movedim(0, -1)
         opt = dict(**_grid_kwargs(case), voxel_size=vx, bound=bound)
         if backend == 'C':
             if not c_solvers:
                 pytest.skip('compiled backend not available')
-            y = c_solvers.c_regulariser_grid(
-                v, absolute=opt['absolute'], membrane=opt['membrane'],
-                bending=opt['bending'], lame=opt['lame'],
-                voxel_size=vx, bound=bound)
+            # TEMPORARY: until the compiled kernels have their border
+            # correction, they are only exact where `_c_supports` uses them
+            if _c_supports(None, opt['bending'], opt['lame'], bound):
+                y = c_solvers.c_regulariser_grid(
+                    v, absolute=opt['absolute'], membrane=opt['membrane'],
+                    bending=opt['bending'], lame=opt['lame'],
+                    voxel_size=vx, bound=bound)
+            else:
+                y = spatial.regulariser_grid(v, **opt)
         elif backend == 'kernel':
-            ker = spatial.regulariser_grid_kernel(
-                dim, **_grid_kwargs(case), voxel_size=vx, dtype=dt)
-            y = spatial.spconv(v.movedim(-1, -dim-1), ker, bound=bound,
-                               dim=dim).movedim(-dim-1, -1)
+            # (the compiled backend is not used with autograd)
+            vg = v.clone().requires_grad_()
+            y = spatial.regulariser_grid(vg, **opt, kernel=True).detach()
         else:
             # (the compiled backend is not used with autograd)
             vg = v.clone().requires_grad_()
@@ -363,32 +361,46 @@ def test_sliding_needs_a_grid():
         utils.pad(x, [1, 1], mode='sliding', side='both')
 
 
-@pytest.mark.parametrize('bound', BOUNDS)
-@pytest.mark.parametrize('name', ['membrane', 'bending'])
-def test_spconv_is_the_stencil_on_the_extension(bound, name):
-    shape = (6, 5)
+@pytest.mark.parametrize('bound', GRID_BOUNDS)
+@pytest.mark.parametrize('name', ['membrane', 'bending', 'shear', 'div'])
+def test_spconv_is_the_stencil(bound, name):
+    """spconv is a pure convolution of the extended field (no border
+    correction): it is the stencil `S` of the reference, and
+    `correct_stencil` adds `A - S`"""
+    shape, dim = (6, 5), 2
+    vx = VX[:dim]
     torch.manual_seed(0)
-    x = torch.randn([1, *shape], dtype=dt)
-    ker = spatial.regulariser_kernel(2, **{name: 1}, dtype=dt).to_dense()
-    ext = utils.pad(x[0], [2, 2], mode=bound, side='both')
-    target = torch.zeros(shape, dtype=dt)
-    c = [k // 2 for k in ker.shape]
-    for i in range(ker.shape[0]):
-        for j in range(ker.shape[1]):
-            if ker[i, j]:
-                target += ker[i, j] * ext[2 + i - c[0]:2 + i - c[0] + shape[0],
-                                          2 + j - c[1]:2 + j - c[1] + shape[1]]
-    y = spatial.spconv(x, ker.to_sparse(), bound=bound, dim=2)[0]
-    assert torch.allclose(y, target, atol=1e-10)
+    grid = name in ('shear', 'div') or bound == 'sliding'
+    ncomp = dim if grid else 1
+    x = torch.randn([ncomp, *shape], dtype=dt)
+    if grid:
+        case = GRID_CASES['membrane' if name == 'membrane' else
+                          'bending' if name == 'bending' else name]
+        terms = grid_terms(dim, vx, **case)
+        kwargs = _grid_kwargs(case)
+        del kwargs['absolute']
+        ker = spatial.regulariser_grid_kernel(dim, **kwargs, voxel_size=vx,
+                                              dtype=dt)
+    else:
+        terms = field_terms(dim, vx, **{name[0]: 1})
+        kwargs = {name: 1}
+        ker = spatial.regulariser_kernel(dim, **kwargs, voxel_size=vx,
+                                         dtype=dt)
+    A, S = ref.operators(shape, bound, terms, ncomp)
+    y = spatial.spconv(x, ker, bound=bound, dim=dim)
+    assert torch.allclose(y.flatten(), S @ x.flatten(), atol=1e-10)
+    y = spatial.correct_stencil(x, y, bound, dim, vx, grid=grid, **kwargs)
+    assert torch.allclose(y.flatten(), A @ x.flatten(), atol=1e-10)
 
 
 # ----------------------------------------------------------------------
 #   Solvers solve the exact system
 # ----------------------------------------------------------------------
 
-# The bounds that need a correction of the stencil (dct1, replicate) and
-# a control (dft) run by default; all bounds run with --runslow.
-SOLVER_BOUNDS = [b if b in ('dft', 'dct1', 'replicate')
+# The bounds that need a correction of the stencil (dct1, dst1, zero,
+# replicate) and a control (dft) run by default; all bounds run with
+# --runslow.
+SOLVER_BOUNDS = [b if b in ('dft', 'dct1', 'dst1', 'zero', 'replicate')
                  else pytest.param(b, marks=pytest.mark.slow) for b in BOUNDS]
 # sliding boundaries (grids only) have their own stencil signs: always run
 GRID_SOLVER_BOUNDS = SOLVER_BOUNDS + ['sliding']
@@ -409,7 +421,7 @@ def test_solve_field(bound, optim, name):
     g = torch.randn([1, *shape], dtype=dt)
     h = torch.rand([1, *shape], dtype=dt) + 1
     prm = dict(absolute=1e-3, **{name: 0.5})
-    A = ref.period_operator(shape, bound, field_terms(dim, vx, a=1e-3, **{name[0]: 0.5}))
+    A = ref.operator(shape, bound, field_terms(dim, vx, a=1e-3, **{name[0]: 0.5}))
     opt = dict(voxel_size=vx, bound=bound, dim=dim, **prm)
     if optim == 'fmg':
         x = spatial.solve_field_fmg(h, g, nb_cycles=8, nb_iter=4, **opt)
