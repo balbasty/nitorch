@@ -516,3 +516,197 @@ def test_solve_grid(bound, optim, name):
                                max_iter=SOLVER_ITER[optim], **opt)
     xf, gf, hf = x.movedim(-1, 0), g.movedim(-1, 0), h.movedim(-1, 0)
     assert _residual(A, hf, xf, gf) < 1e-6
+
+
+# ----------------------------------------------------------------------
+#   Compiled solvers (border pass): every boundary condition
+# ----------------------------------------------------------------------
+
+# (the compiled diagonals keep a margin of 1e-6 w000, where w000 is the
+# central weight of the stencil: up to 1e-4 here)
+DIAG_TOL = dict(rtol=1e-5, atol=1e-4)
+
+
+def _field_band(case):
+    """Fold width of the compiled field relaxation (0: red-black)"""
+    return 3 if case.get('b') else 0 if case.get('m') else 1
+
+
+def _grid_band(case):
+    """Fold width of the compiled grid relaxation (0: red-black)"""
+    return 3 if case.get('b') else 2 if case.get('shear') or case.get('div') \
+        else 0 if case.get('m') else 1
+
+
+def _folds(shape, band):
+    """Voxel masks of the folds (or colours), in the order of the
+    compiled relaxation"""
+    grid = torch.stack(torch.meshgrid(
+        *[torch.arange(n) for n in shape], indexing='ij'), -1)
+    if band == 0:
+        parity = grid.sum(-1) % 2
+        return [(parity == r).flatten() for r in (0, 1)]
+    F = [min(n, band) for n in shape]
+    folds = []
+    for f in torch.cartesian_prod(*[torch.arange(k) for k in F]).reshape(-1, len(shape)):
+        folds.append((grid % torch.as_tensor(F) == f).all(-1).flatten())
+    return folds
+
+
+def _gauss_seidel(A, g, x, shape, band, ncomp=1, D=None):
+    """One sweep of (block) Gauss-Seidel on the dense operator, fold by
+    fold (the voxels of a fold, and their components, at once). D: the
+    diagonal used in the updates (default: that of A)"""
+    x = x.clone()
+    D = A.diagonal() if D is None else D
+    for mask in _folds(shape, band):
+        mask = mask.repeat(ncomp)
+        r = g - A @ x
+        x[mask] += r[mask] / D[mask]
+    return x
+
+
+def _wraps(shape, bound, band):
+    """Whether the folds of a dft axis wrap around (n mod band != 0): the
+    folds then couple (a pre-existing limitation of the compiled
+    relaxation, unrelated to the border pass)"""
+    bound = [bound] * len(shape) if isinstance(bound, str) else bound
+    return any(b == 'dft' and n % (band or 2) for n, b in zip(shape, bound))
+
+
+@needs_c
+@pytest.mark.parametrize('shape', C_SHAPES)
+@pytest.mark.parametrize('bound', C_BOUNDS)
+def test_c_relax_precond_field(shape, bound):
+    """The compiled field preconditioner and relaxation use the exact
+    diagonal, and one relaxation sweep is a Gauss-Seidel sweep of the
+    operator of definition F"""
+    bound = _c_bound(bound, shape)
+    dim = len(shape)
+    vx = VX[:dim]
+    nvox = torch.Size(shape).numel()
+    torch.manual_seed(0)
+    w = torch.rand([1, 1, *shape], dtype=dt) + 0.5
+    cases = dict(FIELD_CASES, rls=dict(a=0.3, m=0.7))
+    for name, case in cases.items():
+        weights = w if name == 'rls' else None
+        A = ref.operator(shape, bound, field_terms(dim, vx, **case), 1,
+                         None if weights is None else weights[0, 0])
+        opt = dict(dim=dim, **_field_kwargs(case), voxel_size=vx, bound=bound)
+        # preconditioner: x = g / diag
+        g = torch.ones([1, 1, *shape], dtype=dt)
+        d = 1 / c_solvers.c_precond(g, weights, **opt)
+        assert torch.allclose(d.flatten(), A.diagonal(), **DIAG_TOL), name
+        # relaxation from zero, with a unit gradient at one voxel per batch
+        g = torch.eye(nvox, dtype=dt).reshape(nvox, 1, *shape)
+        wb = None if weights is None else weights.expand(nvox, 1, *shape)
+        x = c_solvers.c_relax(g, wb, nb_iter=1, **opt)
+        d = 1 / x.reshape(nvox, nvox).diagonal()
+        assert torch.allclose(d, A.diagonal(), **DIAG_TOL), name
+        # one sweep
+        band = _field_band(case)
+        if _wraps(shape, bound, band):
+            continue
+        g = torch.randn([1, 1, *shape], dtype=dt)
+        x0 = torch.randn([1, 1, *shape], dtype=dt)
+        x = c_solvers.c_relax(g, weights, nb_iter=1, output=x0.clone(), **opt)
+        # (with the compiled diagonal, which keeps a margin of 1e-6 w000)
+        target = _gauss_seidel(A, g.flatten(), x0.flatten(), shape, band, D=d)
+        assert torch.allclose(x.flatten(), target, rtol=1e-6, atol=1e-8), name
+
+
+@needs_c
+@pytest.mark.parametrize('shape', [s for s in C_SHAPES if len(s) > 1])
+@pytest.mark.parametrize('bound', C_BOUNDS + ['sliding', 'mixed-sliding'])
+def test_c_relax_precond_grid(shape, bound):
+    """The compiled grid preconditioner and relaxation use the exact
+    diagonal, and one relaxation sweep is a Gauss-Seidel sweep of the
+    operator of definition F"""
+    bound = _c_bound(bound, shape)
+    dim = len(shape)
+    vx = VX[:dim]
+    nvox = torch.Size(shape).numel()
+    torch.manual_seed(0)
+    w = torch.rand(shape, dtype=dt) + 0.5
+    cases = dict(GRID_CASES, rls=dict(a=0.3, m=0.7))
+    for name, case in cases.items():
+        weights = w if name == 'rls' else None
+        A = grid_matrix(shape, bound, grid_terms(dim, vx, **case), weights)
+        diag = A.diagonal().reshape(dim, *shape).movedim(0, -1)
+        opt = dict(**_grid_kwargs(case), voxel_size=vx, bound=bound)
+        # preconditioner: x = g / diag
+        g = torch.ones([1, *shape, dim], dtype=dt)
+        wb = None if weights is None else weights[None]
+        d = 1 / c_solvers.c_precond_grid(g, wb, **opt)
+        assert torch.allclose(d[0], diag, **DIAG_TOL), name
+        # relaxation from zero, with a unit gradient at one voxel per batch
+        g = torch.eye(nvox, dtype=dt).reshape(nvox, *shape, 1).expand(
+            nvox, *shape, dim).contiguous()
+        wb = None if weights is None else weights.expand(nvox, *shape)
+        x = c_solvers.c_relax_grid(g, wb, nb_iter=1, **opt)
+        d = 1 / x.reshape(nvox, nvox, dim).diagonal(0, 0, 1).T
+        assert torch.allclose(d, diag.reshape(nvox, dim), **DIAG_TOL), name
+        # one sweep
+        band = _grid_band(case)
+        if _wraps(shape, bound, band):
+            continue
+        g = torch.randn([1, *shape, dim], dtype=dt)
+        x0 = torch.randn([1, *shape, dim], dtype=dt)
+        wb = None if weights is None else weights[None]
+        x = c_solvers.c_relax_grid(g, wb, nb_iter=1, output=x0.clone(), **opt)
+        flat = lambda t: t[0].movedim(-1, 0).flatten()
+        # (with the compiled diagonal, which keeps a margin of 1e-6 w000)
+        target = _gauss_seidel(A, flat(g), flat(x0), shape, band, dim,
+                               D=d.T.flatten())
+        assert torch.allclose(flat(x), target, rtol=1e-6, atol=1e-8), name
+
+
+@needs_c
+@pytest.mark.parametrize('bound', C_BOUNDS)
+@pytest.mark.parametrize('optim', ['cg', 'relax', 'fmg'])
+@pytest.mark.parametrize('name', ['membrane', 'bending'])
+def test_c_solve_field(bound, optim, name):
+    """The compiled field solvers solve the system of definition F"""
+    shape, dim = (6, 5), 2
+    bound = _c_bound(bound, shape)
+    vx = VX[:dim]
+    torch.manual_seed(0)
+    g = torch.randn([1, 1, *shape], dtype=dt)
+    h = torch.rand([1, 1, *shape], dtype=dt) + 1
+    case = dict(a=1e-3, **{name[0]: 0.5})
+    A = ref.operator(shape, bound, field_terms(dim, vx, **case))
+    opt = dict(dim=dim, **_field_kwargs(case), voxel_size=vx, bound=bound)
+    if optim == 'cg':
+        x = c_solvers.c_pcg(g, None, h, nb_iter=50, tol=0, **opt)
+    elif optim == 'relax':
+        x = c_solvers.c_relax(g, None, h, nb_iter=200, **opt)
+    else:
+        x = c_solvers.c_fmg(h, g, None, nb_cycles=8, nb_iter=4, **opt)
+    assert _residual(A, h, x, g) < 1e-6
+
+
+@needs_c
+@pytest.mark.parametrize('bound', C_BOUNDS + ['sliding', 'mixed-sliding'])
+@pytest.mark.parametrize('optim', ['cg', 'relax', 'fmg'])
+@pytest.mark.parametrize('name', ['membrane', 'bending', 'lame'])
+def test_c_solve_grid(bound, optim, name):
+    """The compiled grid solvers solve the system of definition F"""
+    shape, dim = (6, 5), 2
+    bound = _c_bound(bound, shape)
+    vx = VX[:dim]
+    torch.manual_seed(0)
+    g = torch.randn([1, *shape, dim], dtype=dt)
+    h = torch.rand([1, *shape, dim], dtype=dt) + 1
+    case = dict(a=1e-3, m=0.5) if name == 'membrane' else \
+        dict(a=1e-3, b=0.5) if name == 'bending' else \
+        dict(a=1e-3, m=0.1, shear=0.5, div=0.3)
+    A = grid_matrix(shape, bound, grid_terms(dim, vx, **case))
+    opt = dict(**_grid_kwargs(case), voxel_size=vx, bound=bound)
+    if optim == 'cg':
+        x = c_solvers.c_pcg_grid(g, None, h, nb_iter=50, tol=0, **opt)
+    elif optim == 'relax':
+        x = c_solvers.c_relax_grid(g, None, h, nb_iter=200, **opt)
+    else:
+        x = c_solvers.c_fmg_grid(h, g, None, nb_cycles=8, nb_iter=4, **opt)
+    xf, gf, hf = (t[0].movedim(-1, 0) for t in (x, g, h))
+    assert _residual(A, hf, xf, gf) < 1e-6

@@ -3,6 +3,7 @@
 #include "bounds_common.h"         // boundary conditions + enum
 #include "allocator.h"             // base class handling offset sizes
 #include "hessian.h"               // utility for handling Hessian matrices
+#include "border_common.h"         // border pass (definition F)
 #include "utils.h"                 // utility for dispatching
 #include <ATen/ATen.h>             // tensors
 #include <cmath>                   // fma (fused multiply add)
@@ -20,6 +21,8 @@
     // This parameter specifies the minimum number of voxels that should be
     // processed on a single processor in the parallel for loop .
     int64_t GRAIN_SIZE = static_cast<int64_t>(at::internal::GRAIN_SIZE);
+    // (the border voxels are a thin set)
+    int64_t BORDER_GRAIN_SIZE = GRAIN_SIZE / 32;
   }
 #endif
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -268,6 +271,7 @@ public:
     set_factors(info.absolute, info.membrane, info.bending);
     set_kernel(info.vx0, info.vx1, info.vx2);
     set_bandwidth();
+    set_border(info.vx0, info.vx1, info.vx2);
   #ifndef __CUDACC__
     set_relax();
   #endif
@@ -347,6 +351,38 @@ public:
     }
   }
 
+  // Border pass (see border_common.h): the rows of the exact operator
+  // differ from the stencil near the borders (B), and some taps fold
+  // back onto their own voxel (the self image, missing from w000). The
+  // voxels within `border::radius` of the borders are relaxed with
+  // their exact residual and diagonal (`relax<true>`), the others with
+  // the plain kernels. Decided once.
+  NI_HOST void set_border(double vx0, double vx1, double vx2)
+  {
+    BoundType b[3] = {bound0, bound1, bound2};
+    double ivx[3] = {vx0, vx1, vx2};   // (1 / voxel_size**2)
+    offset_t nn[3] = {X, Y, Z};
+    bt.set(dim, b, nn, ivx, has_membrane, has_bending);
+    // unit stencil taps of each axis (as in `set_kernel`)
+    um[0] = m100;  um[1] = m010;  um[2] = m001;
+    ub1[0] = b100; ub1[1] = b010; ub1[2] = b001;
+    ub2[0] = b200; ub2[1] = b020; ub2[2] = b002;
+    ub11[0][1] = ub11[1][0] = b110;
+    ub11[0][2] = ub11[2][0] = b101;
+    ub11[1][2] = ub11[2][1] = b011;
+    ub11[0][0] = ub11[1][1] = ub11[2][2] = 0;
+    bool taps = (has_membrane || has_bending) && bandwidth != 1;
+    offset_t r[3];
+    needs_border = false;
+    for (int a = 0; a < 3; ++a) {
+      r[a] = (taps && a < dim) ? border::radius(b[a], nn[a]) : 0;
+      needs_border = needs_border || r[a] > 0;
+    }
+    box.set(X, Y, Z, r[0], r[1], r[2]);
+    fbox = box;
+    region = 0;
+  }
+
 #ifndef __CUDACC__
   NI_HOST void set_relax() 
   {
@@ -357,54 +393,54 @@ public:
         throw std::logic_error("RLS only implemented for absolute/membrane.");
       else if (dim == 1) {
         if (has_membrane)
-            relax_ = &Self::relax1d_rls_membrane;
+            { relax_ = &Self::template relax1d_rls_membrane<false>; relaxb_ = &Self::template relax1d_rls_membrane<true>; }
         else if (has_absolute)
-            relax_ = &Self::relax1d_rls_absolute;
+            { relax_ = &Self::template relax1d_rls_absolute<false>; relaxb_ = &Self::template relax1d_rls_absolute<true>; }
         else
-            relax_ = &Self::solve1d;
+            relax_ = relaxb_ = &Self::solve1d;
       } else if (dim == 2) {
         if (has_membrane)
-            relax_ = &Self::relax2d_rls_membrane;
+            { relax_ = &Self::template relax2d_rls_membrane<false>; relaxb_ = &Self::template relax2d_rls_membrane<true>; }
         else if (has_absolute)
-            relax_ = &Self::relax2d_rls_absolute;
+            { relax_ = &Self::template relax2d_rls_absolute<false>; relaxb_ = &Self::template relax2d_rls_absolute<true>; }
         else
-            relax_ = &Self::solve2d;
+            relax_ = relaxb_ = &Self::solve2d;
       } else if (dim == 3) {
         if (has_membrane)
-            relax_ = &Self::relax3d_rls_membrane;
+            { relax_ = &Self::template relax3d_rls_membrane<false>; relaxb_ = &Self::template relax3d_rls_membrane<true>; }
         else if (has_absolute)
-            relax_ = &Self::relax3d_rls_absolute;
+            { relax_ = &Self::template relax3d_rls_absolute<false>; relaxb_ = &Self::template relax3d_rls_absolute<true>; }
         else
-            relax_ = &Self::solve3d;
+            relax_ = relaxb_ = &Self::solve3d;
       }
     }
     else if (dim == 1) {
         if (has_bending)
-            relax_ = &Self::relax1d_bending;
+            { relax_ = &Self::template relax1d_bending<false>; relaxb_ = &Self::template relax1d_bending<true>; }
         else if (has_membrane)
-            relax_ = &Self::relax1d_membrane;
+            { relax_ = &Self::template relax1d_membrane<false>; relaxb_ = &Self::template relax1d_membrane<true>; }
         else if (has_absolute)
-            relax_ = &Self::relax1d_absolute;
+            { relax_ = &Self::template relax1d_absolute<false>; relaxb_ = &Self::template relax1d_absolute<true>; }
         else
-            relax_ = &Self::solve1d;
+            relax_ = relaxb_ = &Self::solve1d;
     } else if (dim == 2) {
         if (has_bending)
-            relax_ = &Self::relax2d_bending;
+            { relax_ = &Self::template relax2d_bending<false>; relaxb_ = &Self::template relax2d_bending<true>; }
         else if (has_membrane)
-            relax_ = &Self::relax2d_membrane;
+            { relax_ = &Self::template relax2d_membrane<false>; relaxb_ = &Self::template relax2d_membrane<true>; }
         else if (has_absolute)
-            relax_ = &Self::relax2d_absolute;
+            { relax_ = &Self::template relax2d_absolute<false>; relaxb_ = &Self::template relax2d_absolute<true>; }
         else
-            relax_ = &Self::solve2d;
+            relax_ = relaxb_ = &Self::solve2d;
     } else if (dim == 3) {
         if (has_bending)
-            relax_ = &Self::relax3d_bending;
+            { relax_ = &Self::template relax3d_bending<false>; relaxb_ = &Self::template relax3d_bending<true>; }
         else if (has_membrane)
-            relax_ = &Self::relax3d_membrane;
+            { relax_ = &Self::template relax3d_membrane<false>; relaxb_ = &Self::template relax3d_membrane<true>; }
         else if (has_absolute)
-            relax_ = &Self::relax3d_absolute;
+            { relax_ = &Self::template relax3d_absolute<false>; relaxb_ = &Self::template relax3d_absolute<true>; }
         else
-            relax_ = &Self::solve3d;
+            relax_ = relaxb_ = &Self::solve3d;
     } else
         throw std::logic_error("RLS only implemented for dimension 1/2/3.");
   }
@@ -453,7 +489,43 @@ public:
       Xf = 1 + (X - fx - 1) / Fx;
       Yf = 1 + (Y - fy - 1) / Fy;
       Zf = 1 + (Z - fz - 1) / Fz;
+
+      // interior box of the fold (in fold coordinates x = fx + Fx * ix)
+      if (needs_border)
+        fbox.set_bounds(Xf, Yf, Zf,
+                        fold_lo(box.lo0, fx, Fx, Xf), fold_hi(box.hi0, box.lo0, fx, Fx, Xf),
+                        fold_lo(box.lo1, fy, Fy, Yf), fold_hi(box.hi1, box.lo1, fy, Fy, Yf),
+                        fold_lo(box.lo2, fz, Fz, Zf), fold_hi(box.hi2, box.lo2, fz, Fz, Zf));
     }
+  }
+
+  // first fold coordinate at or after the voxel `lo`
+  NI_HOST static offset_t fold_lo(offset_t lo, offset_t f, offset_t F, offset_t Nf) {
+    offset_t i = (lo - f + F - 1) / F;
+    return i < Nf ? i : Nf;
+  }
+  NI_HOST static offset_t fold_hi(offset_t hi, offset_t lo, offset_t f, offset_t F, offset_t Nf) {
+    offset_t i = (hi - f + F - 1) / F, ilo = fold_lo(lo, f, F, Nf);
+    i = i < Nf ? i : Nf;
+    return i > ilo ? i : ilo;
+  }
+
+  // Voxels of each region of the current fold (0: all, 1: interior,
+  // 2: border). The CUDA host code mutates `region` and launches one
+  // kernel per region.
+  NI_HOST NI_INLINE bool split() const { return needs_border; }
+  NI_HOST NI_INLINE void set_region(uint8_t r) { region = r; }
+  NI_HOST NI_DEVICE int64_t voxcountfold(uint8_t r) const {
+    if (r == 0) return voxcountfold();
+    const border::BorderBox<offset_t> & B = bandwidth == 0 ? box : fbox;
+    return N * (r == 1 ? B.interior_count() : B.border_count());
+  }
+
+  // Size of the leading fields that change with the fold and the region
+  // (copied to the device by `copy_fold_info_to_device`)
+  NI_HOST size_t fold_info_size() const {
+    return reinterpret_cast<const char *>(&fbox + 1)
+         - reinterpret_cast<const char *>(this);
   }
  
 
@@ -461,7 +533,7 @@ private:
 
   /* ~~~ COMPONENTS ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ */
 #define DEFINE_RELAX(SUFFIX) \
-  NI_DEVICE void relax##SUFFIX( \
+  template <bool BORDER> NI_DEVICE void relax##SUFFIX( \
     offset_t x, offset_t y, offset_t z, offset_t n) const;
 #define DEFINE_RELAX_DIM(DIM)        \
   DEFINE_RELAX(DIM##d_absolute)      \
@@ -491,13 +563,27 @@ private:
   offset_t Yf;
   offset_t Zf;
   offset_t redblack;  // Index of the fold for checkerboard scheme
+  uint8_t  region;    // 0: all voxels, 1: interior, 2: border
+  border::BorderBox<offset_t> fbox; // interior box of the fold (fold coordinates)
   offset_t bandwidth;
   offset_t Fx; // Fold window
   offset_t Fy;
   offset_t Fz;
 
+  template <bool BORDER>
   NI_DEVICE void finish(offset_t x, offset_t y, offset_t z, offset_t n,
     scalar_t * sol, const scalar_t * hes, reduce_t * val, const reduce_t * diag) const;
+  NI_DEVICE void border(offset_t x, offset_t y, offset_t z, offset_t n,
+    const scalar_t * sol, reduce_t * val, reduce_t * diag) const;
+
+  /* ~~~ BORDER PASS ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ */
+  bool              needs_border;
+  border::BorderBox<offset_t> box;  // interior box (voxels)
+  border::FieldTerms<reduce_t, offset_t> bt; // terms of B
+  reduce_t          um[3];          // unit stencil taps: membrane +/-1
+  reduce_t          ub1[3];         // bending +/-1
+  reduce_t          ub2[3];         // bending +/-2
+  reduce_t          ub11[3][3];     // bending (+/-1, +/-1)
 
   /* ~~~ OPTIONS ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ */
   offset_t          dim;
@@ -514,6 +600,7 @@ private:
 
 #ifndef __CUDACC__
   RelaxFn           relax_;          // Pointer to relax function
+  RelaxFn           relaxb_;         // Pointer to relax function (border voxels)
 #endif
 
   bool has_absolute;
@@ -561,7 +648,8 @@ private:
 //                             LOOP
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-template <typename scalar_t, typename offset_t, typename reduce_t, typename hessian_t> NI_DEVICE
+template <typename scalar_t, typename offset_t, typename reduce_t, typename hessian_t>
+template <bool BORDER> NI_DEVICE
 void RelaxImpl<scalar_t,offset_t,reduce_t,hessian_t>::relax(
     offset_t x, offset_t y, offset_t z, offset_t n) const 
 {
@@ -572,35 +660,35 @@ void RelaxImpl<scalar_t,offset_t,reduce_t,hessian_t>::relax(
 #   define RLS      16
   switch (mode) {
     case 1 + MEMBRANE + RLS:
-      return relax1d_rls_membrane(x, y, z, n);
+      return relax1d_rls_membrane<BORDER>(x, y, z, n);
     case 2 + MEMBRANE + RLS:
-      return relax2d_rls_membrane(x, y, z, n);
+      return relax2d_rls_membrane<BORDER>(x, y, z, n);
     case 3 + MEMBRANE + RLS:
-      return relax3d_rls_membrane(x, y, z, n);
+      return relax3d_rls_membrane<BORDER>(x, y, z, n);
     case 1 + ABSOLUTE + RLS:
-      return relax1d_rls_absolute(x, y, z, n);
+      return relax1d_rls_absolute<BORDER>(x, y, z, n);
     case 2 + ABSOLUTE + RLS:
-      return relax2d_rls_absolute(x, y, z, n);
+      return relax2d_rls_absolute<BORDER>(x, y, z, n);
     case 3 + ABSOLUTE + RLS:
-      return relax3d_rls_absolute(x, y, z, n);
+      return relax3d_rls_absolute<BORDER>(x, y, z, n);
     case 1 + BENDING:
-      return relax1d_bending(x, y, z, n);
+      return relax1d_bending<BORDER>(x, y, z, n);
     case 2 + BENDING:
-      return relax2d_bending(x, y, z, n);
+      return relax2d_bending<BORDER>(x, y, z, n);
     case 3 + BENDING:
-      return relax3d_bending(x, y, z, n);
+      return relax3d_bending<BORDER>(x, y, z, n);
     case 1 + MEMBRANE:
-      return relax1d_membrane(x, y, z, n);
+      return relax1d_membrane<BORDER>(x, y, z, n);
     case 2 + MEMBRANE:
-      return relax2d_membrane(x, y, z, n);
+      return relax2d_membrane<BORDER>(x, y, z, n);
     case 3 + MEMBRANE:
-      return relax3d_membrane(x, y, z, n);
+      return relax3d_membrane<BORDER>(x, y, z, n);
     case 1 + ABSOLUTE:
-      return relax1d_absolute(x, y, z, n);
+      return relax1d_absolute<BORDER>(x, y, z, n);
     case 2 + ABSOLUTE:
-      return relax2d_absolute(x, y, z, n);
+      return relax2d_absolute<BORDER>(x, y, z, n);
     case 3 + ABSOLUTE:
-      return relax3d_absolute(x, y, z, n);
+      return relax3d_absolute<BORDER>(x, y, z, n);
     case 1: case 1 + RLS:
       return solve1d(x, y, z, n);
     case 2: case 2 + RLS:
@@ -611,7 +699,7 @@ void RelaxImpl<scalar_t,offset_t,reduce_t,hessian_t>::relax(
       return solve3d(x, y, z, n);
   }
 #else
-  CALL_MEMBER_FN(*this, relax_)(x, y, z, n);
+  CALL_MEMBER_FN(*this, BORDER ? relaxb_ : relax_)(x, y, z, n);
 #endif 
 }
 
@@ -627,23 +715,42 @@ void RelaxImpl<scalar_t,offset_t,reduce_t,hessian_t>::loop(
     return loop_band(threadIdx, blockIdx, blockDim, gridDim);
 }
 
+// (region 0: all voxels of the fold; 1: its interior; 2: its border)
 template <typename scalar_t, typename offset_t, typename reduce_t, typename hessian_t> NI_DEVICE
 void RelaxImpl<scalar_t,offset_t,reduce_t,hessian_t>::loop_band(
   int threadIdx, int blockIdx, int blockDim, int gridDim) const {
 
   int64_t index = blockIdx * blockDim + threadIdx;
-  int64_t nthreads = N * Xf * Yf * Zf;
-  offset_t YZf   = Yf * Zf;
-  offset_t XYZf  = Xf * YZf;
+  int64_t nthreads = voxcountfold(region);
   offset_t n, x, y, z;
-  for (offset_t i=index; index < nthreads; index += blockDim*gridDim, i=index)
-  {
-    // Convert index: linear to sub
-    n  = (i/XYZf);
-    x  = ((i/YZf) % Xf) * Fx + fx;
-    y  = ((i/Zf)  % Yf) * Fy + fy;
-    z  = (i       % Zf) * Fz + fz;
-    relax(x, y, z, n);
+  if (region == 0) {
+    offset_t YZf   = Yf * Zf;
+    offset_t XYZf  = Xf * YZf;
+    for (offset_t i=index; index < nthreads; index += blockDim*gridDim, i=index)
+    {
+      // Convert index: linear to sub
+      n  = (i/XYZf);
+      x  = ((i/YZf) % Xf) * Fx + fx;
+      y  = ((i/Zf)  % Yf) * Fy + fy;
+      z  = (i       % Zf) * Fz + fz;
+      relax<false>(x, y, z, n);
+    }
+  } else if (region == 1) {
+    offset_t M = fbox.interior_count();
+    for (offset_t i=index; index < nthreads; index += blockDim*gridDim, i=index)
+    {
+      n = i / M;
+      fbox.decode_interior(i % M, x, y, z);
+      relax<false>(x * Fx + fx, y * Fy + fy, z * Fz + fz, n);
+    }
+  } else {
+    offset_t M = fbox.border_count();
+    for (offset_t i=index; index < nthreads; index += blockDim*gridDim, i=index)
+    {
+      n = i / M;
+      fbox.decode(i % M, x, y, z);
+      relax<true>(x * Fx + fx, y * Fy + fy, z * Fz + fz, n);
+    }
   }
 }
 
@@ -652,19 +759,39 @@ void RelaxImpl<scalar_t,offset_t,reduce_t,hessian_t>::loop_redblack(
   int threadIdx, int blockIdx, int blockDim, int gridDim) const {
 
   int64_t index = blockIdx * blockDim + threadIdx;
-  int64_t nthreads = N * X * Y * Z;
-  offset_t YZ   = Y * Z;
-  offset_t XYZ  = X * YZ;
+  int64_t nthreads = voxcountfold(region);
   offset_t n, x, y, z;
-  for (offset_t i=index; index < nthreads; index += blockDim*gridDim, i=index)
-  {
-    // Convert index: linear to sub
-    n  = (i/XYZ);
-    x  = ((i/YZ) % X);
-    y  = ((i/Z)  % Y);
-    z  = (i      % Z);
-    if ((x+y+z) % 2 == redblack)
-      relax(x, y, z, n);
+  if (region == 0) {
+    offset_t YZ   = Y * Z;
+    offset_t XYZ  = X * YZ;
+    for (offset_t i=index; index < nthreads; index += blockDim*gridDim, i=index)
+    {
+      // Convert index: linear to sub
+      n  = (i/XYZ);
+      x  = ((i/YZ) % X);
+      y  = ((i/Z)  % Y);
+      z  = (i      % Z);
+      if ((x+y+z) % 2 == redblack)
+        relax<false>(x, y, z, n);
+    }
+  } else if (region == 1) {
+    offset_t M = box.interior_count();
+    for (offset_t i=index; index < nthreads; index += blockDim*gridDim, i=index)
+    {
+      n = i / M;
+      box.decode_interior(i % M, x, y, z);
+      if ((x+y+z) % 2 == redblack)
+        relax<false>(x, y, z, n);
+    }
+  } else {
+    offset_t M = box.border_count();
+    for (offset_t i=index; index < nthreads; index += blockDim*gridDim, i=index)
+    {
+      n = i / M;
+      box.decode(i % M, x, y, z);
+      if ((x+y+z) % 2 == redblack)
+        relax<true>(x, y, z, n);
+    }
   }
 }
 
@@ -679,6 +806,8 @@ void RelaxImpl<scalar_t,offset_t,reduce_t,hessian_t>::loop()
     return loop_band();
 }
 
+// Without border pass, all voxels run the plain kernels; otherwise, the
+// interior voxels, then the border voxels (`relax<true>`).
 template <typename scalar_t, typename offset_t, typename reduce_t, typename hessian_t> NI_HOST
 void RelaxImpl<scalar_t,offset_t,reduce_t,hessian_t>::loop_redblack()
 {
@@ -689,16 +818,37 @@ void RelaxImpl<scalar_t,offset_t,reduce_t,hessian_t>::loop_redblack()
 
   for (offset_t redblack = 0; redblack < 2; ++redblack) {
     set_fold(redblack);
-    at::parallel_for(0, NXYZ, GRAIN_SIZE, [&](offset_t start, offset_t end) {
-      offset_t n, x, y, z;
+    if (!needs_border) {
+      at::parallel_for(0, NXYZ, GRAIN_SIZE, [&](offset_t start, offset_t end) {
+        offset_t n, x, y, z;
+        for (offset_t i = start; i < end; ++i) {
+          // Convert index: linear to sub
+          n  = (i/XYZ);
+          x  = (i/YZ) % X;
+          y  = (i/Z)  % Y;
+          z  = i % Z;
+          if ((x+y+z) % 2 == redblack)
+            relax<false>(x, y, z, n);
+        }
+      });
+      continue;
+    }
+    offset_t M = box.interior_count();
+    at::parallel_for(0, N * M, GRAIN_SIZE, [&](offset_t start, offset_t end) {
+      offset_t x, y, z;
       for (offset_t i = start; i < end; ++i) {
-        // Convert index: linear to sub
-        n  = (i/XYZ);
-        x  = (i/YZ) % X;
-        y  = (i/Z)  % Y;
-        z  = i % Z;
+        box.decode_interior(i % M, x, y, z);
         if ((x+y+z) % 2 == redblack)
-          relax(x, y, z, n);
+          relax<false>(x, y, z, i / M);
+      }
+    });
+    offset_t MB = box.border_count();
+    at::parallel_for(0, N * MB, BORDER_GRAIN_SIZE, [&](offset_t start, offset_t end) {
+      offset_t x, y, z;
+      for (offset_t i = start; i < end; ++i) {
+        box.decode(i % MB, x, y, z);
+        if ((x+y+z) % 2 == redblack)
+          relax<true>(x, y, z, i / MB);
       }
     });
   }
@@ -710,18 +860,38 @@ void RelaxImpl<scalar_t,offset_t,reduce_t,hessian_t>::loop_band()
   for (offset_t fold = 0; fold < Fx*Fy*Fz; ++fold) {
     // Index of the fold
     set_fold(fold);
-    offset_t   YZf =   Zf * Yf;
-    offset_t  XYZf =  YZf * Xf;
-    offset_t NXYZf = XYZf * N;
-    at::parallel_for(0, NXYZf, GRAIN_SIZE, [&](offset_t start, offset_t end) {
-      offset_t n, x, y, z;
+    if (!needs_border) {
+      offset_t YZf   =   Zf * Yf;
+      offset_t XYZf  =  YZf * Xf;
+      offset_t NXYZf = XYZf * N;
+
+      at::parallel_for(0, NXYZf, GRAIN_SIZE, [&](offset_t start, offset_t end) {
+        offset_t n, x, y, z;
+        for (offset_t i = start; i < end; ++i) {
+          // Convert index: linear to sub
+          n  = (i/XYZf);
+          x  = ((i/YZf) % Xf) * Fx + fx;
+          y  = ((i/Zf)  % Yf) * Fy + fy;
+          z  = (i       % Zf) * Fz + fz;
+          relax<false>(x, y, z, n);
+        }
+      });
+      continue;
+    }
+    offset_t M = fbox.interior_count();
+    at::parallel_for(0, N * M, GRAIN_SIZE, [&](offset_t start, offset_t end) {
+      offset_t x, y, z;
       for (offset_t i = start; i < end; ++i) {
-        // Convert index: linear to sub
-        n  = (i/XYZf);
-        x  = ((i/YZf) % Xf) * Fx + fx;
-        y  = ((i/Zf)  % Yf) * Fy + fy;
-        z  = (i       % Zf) * Fz + fz;
-        relax(x, y, z, n);
+        fbox.decode_interior(i % M, x, y, z);
+        relax<false>(x * Fx + fx, y * Fy + fy, z * Fz + fz, i / M);
+      }
+    });
+    offset_t MB = fbox.border_count();
+    at::parallel_for(0, N * MB, BORDER_GRAIN_SIZE, [&](offset_t start, offset_t end) {
+      offset_t x, y, z;
+      for (offset_t i = start; i < end; ++i) {
+        fbox.decode(i % MB, x, y, z);
+        relax<true>(x * Fx + fx, y * Fy + fy, z * Fz + fz, i / MB);
       }
     });
   }
@@ -730,53 +900,69 @@ void RelaxImpl<scalar_t,offset_t,reduce_t,hessian_t>::loop_band()
 #endif
 
 
+
 /* ========================================================================== */
 /*                               MACRO HELPERS                                */
 /* ========================================================================== */
-// ~~~ Exact operator at the borders (see `row_weight` and
-//     `replicate_inward` in bounds_common.h) ~~~
-// `val` holds the residual g - L x of this voxel and `diag` the diagonal
-// used to update it: the residual must be that of the exact operator.
-template <typename scalar_t, typename offset_t, typename reduce_t, typename hessian_t> NI_DEVICE
+// ~~~ Border voxels (see border_common.h) ~~~
+// `val` holds the residual g - S x of this voxel and `diag` the diagonal
+// of the stencil, as if all its taps were other voxels. At the border
+// voxels, the residual becomes that of the exact operator (g - (S + B) x)
+// and the diagonal its exact diagonal (that of S, with the taps that
+// fold back onto the voxel, plus that of B).
+template <typename scalar_t, typename offset_t, typename reduce_t, typename hessian_t>
+template <bool BORDER> NI_DEVICE
 void RelaxImpl<scalar_t,offset_t,reduce_t,hessian_t>::finish(
     offset_t x, offset_t y, offset_t z, offset_t n,
     scalar_t * sol, const scalar_t * hes, reduce_t * val, const reduce_t * diag) const
 {
-  reduce_t w = bound::row_weight<reduce_t>(bound0, x, X)
-             * bound::row_weight<reduce_t>(bound1, y, Y)
-             * bound::row_weight<reduce_t>(bound2, z, Z);
-  int8_t rx = 0, ry = 0, rz = 0;
-  if (has_bending) {
-    rx = bound::replicate_inward(bound0, x, X);
-    ry = bound::replicate_inward(bound1, y, Y);
-    rz = bound::replicate_inward(bound2, z, Z);
-  }
-  if (w == static_cast<reduce_t>(1) && !(rx || ry || rz))
+  if (!BORDER)
     return hessian_t::addinvert(C, sol, sol_sC, hes, hes_sC, val, diag);
-  const scalar_t * grd = grd_ptr + (x*grd_sX + y*grd_sY + z*grd_sZ + n*grd_sN);
-  // the bending correction removes `bending[c] * cdiag` from the
-  // diagonal of channel c (cdiag does not depend on the channel)
-  reduce_t cdiag = 0;
-  if (rx) cdiag += b200;
-  if (ry) cdiag += b020;
-  if (rz) cdiag += b002;
-  for (offset_t c = 0; c < C; ++c) {
-    reduce_t g = static_cast<reduce_t>(grd[c * grd_sC]);
-    reduce_t lx = g - val[c];
-    if (rx || ry || rz) {
-      const scalar_t * s = sol + c * sol_sC;
-      reduce_t center = static_cast<reduce_t>(*s), corr = 0;
-      if (rx) corr += b200 * (static_cast<reduce_t>(s[rx * sol_sX]) - center);
-      if (ry) corr += b020 * (static_cast<reduce_t>(s[ry * sol_sY]) - center);
-      if (rz) corr += b002 * (static_cast<reduce_t>(s[rz * sol_sZ]) - center);
-      lx += bending[c] * corr;
+  reduce_t d[MaxC];
+  for (offset_t c = 0; c < C; ++c) d[c] = diag[c];
+  border(x, y, z, n, sol, val, d);
+  hessian_t::addinvert(C, sol, sol_sC, hes, hes_sC, val,
+                       static_cast<const reduce_t *>(d));
+}
+
+template <typename scalar_t, typename offset_t, typename reduce_t, typename hessian_t> NI_DEVICE
+void RelaxImpl<scalar_t,offset_t,reduce_t,hessian_t>::border(
+    offset_t x, offset_t y, offset_t z, offset_t n,
+    const scalar_t * sol, reduce_t * val, reduce_t * d) const
+{
+  const offset_t q[3]  = {x, y, z};
+  const offset_t s[3]  = {sol_sX, sol_sY, sol_sZ};
+  const offset_t sw[3] = {wgt_sX, wgt_sY, wgt_sZ};
+  const scalar_t * wgt = wgt_ptr
+    ? wgt_ptr + (x*wgt_sX + y*wgt_sY + z*wgt_sZ + n*wgt_sN)
+    : static_cast<const scalar_t *>(0);
+  reduce_t T1[3];
+  for (int a = 0; a < dim; ++a) {
+    border::Plane<offset_t> P, PW;
+    P.set(bt.tab[a], bt.n[a], q[a], s[a]);
+    if (wgt) PW.set(bt.wtab[a], bt.n[a], q[a], sw[a]);
+    bool any = bt.fany[a] && P.targeted();
+    // self image of the stencil taps along a (and of the pairs (b, a))
+    T1[a] = border::tapself(P, q[a], bt.n[a], -1)
+          + border::tapself(P, q[a], bt.n[a],  1);
+    reduce_t T2 = border::tapself(P, q[a], bt.n[a], -2)
+                + border::tapself(P, q[a], bt.n[a],  2);
+    reduce_t T11 = 0;
+    for (int bb = 0; bb < a; ++bb) T11 += ub11[bb][a] * T1[bb] * T1[a];
+    for (offset_t c = 0; c < C; ++c) {
+      const scalar_t * xc = sol + c * sol_sC;
+      const scalar_t * wc = wgt ? wgt + c * wgt_sC : wgt;
+      reduce_t m = membrane[c], b = bending[c];
+      if (wgt)
+        d[c] += 0.5 * m * um[a] *
+                border::rls_self<reduce_t>(P, PW, wc, q[a], bt.n[a]);
+      else
+        d[c] += (m * um[a] + b * ub1[a]) * T1[a] + b * (ub2[a] * T2 + T11);
+      if (!any) continue;
+      val[c] -= bt.template axis<false>(a, q, s, xc, m, b, wc, PW, P);
+      d[c]   += bt.template axis<true>(a, q, s, xc, m, b, wc, PW, P);
     }
-    val[c] = g - w * lx;
   }
-  // diagonal `w * (diag[c] - bending[c] * cdiag)`, evaluated on the fly
-  // (no local array)
-  AffineDiag<reduce_t> wdiag = {diag, w, bending, -w * cdiag};
-  hessian_t::addinvert(C, sol, sol_sC, hes, hes_sC, val, wdiag);
 }
 
 #define GET_COORD1_(x) offset_t x##0  = x - 1, x##1  = x + 1;
@@ -843,7 +1029,8 @@ void RelaxImpl<scalar_t,offset_t,reduce_t,hessian_t>::finish(
 #define GET_WGT_POINTER \
   const scalar_t *wgt = wgt_ptr + (x*wgt_sX + y*wgt_sY + z*wgt_sZ + n*wgt_sN);
 
-template <typename scalar_t, typename offset_t, typename reduce_t, typename hessian_t> NI_DEVICE
+template <typename scalar_t, typename offset_t, typename reduce_t, typename hessian_t>
+template <bool BORDER> NI_DEVICE
 void RelaxImpl<scalar_t,offset_t,reduce_t,hessian_t>::relax3d_bending(
   offset_t x, offset_t y, offset_t z, offset_t n) const
 {
@@ -898,11 +1085,12 @@ void RelaxImpl<scalar_t,offset_t,reduce_t,hessian_t>::relax3d_bending(
 
   sol -= C*sol_sC;
   GET_HES_POINTER
-  finish(x, y, z, n, sol, hes, val, w000);
+  finish<BORDER>(x, y, z, n, sol, hes, val, w000);
 }
 
 
-template <typename scalar_t, typename offset_t, typename reduce_t, typename hessian_t> NI_DEVICE
+template <typename scalar_t, typename offset_t, typename reduce_t, typename hessian_t>
+template <bool BORDER> NI_DEVICE
 void RelaxImpl<scalar_t,offset_t,reduce_t,hessian_t>::relax3d_membrane(
   offset_t x, offset_t y, offset_t z, offset_t n) const
 {
@@ -936,11 +1124,12 @@ void RelaxImpl<scalar_t,offset_t,reduce_t,hessian_t>::relax3d_membrane(
 
   sol -= C*sol_sC;
   GET_HES_POINTER
-  finish(x, y, z, n, sol, hes, val, w000);
+  finish<BORDER>(x, y, z, n, sol, hes, val, w000);
 }
 
 
-template <typename scalar_t, typename offset_t, typename reduce_t, typename hessian_t> NI_DEVICE
+template <typename scalar_t, typename offset_t, typename reduce_t, typename hessian_t>
+template <bool BORDER> NI_DEVICE
 void RelaxImpl<scalar_t,offset_t,reduce_t,hessian_t>::relax3d_absolute(
   offset_t x, offset_t y, offset_t z, offset_t n) const
 {
@@ -954,7 +1143,7 @@ void RelaxImpl<scalar_t,offset_t,reduce_t,hessian_t>::relax3d_absolute(
 
   sol -= C*sol_sC;
   GET_HES_POINTER
-  finish(x, y, z, n, sol, hes, val, w000);
+  finish<BORDER>(x, y, z, n, sol, hes, val, w000);
 }
 
 
@@ -992,7 +1181,8 @@ diag(L) = [ |m10| |m00| |m10| ] * w
 */
 
 
-template <typename scalar_t, typename offset_t, typename reduce_t, typename hessian_t> NI_DEVICE
+template <typename scalar_t, typename offset_t, typename reduce_t, typename hessian_t>
+template <bool BORDER> NI_DEVICE
 void RelaxImpl<scalar_t,offset_t,reduce_t,hessian_t>::relax3d_rls_membrane(
   offset_t x, offset_t y, offset_t z, offset_t n) const
 {
@@ -1046,11 +1236,12 @@ void RelaxImpl<scalar_t,offset_t,reduce_t,hessian_t>::relax3d_rls_membrane(
   
   sol -= C*sol_sC;
   GET_HES_POINTER
-  finish(x, y, z, n, sol, hes, val, wval);
+  finish<BORDER>(x, y, z, n, sol, hes, val, wval);
 }
 
 
-template <typename scalar_t, typename offset_t, typename reduce_t, typename hessian_t> NI_DEVICE
+template <typename scalar_t, typename offset_t, typename reduce_t, typename hessian_t>
+template <bool BORDER> NI_DEVICE
 void RelaxImpl<scalar_t,offset_t,reduce_t,hessian_t>::relax3d_rls_absolute(
   offset_t x, offset_t y, offset_t z, offset_t n) const
 {
@@ -1070,7 +1261,7 @@ void RelaxImpl<scalar_t,offset_t,reduce_t,hessian_t>::relax3d_rls_absolute(
 
   sol -= C*sol_sC;
   GET_HES_POINTER
-  finish(x, y, z, n, sol, hes, val, wval);
+  finish<BORDER>(x, y, z, n, sol, hes, val, wval);
 }
 
 /* ========================================================================== */
@@ -1119,7 +1310,8 @@ void RelaxImpl<scalar_t,offset_t,reduce_t,hessian_t>::relax3d_rls_absolute(
 #define GET_WGT_POINTER \
   const scalar_t *wgt = wgt_ptr + (x*wgt_sX + y*wgt_sY + n*wgt_sN);
 
-template <typename scalar_t, typename offset_t, typename reduce_t, typename hessian_t> NI_DEVICE
+template <typename scalar_t, typename offset_t, typename reduce_t, typename hessian_t>
+template <bool BORDER> NI_DEVICE
 void RelaxImpl<scalar_t,offset_t,reduce_t,hessian_t>::relax2d_bending(
   offset_t x, offset_t y, offset_t z, offset_t n) const
 {
@@ -1167,11 +1359,12 @@ void RelaxImpl<scalar_t,offset_t,reduce_t,hessian_t>::relax2d_bending(
 
   sol -= C*sol_sC;
   GET_HES_POINTER
-  finish(x, y, z, n, sol, hes, val, w000);
+  finish<BORDER>(x, y, z, n, sol, hes, val, w000);
 }
 
 
-template <typename scalar_t, typename offset_t, typename reduce_t, typename hessian_t> NI_DEVICE
+template <typename scalar_t, typename offset_t, typename reduce_t, typename hessian_t>
+template <bool BORDER> NI_DEVICE
 void RelaxImpl<scalar_t,offset_t,reduce_t,hessian_t>::relax2d_membrane(
   offset_t x, offset_t y, offset_t z, offset_t n) const
 {
@@ -1204,11 +1397,12 @@ void RelaxImpl<scalar_t,offset_t,reduce_t,hessian_t>::relax2d_membrane(
 
   sol -= C*sol_sC;
   GET_HES_POINTER
-  finish(x, y, z, n, sol, hes, val, w000);
+  finish<BORDER>(x, y, z, n, sol, hes, val, w000);
 }
 
 
-template <typename scalar_t, typename offset_t, typename reduce_t, typename hessian_t> NI_DEVICE
+template <typename scalar_t, typename offset_t, typename reduce_t, typename hessian_t>
+template <bool BORDER> NI_DEVICE
 void RelaxImpl<scalar_t,offset_t,reduce_t,hessian_t>::relax2d_absolute(
   offset_t x, offset_t y, offset_t z, offset_t n) const
 {
@@ -1222,12 +1416,13 @@ void RelaxImpl<scalar_t,offset_t,reduce_t,hessian_t>::relax2d_absolute(
 
   sol -= C*sol_sC;
   GET_HES_POINTER
-  finish(x, y, z, n, sol, hes, val, w000);
+  finish<BORDER>(x, y, z, n, sol, hes, val, w000);
 }
 
 
 
-template <typename scalar_t, typename offset_t, typename reduce_t, typename hessian_t> NI_DEVICE
+template <typename scalar_t, typename offset_t, typename reduce_t, typename hessian_t>
+template <bool BORDER> NI_DEVICE
 void RelaxImpl<scalar_t,offset_t,reduce_t,hessian_t>::relax2d_rls_membrane(
   offset_t x, offset_t y, offset_t z, offset_t n) const
 {
@@ -1277,11 +1472,12 @@ void RelaxImpl<scalar_t,offset_t,reduce_t,hessian_t>::relax2d_rls_membrane(
 
   sol -= C*sol_sC;
   GET_HES_POINTER
-  finish(x, y, z, n, sol, hes, val, wval);
+  finish<BORDER>(x, y, z, n, sol, hes, val, wval);
 }
 
 
-template <typename scalar_t, typename offset_t, typename reduce_t, typename hessian_t> NI_DEVICE
+template <typename scalar_t, typename offset_t, typename reduce_t, typename hessian_t>
+template <bool BORDER> NI_DEVICE
 void RelaxImpl<scalar_t,offset_t,reduce_t,hessian_t>::relax2d_rls_absolute(
   offset_t x, offset_t y, offset_t z, offset_t n) const
 {
@@ -1301,7 +1497,7 @@ void RelaxImpl<scalar_t,offset_t,reduce_t,hessian_t>::relax2d_rls_absolute(
 
   sol -= C*sol_sC;
   GET_HES_POINTER
-  finish(x, y, z, n, sol, hes, val, wval);
+  finish<BORDER>(x, y, z, n, sol, hes, val, wval);
 }
 
 /* ========================================================================== */
@@ -1337,7 +1533,8 @@ void RelaxImpl<scalar_t,offset_t,reduce_t,hessian_t>::relax2d_rls_absolute(
   const scalar_t *wgt = wgt_ptr + (x*wgt_sX + n*wgt_sN);
 
 
-template <typename scalar_t, typename offset_t, typename reduce_t, typename hessian_t> NI_DEVICE
+template <typename scalar_t, typename offset_t, typename reduce_t, typename hessian_t>
+template <bool BORDER> NI_DEVICE
 void RelaxImpl<scalar_t,offset_t,reduce_t,hessian_t>::relax1d_bending(
   offset_t x, offset_t y, offset_t z, offset_t n) const
 {
@@ -1380,11 +1577,12 @@ void RelaxImpl<scalar_t,offset_t,reduce_t,hessian_t>::relax1d_bending(
 
   sol -= C*sol_sC;
   GET_HES_POINTER
-  finish(x, y, z, n, sol, hes, val, w000);
+  finish<BORDER>(x, y, z, n, sol, hes, val, w000);
 }
 
 
-template <typename scalar_t, typename offset_t, typename reduce_t, typename hessian_t> NI_DEVICE
+template <typename scalar_t, typename offset_t, typename reduce_t, typename hessian_t>
+template <bool BORDER> NI_DEVICE
 void RelaxImpl<scalar_t,offset_t,reduce_t,hessian_t>::relax1d_membrane(
   offset_t x, offset_t y, offset_t z, offset_t n) const
 {
@@ -1416,11 +1614,12 @@ void RelaxImpl<scalar_t,offset_t,reduce_t,hessian_t>::relax1d_membrane(
 
   sol -= C*sol_sC;
   GET_HES_POINTER
-  finish(x, y, z, n, sol, hes, val, w000);
+  finish<BORDER>(x, y, z, n, sol, hes, val, w000);
 }
 
 
-template <typename scalar_t, typename offset_t, typename reduce_t, typename hessian_t> NI_DEVICE
+template <typename scalar_t, typename offset_t, typename reduce_t, typename hessian_t>
+template <bool BORDER> NI_DEVICE
 void RelaxImpl<scalar_t,offset_t,reduce_t,hessian_t>::relax1d_absolute(
   offset_t x, offset_t y, offset_t z, offset_t n) const
 {
@@ -1434,12 +1633,13 @@ void RelaxImpl<scalar_t,offset_t,reduce_t,hessian_t>::relax1d_absolute(
 
   sol -= C*sol_sC;
   GET_HES_POINTER
-  finish(x, y, z, n, sol, hes, val, w000);
+  finish<BORDER>(x, y, z, n, sol, hes, val, w000);
 }
 
 
 
-template <typename scalar_t, typename offset_t, typename reduce_t, typename hessian_t> NI_DEVICE
+template <typename scalar_t, typename offset_t, typename reduce_t, typename hessian_t>
+template <bool BORDER> NI_DEVICE
 void RelaxImpl<scalar_t,offset_t,reduce_t,hessian_t>::relax1d_rls_membrane(
   offset_t x, offset_t y, offset_t z, offset_t n) const
 {
@@ -1485,11 +1685,12 @@ void RelaxImpl<scalar_t,offset_t,reduce_t,hessian_t>::relax1d_rls_membrane(
 
   sol -= C*sol_sC;
   GET_HES_POINTER
-  finish(x, y, z, n, sol, hes, val, wval);
+  finish<BORDER>(x, y, z, n, sol, hes, val, wval);
 }
 
 
-template <typename scalar_t, typename offset_t, typename reduce_t, typename hessian_t> NI_DEVICE
+template <typename scalar_t, typename offset_t, typename reduce_t, typename hessian_t>
+template <bool BORDER> NI_DEVICE
 void RelaxImpl<scalar_t,offset_t,reduce_t,hessian_t>::relax1d_rls_absolute(
   offset_t x, offset_t y, offset_t z, offset_t n) const
 {
@@ -1509,7 +1710,7 @@ void RelaxImpl<scalar_t,offset_t,reduce_t,hessian_t>::relax1d_rls_absolute(
 
   sol -= C*sol_sC;
   GET_HES_POINTER
-  finish(x, y, z, n, sol, hes, val, wval);
+  finish<BORDER>(x, y, z, n, sol, hes, val, wval);
 }
 
 /* ========================================================================== */
@@ -1580,12 +1781,12 @@ template <typename offset_t, typename T, typename Stream>
 NI_HOST void copy_fold_info_to_device(const T & obj, T * ptr, Stream stream)
 {
   // Super hacky !!!
-  // we copy the first 7 fields of the object to device
-  // [fx fy fz Xf Yf Zf redblack]
-  auto field_ptr_in  = reinterpret_cast<const offset_t *>(&obj);
-  auto field_ptr_out = reinterpret_cast<offset_t *>(ptr);
+  // we copy the leading fields of the object to device
+  // [fx fy fz Xf Yf Zf redblack region fbox]
+  auto field_ptr_in  = reinterpret_cast<const char *>(&obj);
+  auto field_ptr_out = reinterpret_cast<char *>(ptr);
   
-  cudaMemcpyAsync(field_ptr_out, field_ptr_in, 7*sizeof(offset_t), 
+  cudaMemcpyAsync(field_ptr_out, field_ptr_in, obj.fold_info_size(),
                   cudaMemcpyHostToDevice, stream);
 }
 #endif
@@ -1647,11 +1848,16 @@ struct DoAlgo {
           Impl * palgo = alloc_and_copy_to_device(&algo, stream);
           for (int32_t i=0; i < nb_iter; ++i)
             for (int32_t fold = 0; fold < algo.foldcount(); ++fold) {
-                algo.set_fold(fold);
+              algo.set_fold(fold);
+              // (interior, then border voxels, if they need a border pass)
+              for (uint8_t r = algo.split() ? 1 : 0; r < (algo.split() ? 3 : 1); ++r) {
+                algo.set_region(r);
+                if (!algo.voxcountfold(r)) continue;
                 copy_fold_info_to_device<int32_t>(algo, palgo, stream);
                 relax_kernel
-                  <<<GET_BLOCKS(algo.voxcountfold()), CUDA_NUM_THREADS, 0, stream>>>
+                  <<<GET_BLOCKS(algo.voxcountfold(r)), CUDA_NUM_THREADS, 0, stream>>>
                   (palgo);
+              }
             }
           cudaFree(palgo);
         }
@@ -1662,11 +1868,16 @@ struct DoAlgo {
           Impl * palgo = alloc_and_copy_to_device(&algo, stream);
           for (int64_t i=0; i < nb_iter; ++i)
             for (int64_t fold = 0; fold < algo.foldcount(); ++fold) {
-                algo.set_fold(fold);
+              algo.set_fold(fold);
+              // (interior, then border voxels, if they need a border pass)
+              for (uint8_t r = algo.split() ? 1 : 0; r < (algo.split() ? 3 : 1); ++r) {
+                algo.set_region(r);
+                if (!algo.voxcountfold(r)) continue;
                 copy_fold_info_to_device<int64_t>(algo, palgo, stream);
                 relax_kernel
-                  <<<GET_BLOCKS(algo.voxcountfold()), CUDA_NUM_THREADS, 0, stream>>>
+                  <<<GET_BLOCKS(algo.voxcountfold(r)), CUDA_NUM_THREADS, 0, stream>>>
                   (palgo);
+              }
             }
           cudaFree(palgo);
         }
@@ -1710,11 +1921,16 @@ struct DoAlgo<0> {
           Impl * palgo = alloc_and_copy_to_device(&algo, stream);
           for (int32_t i=0; i < nb_iter; ++i)
             for (int32_t fold = 0; fold < algo.foldcount(); ++fold) {
-                algo.set_fold(fold);
+              algo.set_fold(fold);
+              // (interior, then border voxels, if they need a border pass)
+              for (uint8_t r = algo.split() ? 1 : 0; r < (algo.split() ? 3 : 1); ++r) {
+                algo.set_region(r);
+                if (!algo.voxcountfold(r)) continue;
                 copy_fold_info_to_device<int32_t>(algo, palgo, stream);
                 relax_kernel
-                  <<<GET_BLOCKS(algo.voxcountfold()), CUDA_NUM_THREADS, 0, stream>>>
+                  <<<GET_BLOCKS(algo.voxcountfold(r)), CUDA_NUM_THREADS, 0, stream>>>
                   (palgo);
+              }
             }
           cudaFree(palgo);
         }
@@ -1725,11 +1941,16 @@ struct DoAlgo<0> {
           Impl * palgo = alloc_and_copy_to_device(&algo, stream);
           for (int64_t i=0; i < nb_iter; ++i)
             for (int64_t fold = 0; fold < algo.foldcount(); ++fold) {
-                algo.set_fold(fold);
+              algo.set_fold(fold);
+              // (interior, then border voxels, if they need a border pass)
+              for (uint8_t r = algo.split() ? 1 : 0; r < (algo.split() ? 3 : 1); ++r) {
+                algo.set_region(r);
+                if (!algo.voxcountfold(r)) continue;
                 copy_fold_info_to_device<int64_t>(algo, palgo, stream);
                 relax_kernel
-                  <<<GET_BLOCKS(algo.voxcountfold()), CUDA_NUM_THREADS, 0, stream>>>
+                  <<<GET_BLOCKS(algo.voxcountfold(r)), CUDA_NUM_THREADS, 0, stream>>>
                   (palgo);
+              }
             }
           cudaFree(palgo);
         }
@@ -1773,11 +1994,16 @@ struct DoAlgo<1> {
           Impl * palgo = alloc_and_copy_to_device(&algo, stream);
           for (int32_t i=0; i < nb_iter; ++i)
             for (int32_t fold = 0; fold < algo.foldcount(); ++fold) {
-                algo.set_fold(fold);
+              algo.set_fold(fold);
+              // (interior, then border voxels, if they need a border pass)
+              for (uint8_t r = algo.split() ? 1 : 0; r < (algo.split() ? 3 : 1); ++r) {
+                algo.set_region(r);
+                if (!algo.voxcountfold(r)) continue;
                 copy_fold_info_to_device<int32_t>(algo, palgo, stream);
                 relax_kernel
-                  <<<GET_BLOCKS(algo.voxcountfold()), CUDA_NUM_THREADS, 0, stream>>>
+                  <<<GET_BLOCKS(algo.voxcountfold(r)), CUDA_NUM_THREADS, 0, stream>>>
                   (palgo);
+              }
             }
           cudaFree(palgo);
         }
@@ -1788,11 +2014,16 @@ struct DoAlgo<1> {
           Impl * palgo = alloc_and_copy_to_device(&algo, stream);
           for (int64_t i=0; i < nb_iter; ++i)
             for (int64_t fold = 0; fold < algo.foldcount(); ++fold) {
-                algo.set_fold(fold);
+              algo.set_fold(fold);
+              // (interior, then border voxels, if they need a border pass)
+              for (uint8_t r = algo.split() ? 1 : 0; r < (algo.split() ? 3 : 1); ++r) {
+                algo.set_region(r);
+                if (!algo.voxcountfold(r)) continue;
                 copy_fold_info_to_device<int64_t>(algo, palgo, stream);
                 relax_kernel
-                  <<<GET_BLOCKS(algo.voxcountfold()), CUDA_NUM_THREADS, 0, stream>>>
+                  <<<GET_BLOCKS(algo.voxcountfold(r)), CUDA_NUM_THREADS, 0, stream>>>
                   (palgo);
+              }
             }
           cudaFree(palgo);
         }

@@ -3,6 +3,7 @@
 #include "bounds_common.h"         // boundary conditions + enum
 #include "allocator.h"             // base class handling offset sizes
 #include "hessian.h"               // utility for handling Hessian matrices
+#include "border_common.h"         // border pass (definition F)
 #include "utils.h"                 // utility for dispatching
 #include <ATen/ATen.h>             // tensors
 #include <cmath>                   // fma (fused multiply add)
@@ -20,6 +21,8 @@
     // This parameter specifies the minimum number of voxels that should be
     // processed on a single processor in the parallel for loop .
     int64_t GRAIN_SIZE = static_cast<int64_t>(at::internal::GRAIN_SIZE);
+    // (the border voxels are a thin set)
+    int64_t BORDER_GRAIN_SIZE = GRAIN_SIZE / 32;
   }
 #endif
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -269,6 +272,7 @@ public:
 
     set_factors(info.absolute, info.membrane, info.bending);
     set_kernel(info.vx0, info.vx1, info.vx2);
+    set_border(info.vx0, info.vx1, info.vx2);
 #ifndef __CUDACC__
     set_precond();
  #endif
@@ -321,6 +325,41 @@ public:
     b011 = static_cast<reduce_t>(2.0*vx1*vx2);
   }
 
+  // Border pass (see border_common.h): the diagonal of the exact operator
+  // differs from that of the stencil near the borders (B, and the taps
+  // that fold back onto their own voxel). The voxels within
+  // `border::radius` of the borders are solved again with their exact
+  // diagonal (`precond<true>`, which overwrites them). Decided once.
+  NI_HOST void set_border(double vx0, double vx1, double vx2)
+  {
+    BoundType b[3] = {bound0, bound1, bound2};
+    double ivx[3] = {vx0, vx1, vx2};   // (1 / voxel_size**2)
+    offset_t nn[3] = {X, Y, Z};
+    bool has_membrane = false, has_bending = false;
+    for (offset_t c = 0; c < C; ++c) {
+      has_membrane = has_membrane || membrane[c];
+      has_bending  = has_bending  || bending[c];
+    }
+    bt.set(dim, b, nn, ivx, has_membrane, has_bending);
+    // unit stencil taps of each axis (as in `set_kernel`)
+    um[0] = m100;  um[1] = m010;  um[2] = m001;
+    ub1[0] = b100; ub1[1] = b010; ub1[2] = b001;
+    ub2[0] = b200; ub2[1] = b020; ub2[2] = b002;
+    ub11[0][1] = ub11[1][0] = b110;
+    ub11[0][2] = ub11[2][0] = b101;
+    ub11[1][2] = ub11[2][1] = b011;
+    ub11[0][0] = ub11[1][1] = ub11[2][2] = 0;
+    bool taps = (has_membrane || has_bending);
+    offset_t r[3];
+    needs_border = false;
+    for (int a = 0; a < 3; ++a) {
+      r[a] = (taps && a < dim) ? border::radius(b[a], nn[a]) : 0;
+      needs_border = needs_border || r[a] > 0;
+    }
+    box.set(X, Y, Z, r[0], r[1], r[2]);
+    region = 0;
+  }
+
 #ifndef __CUDACC__
   NI_HOST void set_precond() 
   {
@@ -330,25 +369,25 @@ public:
 #   define RLS      16
     switch (mode) {
       case 1 + MEMBRANE + RLS:
-        precond_ = &Self::precond1d_rls_membrane; break;
+        precond_ = &Self::template precond1d_rls_membrane<false>; precondb_ = &Self::template precond1d_rls_membrane<true>; break;
       case 2 + MEMBRANE + RLS:
-        precond_ = &Self::precond2d_rls_membrane; break;
+        precond_ = &Self::template precond2d_rls_membrane<false>; precondb_ = &Self::template precond2d_rls_membrane<true>; break;
       case 3 + MEMBRANE + RLS:
-        precond_ = &Self::precond3d_rls_membrane; break;
+        precond_ = &Self::template precond3d_rls_membrane<false>; precondb_ = &Self::template precond3d_rls_membrane<true>; break;
       case 1 + ABSOLUTE + RLS:
-        precond_ = &Self::precond1d_rls_absolute; break;
+        precond_ = &Self::template precond1d_rls_absolute<false>; precondb_ = &Self::template precond1d_rls_absolute<true>; break;
       case 2 + ABSOLUTE + RLS:
-        precond_ = &Self::precond2d_rls_absolute; break;
+        precond_ = &Self::template precond2d_rls_absolute<false>; precondb_ = &Self::template precond2d_rls_absolute<true>; break;
       case 3 + ABSOLUTE + RLS:
-        precond_ = &Self::precond3d_rls_absolute; break;
+        precond_ = &Self::template precond3d_rls_absolute<false>; precondb_ = &Self::template precond3d_rls_absolute<true>; break;
       default:
         switch (dim) {
           case 1:
-            precond_ = &Self::precond1d; break;
+            precond_ = &Self::template precond1d<false>; precondb_ = &Self::template precond1d<true>; break;
           case 2: 
-            precond_ = &Self::precond2d; break;
+            precond_ = &Self::template precond2d<false>; precondb_ = &Self::template precond2d<true>; break;
           default:
-            precond_ = &Self::precond3d; break;
+            precond_ = &Self::template precond3d<false>; precondb_ = &Self::template precond3d<true>; break;
         } break;
     }
   }
@@ -369,16 +408,25 @@ public:
   NI_HOST NI_DEVICE int64_t voxcount() const {
     return N * X * Y * Z;
   }
+
+  // Voxels of each region (0: all voxels, 2: border voxels, solved
+  // again). The CUDA host code mutates `region` and launches one kernel
+  // per region.
+  NI_HOST NI_INLINE bool split() const { return needs_border; }
+  NI_HOST NI_INLINE void set_region(uint8_t r) { region = r; }
+  NI_HOST NI_DEVICE int64_t voxcount(uint8_t r) const {
+    return r == 2 ? N * box.border_count() : voxcount();
+  }
  
 
 private:
 
   /* ~~~ COMPONENTS ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ */
-  NI_DEVICE void precond(
+  template <bool BORDER> NI_DEVICE void precond(
     offset_t x, offset_t y, offset_t z, offset_t n) const;
 
 #define DEFINE_PRECOND(SUFFIX) \
-  NI_DEVICE void precond##SUFFIX( \
+  template <bool BORDER> NI_DEVICE void precond##SUFFIX( \
     offset_t x, offset_t y, offset_t z, offset_t n) const;
 #define DEFINE_PRECOND_DIM(DIM)        \
   DEFINE_PRECOND(DIM##d)               \
@@ -389,8 +437,21 @@ private:
   DEFINE_PRECOND_DIM(2)
   DEFINE_PRECOND_DIM(3)
 
-  NI_DEVICE void finish(offset_t x, offset_t y, offset_t z,
+  template <bool BORDER>
+  NI_DEVICE void finish(offset_t x, offset_t y, offset_t z, offset_t n,
     scalar_t * sol, const scalar_t * hes, reduce_t * val, const reduce_t * diag) const;
+  NI_DEVICE void border(offset_t x, offset_t y, offset_t z, offset_t n,
+    const scalar_t * sol, reduce_t * diag) const;
+
+  /* ~~~ BORDER PASS ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ */
+  uint8_t           region;         // 0: all voxels, 2: border
+  bool              needs_border;
+  border::BorderBox<offset_t> box;  // interior box (voxels)
+  border::FieldTerms<reduce_t, offset_t> bt; // terms of B
+  reduce_t          um[3];          // unit stencil taps: membrane +/-1
+  reduce_t          ub1[3];         // bending +/-1
+  reduce_t          ub2[3];         // bending +/-2
+  reduce_t          ub11[3][3];     // bending (+/-1, +/-1)
 
   /* ~~~ OPTIONS ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ */
   offset_t          dim;
@@ -407,6 +468,7 @@ private:
 
 #ifndef __CUDACC__
   PrecondFn         precond_;          // Pointer to Precond function
+  PrecondFn         precondb_;         // Pointer to Precond function (border voxels)
 #endif
 
   reduce_t w000[MaxC];
@@ -450,12 +512,13 @@ private:
 //                             LOOP
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-template <typename scalar_t, typename offset_t, typename reduce_t, typename hessian_t> NI_DEVICE
+template <typename scalar_t, typename offset_t, typename reduce_t, typename hessian_t>
+template <bool BORDER> NI_DEVICE
 void PrecondImpl<scalar_t,offset_t,reduce_t,hessian_t>::precond(
     offset_t x, offset_t y, offset_t z, offset_t n) const 
 {
 #ifndef __CUDACC__
-  CALL_MEMBER_FN(*this, precond_)(x, y, z, n);
+  CALL_MEMBER_FN(*this, BORDER ? precondb_ : precond_)(x, y, z, n);
 #else
 #   define ABSOLUTE 4
 #   define MEMBRANE 8
@@ -463,25 +526,25 @@ void PrecondImpl<scalar_t,offset_t,reduce_t,hessian_t>::precond(
 #   define RLS      16
   switch (mode) {
     case 1 + MEMBRANE + RLS:
-      return precond1d_rls_membrane(x, y, z, n);
+      return precond1d_rls_membrane<BORDER>(x, y, z, n);
     case 2 + MEMBRANE + RLS:
-      return precond2d_rls_membrane(x, y, z, n);
+      return precond2d_rls_membrane<BORDER>(x, y, z, n);
     case 3 + MEMBRANE + RLS:
-      return precond3d_rls_membrane(x, y, z, n);
+      return precond3d_rls_membrane<BORDER>(x, y, z, n);
     case 1 + ABSOLUTE + RLS:
-      return precond1d_rls_absolute(x, y, z, n);
+      return precond1d_rls_absolute<BORDER>(x, y, z, n);
     case 2 + ABSOLUTE + RLS:
-      return precond2d_rls_absolute(x, y, z, n);
+      return precond2d_rls_absolute<BORDER>(x, y, z, n);
     case 3 + ABSOLUTE + RLS:
-      return precond3d_rls_absolute(x, y, z, n);
+      return precond3d_rls_absolute<BORDER>(x, y, z, n);
     default:
       switch (dim) {
         case 1:
-          return precond1d(x, y, z, n);
+          return precond1d<BORDER>(x, y, z, n);
         case 2: 
-          return precond2d(x, y, z, n);
+          return precond2d<BORDER>(x, y, z, n);
         default:
-          return precond3d(x, y, z, n);
+          return precond3d<BORDER>(x, y, z, n);
       }
   }
 #endif 
@@ -494,10 +557,21 @@ void PrecondImpl<scalar_t,offset_t,reduce_t,hessian_t>::loop(
   int threadIdx, int blockIdx, int blockDim, int gridDim) const {
 
   offset_t index = static_cast<offset_t>(blockIdx * blockDim + threadIdx);
+  offset_t n, x, y, z;
+  if (region == 2) {
+    offset_t M  = box.border_count();
+    offset_t NM = N * M;
+    for (offset_t i=index; index < NM; index += blockDim*gridDim, i=index)
+    {
+      n = i / M;
+      box.decode(i % M, x, y, z);
+      precond<true>(x, y, z, n);
+    }
+    return;
+  }
   offset_t YZ   = Y * Z;
   offset_t XYZ  = X * YZ;
   offset_t NXYZ = N * XYZ;
-  offset_t n, x, y, z;
   for (offset_t i=index; index < NXYZ; index += blockDim*gridDim, i=index)
   {
       // Convert index: linear to sub
@@ -505,7 +579,7 @@ void PrecondImpl<scalar_t,offset_t,reduce_t,hessian_t>::loop(
       x  = (i/YZ) % X;
       y  = (i/Z)  % Y;
       z  =  i     % Z;
-      precond(x, y, z, n);
+      precond<false>(x, y, z, n);
   }
 }
 
@@ -513,7 +587,8 @@ void PrecondImpl<scalar_t,offset_t,reduce_t,hessian_t>::loop(
 
 // This bit loops over all target voxels. We therefore need to
 // convert linear indices to multivariate indices. The way I do it
-// might not be optimal.
+// might not be optimal. With a border pass, the border voxels are then
+// solved again, with their exact diagonal.
 template <typename scalar_t, typename offset_t, typename reduce_t, typename hessian_t> NI_HOST
 void PrecondImpl<scalar_t,offset_t,reduce_t,hessian_t>::loop() const
 {
@@ -529,7 +604,17 @@ void PrecondImpl<scalar_t,offset_t,reduce_t,hessian_t>::loop() const
       x  = (i/YZ) % X;
       y  = (i/Z)  % Y;
       z  =  i     % Z;
-      precond(x, y, z, n);
+      precond<false>(x, y, z, n);
+    }
+  });
+  if (!needs_border) return;
+  // the border voxels again, with their exact diagonal
+  offset_t M = box.border_count();
+  at::parallel_for(0, N * M, BORDER_GRAIN_SIZE, [&](offset_t start, offset_t end) {
+    offset_t x, y, z;
+    for (offset_t i = start; i < end; ++i) {
+      box.decode(i % M, x, y, z);
+      precond<true>(x, y, z, i / M);
     }
   });
 }
@@ -540,21 +625,62 @@ void PrecondImpl<scalar_t,offset_t,reduce_t,hessian_t>::loop() const
 /* ========================================================================== */
 /*                               MACRO HELPERS                                */
 /* ========================================================================== */
-// ~~~ Exact operator at the borders (see `row_weight` and
-//     `replicate_inward` in bounds_common.h) ~~~
-template <typename scalar_t, typename offset_t, typename reduce_t, typename hessian_t> NI_DEVICE
+// ~~~ Border voxels (see border_common.h) ~~~
+// `diag` is the diagonal of the stencil, as if all its taps were other
+// voxels. At the border voxels, it becomes the exact diagonal (that of
+// S, with the taps that fold back onto the voxel, plus that of B).
+template <typename scalar_t, typename offset_t, typename reduce_t, typename hessian_t>
+template <bool BORDER> NI_DEVICE
 void PrecondImpl<scalar_t,offset_t,reduce_t,hessian_t>::finish(
-    offset_t x, offset_t y, offset_t z,
+    offset_t x, offset_t y, offset_t z, offset_t n,
     scalar_t * sol, const scalar_t * hes, reduce_t * val, const reduce_t * diag) const
 {
-  reduce_t w = bound::row_weight<reduce_t>(bound0, x, X)
-             * bound::row_weight<reduce_t>(bound1, y, Y)
-             * bound::row_weight<reduce_t>(bound2, z, Z);
-  if (w == static_cast<reduce_t>(1))
+  if (!BORDER)
     return hessian_t::invert(C, sol, sol_sC, hes, hes_sC, val, diag);
-  // diagonal `w * diag[c]`, evaluated on the fly (no local array)
-  ScaledDiag<reduce_t> wdiag = {diag, w};
-  hessian_t::invert(C, sol, sol_sC, hes, hes_sC, val, wdiag);
+  reduce_t d[MaxC];
+  for (offset_t c = 0; c < C; ++c) d[c] = diag[c];
+  border(x, y, z, n, sol, d);
+  hessian_t::invert(C, sol, sol_sC, hes, hes_sC, val,
+                    static_cast<const reduce_t *>(d));
+}
+
+template <typename scalar_t, typename offset_t, typename reduce_t, typename hessian_t> NI_DEVICE
+void PrecondImpl<scalar_t,offset_t,reduce_t,hessian_t>::border(
+    offset_t x, offset_t y, offset_t z, offset_t n,
+    const scalar_t * sol, reduce_t * d) const
+{
+  const offset_t q[3]  = {x, y, z};
+  const offset_t s[3]  = {sol_sX, sol_sY, sol_sZ};
+  const offset_t sw[3] = {wgt_sX, wgt_sY, wgt_sZ};
+  const scalar_t * wgt = wgt_ptr
+    ? wgt_ptr + (x*wgt_sX + y*wgt_sY + z*wgt_sZ + n*wgt_sN)
+    : static_cast<const scalar_t *>(0);
+  reduce_t T1[3];
+  for (int a = 0; a < dim; ++a) {
+    border::Plane<offset_t> P, PW;
+    P.set(bt.tab[a], bt.n[a], q[a], s[a]);
+    if (wgt) PW.set(bt.wtab[a], bt.n[a], q[a], sw[a]);
+    bool any = bt.fany[a] && P.targeted();
+    // self image of the stencil taps along a (and of the pairs (b, a))
+    T1[a] = border::tapself(P, q[a], bt.n[a], -1)
+          + border::tapself(P, q[a], bt.n[a],  1);
+    reduce_t T2 = border::tapself(P, q[a], bt.n[a], -2)
+                + border::tapself(P, q[a], bt.n[a],  2);
+    reduce_t T11 = 0;
+    for (int bb = 0; bb < a; ++bb) T11 += ub11[bb][a] * T1[bb] * T1[a];
+    for (offset_t c = 0; c < C; ++c) {
+      const scalar_t * xc = sol + c * sol_sC;
+      const scalar_t * wc = wgt ? wgt + c * wgt_sC : wgt;
+      reduce_t m = membrane[c], b = bending[c];
+      if (wgt)
+        d[c] += 0.5 * m * um[a] *
+                border::rls_self<reduce_t>(P, PW, wc, q[a], bt.n[a]);
+      else
+        d[c] += (m * um[a] + b * ub1[a]) * T1[a] + b * (ub2[a] * T2 + T11);
+      if (any)
+        d[c] += bt.template axis<true>(a, q, s, xc, m, b, wc, PW, P);
+    }
+  }
 }
 
 #define GET_COORD1_(x) offset_t x##0  = x - 1, x##1  = x + 1;
@@ -603,7 +729,8 @@ void PrecondImpl<scalar_t,offset_t,reduce_t,hessian_t>::finish(
   GET_WARP2_(y, Y, 1) \
   GET_WARP2_(z, Z, 2)
 
-template <typename scalar_t, typename offset_t, typename reduce_t, typename hessian_t> NI_DEVICE
+template <typename scalar_t, typename offset_t, typename reduce_t, typename hessian_t>
+template <bool BORDER> NI_DEVICE
 void PrecondImpl<scalar_t,offset_t,reduce_t,hessian_t>::precond3d(
   offset_t x, offset_t y, offset_t z, offset_t n) const
 {
@@ -617,11 +744,12 @@ void PrecondImpl<scalar_t,offset_t,reduce_t,hessian_t>::precond3d(
   const scalar_t *hes = hes_ptr + (x*hes_sX + y*hes_sY + z*hes_sZ + n*hes_sN);
         scalar_t *sol = sol_ptr + (x*sol_sX + y*sol_sY + z*sol_sZ + n*sol_sN);
 
-  finish(x, y, z, sol, hes, val, w000);
+  finish<BORDER>(x, y, z, n, sol, hes, val, w000);
 }
 
 
-template <typename scalar_t, typename offset_t, typename reduce_t, typename hessian_t> NI_DEVICE
+template <typename scalar_t, typename offset_t, typename reduce_t, typename hessian_t>
+template <bool BORDER> NI_DEVICE
 void PrecondImpl<scalar_t,offset_t,reduce_t,hessian_t>::precond3d_rls_membrane(
   offset_t x, offset_t y, offset_t z, offset_t n) const
 {
@@ -650,11 +778,12 @@ void PrecondImpl<scalar_t,offset_t,reduce_t,hessian_t>::precond3d_rls_membrane(
   const scalar_t *hes = hes_ptr + (x*hes_sX + y*hes_sY + z*hes_sZ + n*hes_sN);
         scalar_t *sol = sol_ptr + (x*sol_sX + y*sol_sY + z*sol_sZ + n*sol_sN);
 
-  finish(x, y, z, sol, hes, val, wval);
+  finish<BORDER>(x, y, z, n, sol, hes, val, wval);
 }
 
 
-template <typename scalar_t, typename offset_t, typename reduce_t, typename hessian_t> NI_DEVICE
+template <typename scalar_t, typename offset_t, typename reduce_t, typename hessian_t>
+template <bool BORDER> NI_DEVICE
 void PrecondImpl<scalar_t,offset_t,reduce_t,hessian_t>::precond3d_rls_absolute(
   offset_t x, offset_t y, offset_t z, offset_t n) const
 {
@@ -673,7 +802,7 @@ void PrecondImpl<scalar_t,offset_t,reduce_t,hessian_t>::precond3d_rls_absolute(
   const scalar_t *hes = hes_ptr + (x*hes_sX + y*hes_sY + z*hes_sZ + n*hes_sN);
         scalar_t *sol = sol_ptr + (x*sol_sX + y*sol_sY + z*sol_sZ + n*sol_sN);
 
-  finish(x, y, z, sol, hes, val, wval);
+  finish<BORDER>(x, y, z, n, sol, hes, val, wval);
 }
 
 
@@ -707,7 +836,8 @@ void PrecondImpl<scalar_t,offset_t,reduce_t,hessian_t>::precond3d_rls_absolute(
   GET_WARP2_(x, X, 0) \
   GET_WARP2_(y, Y, 1)
 
-template <typename scalar_t, typename offset_t, typename reduce_t, typename hessian_t> NI_DEVICE
+template <typename scalar_t, typename offset_t, typename reduce_t, typename hessian_t>
+template <bool BORDER> NI_DEVICE
 void PrecondImpl<scalar_t,offset_t,reduce_t,hessian_t>::precond2d(
   offset_t x, offset_t y, offset_t z, offset_t n) const
 {
@@ -721,11 +851,12 @@ void PrecondImpl<scalar_t,offset_t,reduce_t,hessian_t>::precond2d(
   const scalar_t *hes = hes_ptr + (x*hes_sX + y*hes_sY + z*hes_sZ + n*hes_sN);
         scalar_t *sol = sol_ptr + (x*sol_sX + y*sol_sY + z*sol_sZ + n*sol_sN);
 
-  finish(x, y, z, sol, hes, val, w000);
+  finish<BORDER>(x, y, z, n, sol, hes, val, w000);
 }
 
 
-template <typename scalar_t, typename offset_t, typename reduce_t, typename hessian_t> NI_DEVICE
+template <typename scalar_t, typename offset_t, typename reduce_t, typename hessian_t>
+template <bool BORDER> NI_DEVICE
 void PrecondImpl<scalar_t,offset_t,reduce_t,hessian_t>::precond2d_rls_membrane(
   offset_t x, offset_t y, offset_t z, offset_t n) const
 {
@@ -752,11 +883,12 @@ void PrecondImpl<scalar_t,offset_t,reduce_t,hessian_t>::precond2d_rls_membrane(
   const scalar_t *hes = hes_ptr + (x*hes_sX + y*hes_sY + n*hes_sN);
         scalar_t *sol = sol_ptr + (x*sol_sX + y*sol_sY + n*sol_sN);
 
-  finish(x, y, z, sol, hes, val, wval);
+  finish<BORDER>(x, y, z, n, sol, hes, val, wval);
 }
 
 
-template <typename scalar_t, typename offset_t, typename reduce_t, typename hessian_t> NI_DEVICE
+template <typename scalar_t, typename offset_t, typename reduce_t, typename hessian_t>
+template <bool BORDER> NI_DEVICE
 void PrecondImpl<scalar_t,offset_t,reduce_t,hessian_t>::precond2d_rls_absolute(
   offset_t x, offset_t y, offset_t z, offset_t n) const
 {
@@ -775,7 +907,7 @@ void PrecondImpl<scalar_t,offset_t,reduce_t,hessian_t>::precond2d_rls_absolute(
   const scalar_t *hes = hes_ptr + (x*hes_sX + y*hes_sY + n*hes_sN);
         scalar_t *sol = sol_ptr + (x*sol_sX + y*sol_sY + n*sol_sN);
 
-  finish(x, y, z, sol, hes, val, wval);
+  finish<BORDER>(x, y, z, n, sol, hes, val, wval);
 }
 
 /* ========================================================================== */
@@ -795,7 +927,8 @@ void PrecondImpl<scalar_t,offset_t,reduce_t,hessian_t>::precond2d_rls_absolute(
 #undef  GET_WARP2
 #define GET_WARP2 GET_WARP2_(x, X, 0)
 
-template <typename scalar_t, typename offset_t, typename reduce_t, typename hessian_t> NI_DEVICE
+template <typename scalar_t, typename offset_t, typename reduce_t, typename hessian_t>
+template <bool BORDER> NI_DEVICE
 void PrecondImpl<scalar_t,offset_t,reduce_t,hessian_t>::precond1d(
   offset_t x, offset_t y, offset_t z, offset_t n) const
 {
@@ -809,11 +942,12 @@ void PrecondImpl<scalar_t,offset_t,reduce_t,hessian_t>::precond1d(
   const scalar_t *hes = hes_ptr + (x*hes_sX + n*hes_sN);
         scalar_t *sol = sol_ptr + (x*sol_sX + n*sol_sN);
 
-  finish(x, y, z, sol, hes, val, w000);
+  finish<BORDER>(x, y, z, n, sol, hes, val, w000);
 }
 
 
-template <typename scalar_t, typename offset_t, typename reduce_t, typename hessian_t> NI_DEVICE
+template <typename scalar_t, typename offset_t, typename reduce_t, typename hessian_t>
+template <bool BORDER> NI_DEVICE
 void PrecondImpl<scalar_t,offset_t,reduce_t,hessian_t>::precond1d_rls_membrane(
   offset_t x, offset_t y, offset_t z, offset_t n) const
 {
@@ -838,11 +972,12 @@ void PrecondImpl<scalar_t,offset_t,reduce_t,hessian_t>::precond1d_rls_membrane(
   const scalar_t *hes = hes_ptr + (x*hes_sX + n*hes_sN);
         scalar_t *sol = sol_ptr + (x*sol_sX + n*sol_sN);
 
-  finish(x, y, z, sol, hes, val, wval);
+  finish<BORDER>(x, y, z, n, sol, hes, val, wval);
 }
 
 
-template <typename scalar_t, typename offset_t, typename reduce_t, typename hessian_t> NI_DEVICE
+template <typename scalar_t, typename offset_t, typename reduce_t, typename hessian_t>
+template <bool BORDER> NI_DEVICE
 void PrecondImpl<scalar_t,offset_t,reduce_t,hessian_t>::precond1d_rls_absolute(
   offset_t x, offset_t y, offset_t z, offset_t n) const
 {
@@ -861,7 +996,7 @@ void PrecondImpl<scalar_t,offset_t,reduce_t,hessian_t>::precond1d_rls_absolute(
   const scalar_t *hes = hes_ptr + (x*hes_sX + n*hes_sN);
         scalar_t *sol = sol_ptr + (x*sol_sX + n*sol_sN);
 
-  finish(x, y, z, sol, hes, val, wval);
+  finish<BORDER>(x, y, z, n, sol, hes, val, wval);
 }
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -930,20 +1065,30 @@ prepare_tensors(const Tensor & gradient,
           if (alloc.canUse32BitIndexMath())
           {
               PrecondImpl<scalar_t, int32_t, double, utils_t> algo(alloc);
-              auto palgo = alloc_and_copy_to_device(&algo, stream);
-              precond_kernel
-                  <<<GET_BLOCKS(algo.voxcount()), CUDA_NUM_THREADS, 0, stream>>>
-                  (palgo);
-              cudaFree(palgo);
+              // (all voxels, then the border voxels again, if they need it)
+              for (uint8_t r = 0; r < (algo.split() ? 3 : 1); r += 2) {
+                algo.set_region(r);
+                if (!algo.voxcount(r)) continue;
+                auto palgo = alloc_and_copy_to_device(&algo, stream);
+                precond_kernel
+                    <<<GET_BLOCKS(algo.voxcount(r)), CUDA_NUM_THREADS, 0, stream>>>
+                    (palgo);
+                cudaFree(palgo);
+              }
           }
           else
           {
             PrecondImpl<scalar_t, int64_t, double, utils_t> algo(alloc);
-            auto palgo = alloc_and_copy_to_device(&algo, stream);
-            precond_kernel
-                <<<GET_BLOCKS(algo.voxcount()), CUDA_NUM_THREADS, 0, stream>>>
-                (palgo);
-            cudaFree(palgo);
+            // (all voxels, then the border voxels again, if they need it)
+            for (uint8_t r = 0; r < (algo.split() ? 3 : 1); r += 2) {
+              algo.set_region(r);
+              if (!algo.voxcount(r)) continue;
+              auto palgo = alloc_and_copy_to_device(&algo, stream);
+              precond_kernel
+                  <<<GET_BLOCKS(algo.voxcount(r)), CUDA_NUM_THREADS, 0, stream>>>
+                  (palgo);
+              cudaFree(palgo);
+            }
           }
           /*
           Our implementation uses more stack per thread than the available local 

@@ -49,8 +49,10 @@ namespace border {
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 //                    Interior box and border slabs
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-// The interior box is [lo, hi) along each axis, with lo = min(r, X) and
-// hi = max(X - r, lo) for a border of thickness r. The border voxels are
+// Used by the relaxation and the preconditioner (their border voxels
+// update their residual and diagonal with B and the self image of the
+// stencil). The interior box is [lo, hi) along each axis, with
+// lo = min(r, X) and hi = max(X - r, lo) for a border of thickness r. The border voxels are
 // enumerated as six slabs:
 //   x < lo0                           (all y, z)
 //   x >= hi0                          (all y, z)
@@ -68,6 +70,16 @@ struct BorderBox {
     lo0 = r0 < X ? r0 : X;  hi0 = X - r0 > lo0 ? X - r0 : lo0;
     lo1 = r1 < Y ? r1 : Y;  hi1 = Y - r1 > lo1 ? Y - r1 : lo1;
     lo2 = r2 < Z ? r2 : Z;  hi2 = Z - r2 > lo2 ? Z - r2 : lo2;
+  }
+
+  // interior box [lo, hi) given explicitly (e.g., in the coordinates of
+  // a fold of the relaxation)
+  NI_HOST NI_DEVICE void set_bounds(offset_t X_, offset_t Y_, offset_t Z_,
+                                    offset_t l0, offset_t h0,
+                                    offset_t l1, offset_t h1,
+                                    offset_t l2, offset_t h2) {
+    X = X_; Y = Y_; Z = Z_;
+    lo0 = l0; hi0 = h0; lo1 = l1; hi1 = h1; lo2 = l2; hi2 = h2;
   }
 
   NI_HOST NI_DEVICE offset_t interior_count() const {
@@ -439,6 +451,52 @@ plane_decode(offset_t i, int a, offset_t j,
   } else {
     y = i % Y; i /= Y; x = i % X; n = i / X; z = j;
   }
+}
+
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+//                  Self image of the stencil taps
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+// The kernels compute `S x (q) = a c + sum_k coef_k (s_k x[src_k] - c)`
+// (c = x[q]): their diagonal `w000 = a - sum_k coef_k` assumes that
+// every tap is another voxel. Near the borders, a tap may be q itself
+// (its extension folds back onto q), and the diagonal of S is
+// `w000 + sum_{k: src_k == q} coef_k s_k`.
+
+// Sign of the tap qa + d (d = +/-1, +/-2) along an axis if its source is
+// qa itself, 0 otherwise (P: the plane qa of the axis)
+template <typename offset_t>
+static NI_INLINE NI_DEVICE int8_t
+tapself(const Plane<offset_t> & P, offset_t qa, offset_t na, int d) {
+  offset_t t = qa + d;
+  if (t >= 0 && t < na) return static_cast<int8_t>(0);
+  int side = t < 0 ? 0 : 1;
+  int k = (t == -1 || t == na) ? 1 : 3;
+  return P.self[side][k] ? P.s[side][k] : static_cast<int8_t>(0);
+}
+
+// Weighted membrane (RLS): sum over the taps +/-1 that are q of
+// s_k (w[q] + w~[q+k]) (the coefficients without their axis factor)
+template <typename reduce_t, typename scalar_t, typename offset_t>
+static NI_INLINE NI_DEVICE reduce_t
+rls_self(const Plane<offset_t> & P, const Plane<offset_t> & PW,
+         const scalar_t * w, offset_t qa, offset_t na) {
+  reduce_t r = 0;
+  int8_t sm = tapself(P, qa, na, -1), sp = tapself(P, qa, na, 1);
+  if (sm) r += sm * (static_cast<reduce_t>(w[0]) + w[PW.o[0][1]]);
+  if (sp) r += sp * (static_cast<reduce_t>(w[0]) + w[PW.o[1][1]]);
+  return r;
+}
+
+// Border radius of an axis for the relaxation and the preconditioner:
+// the union of the target planes (and of the voxels whose taps fold back
+// onto themselves)
+template <typename offset_t>
+static NI_INLINE NI_HOST NI_DEVICE offset_t
+radius(BoundType b, offset_t n) {
+  if (n <= 4) return n;
+  if (b == BoundType::DFT) return 0;
+  if (b == BoundType::DCT1) return 2;
+  return 1;
 }
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

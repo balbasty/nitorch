@@ -96,30 +96,10 @@ def _component_bounds(bound, dim, ncomp=None):
     return [_bounds.for_component(bound, k) for k in range(ncomp or dim)]
 
 
-# TEMPORARY: the compiled solvers (relaxation, preconditioner) do not
-# implement the border correction of definition F yet (see
-# `correct_stencil`). The compiled regularisers do.
-_C_EXACT = {
-    'membrane': ('dft', 'dct2', 'dst2', 'replicate', 'sliding'),
-    'bending': ('dft', 'dct2'),
-    'lame': ('dft', 'dst1', 'zero', 'sliding'),
-}
-
-
-def _c_supports(weights=None, bending=0, lame=0, bound=None):
+def _c_supports(weights=None, bending=0, lame=0):
     """Whether the compiled solvers implement this problem: they do not
     implement per-penalty weight maps (dict), nor weighted (RLS)
     bending or linear-elastic energies (the TorchScript solvers do)."""
-    if bound is not None:
-        bound = [_bounds.to_nitorch(b) for b in ensure_list(bound)]
-        if not all(b in _C_EXACT['membrane'] for b in bound):
-            return False
-        if any(ensure_list(bending)) and \
-                not all(b in _C_EXACT['bending'] for b in bound):
-            return False
-        if any(ensure_list(lame)) and \
-                not all(b in _C_EXACT['lame'] for b in bound):
-            return False
     if weights is None:
         return True
     if isinstance(weights, dict):
