@@ -352,17 +352,11 @@ needs_c = pytest.mark.skipif(not c_solvers, reason='compiled backend not availab
 
 
 def _c_bound(bound, shape):
-    """Boundary conditions of the compiled tests. The compiled `dst1`
-    extends an axis of one voxel as `replicate` (`bounds_common.h`),
-    which is not an antisymmetric extension: not tested."""
+    """Boundary conditions of the compiled tests"""
     dim = len(shape)
     if bound == 'mixed-dft':
         bound = ['dft', 'zero', 'dct1'][:dim]
-    bound = _mixed(bound, dim)
-    blist = [bound] * dim if isinstance(bound, str) else list(bound)
-    if any(b == 'dst1' and n == 1 for b, n in zip(blist, shape)):
-        return None
-    return bound
+    return _mixed(bound, dim)
 
 
 @needs_c
@@ -371,8 +365,6 @@ def _c_bound(bound, shape):
 def test_c_regulariser(shape, bound):
     """The compiled field regulariser is the operator of definition F"""
     bound = _c_bound(bound, shape)
-    if bound is None:
-        pytest.skip('dst1 on an axis of one voxel')
     dim = len(shape)
     vx = VX[:dim]
     torch.manual_seed(0)
@@ -395,8 +387,6 @@ def test_c_regulariser(shape, bound):
 def test_c_regulariser_grid(shape, bound):
     """The compiled grid regulariser is the operator of definition F"""
     bound = _c_bound(bound, shape)
-    if bound is None:
-        pytest.skip('dst1 on an axis of one voxel')
     dim = len(shape)
     vx = VX[:dim]
     torch.manual_seed(0)

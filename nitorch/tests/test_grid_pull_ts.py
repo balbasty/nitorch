@@ -54,8 +54,6 @@ def test_ts_pushpull_bounds_are_the_extension(bound, n):
     from nitorch._C import _ts
     from nitorch._C.grid import bound_to_nitorch
     from nitorch.core import utils
-    if bound in ('dst1', 'dct1') and n == 1:
-        pytest.skip('degenerate')
     torch.manual_seed(0)
     m = 2 * n + 3
     coords = torch.arange(-m, n + m, dtype=torch.double)

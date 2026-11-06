@@ -36,6 +36,7 @@ static NI_INLINE NI_DEVICE size_t inbounds(size_t coord, size_t size) {
 //     n --> n-2 
 template <typename size_t>
 static NI_INLINE NI_DEVICE size_t reflect1c(size_t coord, size_t size) {
+  // size == 1: the field is constant (and the period, 0, is unusable)
   if (size == 1) return 0;
   size_t size_twice = (size-1)*2;
   coord = coord < 0 ? -coord : coord;
@@ -51,13 +52,18 @@ static NI_INLINE NI_DEVICE size_t reflect1c(size_t coord, size_t size) {
 //    -2 --> 0
 //     n --> undefined [n-1]
 //   n+1 --> n-1
+// The zeros (-1 and n, and their periodic copies) are mapped to a valid
+// index so that callers may compute an offset; their sign is 0.
+// This also holds for size == 1 (period 4: `0, x0, 0, -x0`), where every
+// index maps to 0 (it is *not* a replicated border: see `periodic1`).
 template <typename size_t>
 static NI_INLINE NI_DEVICE size_t reflect1s(size_t coord, size_t size) {
-  if (size == 1) return 0;
   size_t size_twice = (size+1)*2;
   coord = coord == -1 ? 0 : coord < 0 ? -coord-2 : coord;
   coord = coord % size_twice;
-  coord = coord == size ? size-1 : coord > size ? size_twice-coord-2 : coord;
+  coord = coord == size ? size-1                 // zero at n
+        : coord == size_twice-1 ? 0              // zero at -1 (mod period)
+        : coord > size ? size_twice-coord-2 : coord;
   return coord;
 }
 
@@ -118,9 +124,10 @@ static NI_INLINE NI_DEVICE int8_t constant(size_t coord, size_t size) {
 
 // Boundary condition of a DST-I
 // Periodic sign change based on coordinates
+// (no special case for size == 1: the sign is +1 at 0 mod 4, 0 at odd
+// coordinates and -1 at 2 mod 4)
 template <typename size_t>
 static NI_INLINE NI_DEVICE int8_t periodic1(size_t coord, size_t size) {
-  if (size == 1) return 1;
   size_t size_twice = (size+1)*2;
   coord = coord < 0 ? size - coord - 1 : coord;
   coord = coord % size_twice; 

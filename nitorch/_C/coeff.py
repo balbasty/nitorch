@@ -295,8 +295,7 @@ def _bound_index(i: np.ndarray, n: int, bound: str, weight: np.ndarray):
         return np.clip(i, 0, n - 1)
     if bound == 'dft':
         return np.remainder(i, n)
-    if bound in ('dct1', 'dst1') and n == 1:
-        # (dst1: as nitorch's `grid_pull`)
+    if bound == 'dct1' and n == 1:
         return np.zeros_like(i)
     if bound == 'zero':
         weight *= (i >= 0) & (i < n)
@@ -389,10 +388,12 @@ def _filter_axis0(x, order: int, bound: str, transpose: bool = False):
     prefilter)."""
     n = x.shape[0]
     h = order // 2
-    if n == 1 and bound in ('dct1', 'dct2', 'dft', 'replicate', 'dst1'):
+    if n == 1 and bound in ('dct1', 'dct2', 'dft', 'replicate'):
         # The extension of a single sample is constant, and A = [1].
-        # (For dst1, this is the convention of nitorch's `grid_pull`,
-        # whose dst1 extension of a single sample is constant.)
+        # (Not for dst1, whose extension of a single sample x0 is
+        # `0, x0, 0, -x0` with period 4, as in `grid_pull`: there,
+        # A = [b[0] - 2 b[2] + 2 b[4] - ...], which the small inverse
+        # below gives.)
         return
     if n < 2 * h or (n == 1 and bound not in _BASE):
         inverse = _small_inverse(n, order, bound)

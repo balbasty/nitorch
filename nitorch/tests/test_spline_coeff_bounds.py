@@ -42,7 +42,7 @@ def test_prefilter_is_inverse(bound, order, n):
 
 @pytest.mark.parametrize('bound', BOUNDS)
 @pytest.mark.parametrize('order', ORDERS)
-@pytest.mark.parametrize('n', [2, 3, 5, 12, 40])
+@pytest.mark.parametrize('n', [1, 2, 3, 5, 12, 40])
 def test_prefilter_round_trip(bound, order, n):
     """Sampling the coefficients at the integers with `grid_pull` gives
     back the input (so the prefilter and `grid_pull` agree on the
@@ -125,3 +125,82 @@ def test_prefilter_inplace():
     assert out is y
     assert torch.allclose(y, ref)
     assert not torch.allclose(x, ref)
+
+
+# ----------------------------------------------------------------------
+#   dst1 on axes of one voxel
+# ----------------------------------------------------------------------
+# The dst1 extension of a single sample x0 is `0, x0, 0, -x0` (period 4),
+# not a constant: pull, push and grad must sample that extension.
+
+def _dense_fold(y, shape, bound, margin):
+    """Transpose of `utils.pad(x, margin, mode=bound, side='both')` along
+    the last `len(shape)` axes of y"""
+    from nitorch.core import bounds as B
+    dim = len(shape)
+    for d, (n, b) in enumerate(zip(shape, bound)):
+        axis = y.dim() - dim + d
+        idx, sign = getattr(B, b)(torch.arange(-margin, n + margin), n)
+        sign = torch.as_tensor(sign).to(y.dtype)
+        sign = sign.reshape([-1] + [1] * (y.dim() - axis - 1))
+        out_shape = list(y.shape)
+        out_shape[axis] = n
+        y = y.new_zeros(out_shape).index_add_(axis, idx, y * sign)
+    return y
+
+
+@pytest.mark.parametrize('shape, bound', [
+    ([1], ['dst1']),
+    ([1, 4], ['dst1', 'dct2']),
+    ([3, 1], ['dst2', 'dst1']),
+    ([1, 1], ['dst1', 'dst1']),
+])
+@pytest.mark.parametrize('order', [0, 1, 2, 3, 5])
+def test_dst1_singleton_matches_dense_extension(shape, bound, order):
+    from nitorch.core import utils
+    dim = len(shape)
+    margin, m = 16, 6
+    gen = torch.Generator().manual_seed(3)
+    f = torch.randn([1, 2, *shape], dtype=dt, generator=gen)
+    grid = torch.stack(torch.meshgrid(
+        *[torch.linspace(-m, n - 1 + m, 4 * (n + 2 * m) + 1, dtype=dt)
+          for n in shape], indexing='ij'), -1)[None]
+    # (avoid the knots of the even orders, where the derivative jumps)
+    grid = grid + 0.0123
+    fp = utils.pad(f, [margin] * dim, mode=bound, side='both')
+    opt = dict(interpolation=order, extrapolate=True)
+    pull = spatial.grid_pull(f, grid, bound=bound, **opt)
+    ref = spatial.grid_pull(fp, grid + margin, bound='zero', **opt)
+    assert torch.allclose(pull, ref, atol=1e-12)
+    if order > 0:
+        grad = spatial.grid_grad(f, grid, bound=bound, **opt)
+        ref = spatial.grid_grad(fp, grid + margin, bound='zero', **opt)
+        assert torch.allclose(grad, ref, atol=1e-10)
+    z = torch.randn(pull.shape, dtype=dt, generator=gen)
+    push = spatial.grid_push(z, grid, shape, bound=bound, **opt)
+    ref = spatial.grid_push(z, grid + margin, [n + 2 * margin for n in shape],
+                            bound='zero', **opt)
+    ref = _dense_fold(ref, shape, bound, margin)
+    assert torch.allclose(push, ref, atol=1e-10)
+
+
+@pytest.mark.parametrize('order', ORDERS)
+@pytest.mark.parametrize('shape', [[1], [1, 4], [5, 1]])
+def test_prefilter_round_trip_dst1_singleton(order, shape):
+    """On an axis of one voxel, the dst1 prefilter inverts the sampling
+    of `grid_pull` (which reads the extension `0, x0, 0, -x0`)"""
+    gen = torch.Generator().manual_seed(4)
+    dim = len(shape)
+    f = torch.randn([2, *shape], dtype=dt, generator=gen)
+    c = spatial.spline_coeff_nd(f, interpolation=order, bound='dst1', dim=dim)
+    grid = torch.stack(torch.meshgrid(
+        *[torch.arange(n, dtype=dt) for n in shape], indexing='ij'), -1)
+    out = spatial.grid_pull(c, grid, interpolation=order, bound='dst1',
+                            extrapolate=True)
+    assert torch.allclose(out, f, rtol=0, atol=1e-10)
+    if shape == [1]:
+        # b[0] - 2 b[2] + 2 b[4] - ... (the odd neighbours are zeros)
+        h = order // 2
+        b = [float(v) for v in C._stencil(order)][h:]  # offsets 0..h
+        a = b[0] + 2 * sum((-1) ** (k // 2) * b[k] for k in range(2, h + 1, 2))
+        assert torch.allclose(c, f / a, rtol=0, atol=1e-12)

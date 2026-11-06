@@ -66,8 +66,8 @@ class Bound:
 
     def transform(self, i, n: int) -> Optional[Tensor]:
         if self.type == 4:  # dst1
-            if n == 1:
-                return None
+            # (no special case for n == 1: the extension is then
+            # `0, x0, 0, -x0` with period 4, not a replicated border)
             one = torch.ones([1], dtype=torch.int8, device=i.device)
             zero = torch.zeros([1], dtype=torch.int8, device=i.device)
             # (as `periodic1` in `src/impl/bounds_common.h`)
