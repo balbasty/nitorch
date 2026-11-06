@@ -14,3 +14,6 @@ if optionals.nibabel:
 
 if optionals.tifffile:
     from .tiff import TiffArray
+
+if optionals.zarr and optionals.dask:
+    from .zarr import NiftiZarrArray
