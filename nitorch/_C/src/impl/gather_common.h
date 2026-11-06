@@ -33,6 +33,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <type_traits>
+#include <limits>
 
 #ifdef __CUDACC__
 # define NI_PRAGMA_UNROLL _Pragma("unroll")
@@ -202,34 +203,61 @@ host_gather_ptrs(const GatherTables<weight_t> & tab)
 
 #ifdef __CUDACC__
 // Copy the host tables to `device` (offsets converted to offset_t).
-// The device tensors are appended to `keep`, which must outlive the kernel.
+//
+// All tables are packed into a single pinned host buffer, which is copied
+// with a single non-blocking copy on the current stream (the stream the
+// kernel is launched on), and the device pointers are carved out of the
+// device copy. Both buffers are appended to `keep`, which must outlive
+// the kernel launch (the caching allocators are stream-ordered).
 template <typename offset_t, typename weight_t>
 static NI_HOST GatherTablePtrs<offset_t, weight_t>
-upload_gather_tables(GatherTables<weight_t> & tab, at::Device device,
+upload_gather_tables(const GatherTables<weight_t> & tab, at::Device device,
                      std::vector<at::Tensor> & keep)
 {
-  auto opt = at::TensorOptions().device(device);
-  auto off_type = std::is_same<offset_t, int32_t>::value ? at::kInt : at::kLong;
-  auto wgt_type = std::is_same<weight_t, double>::value ? at::kDouble : at::kFloat;
-  GatherTablePtrs<offset_t, weight_t> ptrs;
-  ptrs.K = tab.K;
+  // byte layout: for each dimension, [len | off | wgt], 16-byte aligned
+  auto align = [](int64_t nbytes) { return (nbytes + 15) / 16 * 16; };
+  int64_t pos[3][3];
+  int64_t total = 0;
   for (int d = 0; d < 3; ++d) {
     int64_t nlen = static_cast<int64_t>(tab.len[d].size());
     int64_t ntab = static_cast<int64_t>(tab.off[d].size());
-    // from_blob does not own the host memory; .to() makes a (blocking)
-    // device copy.
-    at::Tensor tlen = at::from_blob(tab.len[d].data(), {nlen}, at::kInt)
-                        .to(opt.dtype(at::kInt));
-    at::Tensor toff = at::from_blob(tab.off[d].data(), {ntab}, at::kLong)
-                        .to(opt.dtype(off_type));
-    at::Tensor twgt = at::from_blob(tab.wgt[d].data(), {ntab}, wgt_type)
-                        .to(opt.dtype(wgt_type));
-    ptrs.len[d] = static_cast<const int32_t  *>(tlen.data_ptr());
-    ptrs.off[d] = static_cast<const offset_t *>(toff.data_ptr());
-    ptrs.wgt[d] = static_cast<const weight_t *>(twgt.data_ptr());
-    keep.push_back(tlen);
-    keep.push_back(toff);
-    keep.push_back(twgt);
+    pos[d][0] = total; total += align(nlen * sizeof(int32_t));
+    pos[d][1] = total; total += align(ntab * sizeof(offset_t));
+    pos[d][2] = total; total += align(ntab * sizeof(weight_t));
+  }
+
+  at::Tensor host = at::empty({total}, at::TensorOptions()
+                                         .dtype(at::kByte)
+                                         .pinned_memory(true));
+  uint8_t * hptr = host.data_ptr<uint8_t>();
+  for (int d = 0; d < 3; ++d) {
+    std::memcpy(hptr + pos[d][0], tab.len[d].data(),
+                tab.len[d].size() * sizeof(int32_t));
+    offset_t * hoff = reinterpret_cast<offset_t *>(hptr + pos[d][1]);
+    for (size_t k = 0; k < tab.off[d].size(); ++k) {
+      const int64_t o = tab.off[d][k];
+      TORCH_INTERNAL_ASSERT(
+        o >= static_cast<int64_t>(std::numeric_limits<offset_t>::min()) &&
+        o <= static_cast<int64_t>(std::numeric_limits<offset_t>::max()),
+        "gather table offset ", o, " does not fit in the index type");
+      hoff[k] = static_cast<offset_t>(o);
+    }
+    std::memcpy(hptr + pos[d][2], tab.wgt[d].data(),
+                tab.wgt[d].size() * sizeof(weight_t));
+  }
+
+  at::Tensor dev = host.to(at::TensorOptions().device(device),
+                           /*non_blocking=*/true);
+  keep.push_back(host);
+  keep.push_back(dev);
+
+  const uint8_t * dptr = static_cast<const uint8_t *>(dev.data_ptr());
+  GatherTablePtrs<offset_t, weight_t> ptrs;
+  ptrs.K = tab.K;
+  for (int d = 0; d < 3; ++d) {
+    ptrs.len[d] = reinterpret_cast<const int32_t  *>(dptr + pos[d][0]);
+    ptrs.off[d] = reinterpret_cast<const offset_t *>(dptr + pos[d][1]);
+    ptrs.wgt[d] = reinterpret_cast<const weight_t *>(dptr + pos[d][2]);
   }
   return ptrs;
 }
@@ -261,12 +289,16 @@ static NI_INLINE NI_DEVICE void gather_separable(
   const int lx = tab.len[0][jx];
   const int ly = tab.len[1][jy];
   const int lz = tab.len[2][jz];
-  const offset_t * ox = tab.off[0] + jx * KK;
-  const offset_t * oy = tab.off[1] + jy * KK;
-  const offset_t * oz = tab.off[2] + jz * KK;
-  const weight_t * wx = tab.wgt[0] + jx * KK;
-  const weight_t * wy = tab.wgt[1] + jy * KK;
-  const weight_t * wz = tab.wgt[2] + jz * KK;
+  // row bases in 64 bit (S*K may exceed the range of a 32 bit offset_t)
+  const int64_t bx = static_cast<int64_t>(jx) * KK;
+  const int64_t by = static_cast<int64_t>(jy) * KK;
+  const int64_t bz = static_cast<int64_t>(jz) * KK;
+  const offset_t * ox = tab.off[0] + bx;
+  const offset_t * oy = tab.off[1] + by;
+  const offset_t * oz = tab.off[2] + bz;
+  const weight_t * wx = tab.wgt[0] + bx;
+  const weight_t * wy = tab.wgt[1] + by;
+  const weight_t * wz = tab.wgt[2] + bz;
 
   for (offset_t c = 0; c < C; ++c, inp += inp_sC, out += out_sC) {
     weight_t acc = static_cast<weight_t>(0);
