@@ -16,7 +16,7 @@ import pytest
 from nitorch import spatial
 from nitorch.core import utils
 from nitorch.tests import _regulariser_reference as ref
-from nitorch.spatial._regularisers import c_solvers, _c_supports
+from nitorch.spatial._regularisers import c_solvers
 
 dt = torch.double
 BOUNDS = ['dft', 'dct2', 'dst2', 'dct1', 'dst1', 'zero', 'replicate']
@@ -325,15 +325,10 @@ def test_regulariser_grid_sliding_backends(shape, backend, bound):
         if backend == 'C':
             if not c_solvers:
                 pytest.skip('compiled backend not available')
-            # TEMPORARY: until the compiled kernels have their border
-            # correction, they are only exact where `_c_supports` uses them
-            if _c_supports(None, opt['bending'], opt['lame'], bound):
-                y = c_solvers.c_regulariser_grid(
-                    v, absolute=opt['absolute'], membrane=opt['membrane'],
-                    bending=opt['bending'], lame=opt['lame'],
-                    voxel_size=vx, bound=bound)
-            else:
-                y = spatial.regulariser_grid(v, **opt)
+            y = c_solvers.c_regulariser_grid(
+                v, absolute=opt['absolute'], membrane=opt['membrane'],
+                bending=opt['bending'], lame=opt['lame'],
+                voxel_size=vx, bound=bound)
         elif backend == 'kernel':
             # (the compiled backend is not used with autograd)
             vg = v.clone().requires_grad_()
@@ -342,6 +337,77 @@ def test_regulariser_grid_sliding_backends(shape, backend, bound):
             # (the compiled backend is not used with autograd)
             vg = v.clone().requires_grad_()
             y = spatial.regulariser_grid(vg, **opt).detach()
+        assert torch.allclose(y, target, atol=1e-9), name
+
+
+# ----------------------------------------------------------------------
+#   Compiled kernels (border pass): every boundary condition
+# ----------------------------------------------------------------------
+
+# (axes of 1 to 4 voxels: the interior box can be empty, and the border
+# slabs overlap the folds of the extension)
+C_SHAPES = [(6, 5), (5, 4, 4), (1, 4), (2, 3), (3, 4), (4, 2, 3), (3, 3, 1)]
+C_BOUNDS = BOUNDS + ['mixed', 'mixed-dft']
+needs_c = pytest.mark.skipif(not c_solvers, reason='compiled backend not available')
+
+
+def _c_bound(bound, shape):
+    """Boundary conditions of the compiled tests. The compiled `dst1`
+    extends an axis of one voxel as `replicate` (`bounds_common.h`),
+    which is not an antisymmetric extension: not tested."""
+    dim = len(shape)
+    if bound == 'mixed-dft':
+        bound = ['dft', 'zero', 'dct1'][:dim]
+    bound = _mixed(bound, dim)
+    blist = [bound] * dim if isinstance(bound, str) else list(bound)
+    if any(b == 'dst1' and n == 1 for b, n in zip(blist, shape)):
+        return None
+    return bound
+
+
+@needs_c
+@pytest.mark.parametrize('shape', C_SHAPES)
+@pytest.mark.parametrize('bound', C_BOUNDS)
+def test_c_regulariser(shape, bound):
+    """The compiled field regulariser is the operator of definition F"""
+    bound = _c_bound(bound, shape)
+    if bound is None:
+        pytest.skip('dst1 on an axis of one voxel')
+    dim = len(shape)
+    vx = VX[:dim]
+    torch.manual_seed(0)
+    x = torch.randn([1, 2, *shape], dtype=dt)
+    w = torch.rand([1, 1, *shape], dtype=dt) + 0.5
+    cases = dict(FIELD_CASES, rls=dict(a=0.3, m=0.7))
+    for name, case in cases.items():
+        weights = w if name == 'rls' else None
+        A = ref.operator(shape, bound, field_terms(dim, vx, **case), 1,
+                         None if weights is None else weights[0, 0])
+        y = c_solvers.c_regulariser(x, weights, dim=dim, **_field_kwargs(case),
+                                    voxel_size=vx, bound=bound)
+        target = (x.reshape(2, -1) @ A.T).reshape(x.shape)
+        assert torch.allclose(y, target, atol=1e-9), name
+
+
+@needs_c
+@pytest.mark.parametrize('shape', [s for s in C_SHAPES if len(s) > 1])
+@pytest.mark.parametrize('bound', C_BOUNDS + ['sliding', 'mixed-sliding'])
+def test_c_regulariser_grid(shape, bound):
+    """The compiled grid regulariser is the operator of definition F"""
+    bound = _c_bound(bound, shape)
+    if bound is None:
+        pytest.skip('dst1 on an axis of one voxel')
+    dim = len(shape)
+    vx = VX[:dim]
+    torch.manual_seed(0)
+    v = torch.randn([*shape, dim], dtype=dt)
+    w = torch.rand(shape, dtype=dt) + 0.5
+    cases = dict(GRID_CASES, rls=dict(a=0.3, m=0.7))
+    for name, case in cases.items():
+        weights = w if name == 'rls' else None
+        target = grid_target(v, bound, grid_terms(dim, vx, **case), weights)
+        y = c_solvers.c_regulariser_grid(v, weights, **_grid_kwargs(case),
+                                         voxel_size=vx, bound=bound)
         assert torch.allclose(y, target, atol=1e-9), name
 
 

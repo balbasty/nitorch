@@ -96,8 +96,9 @@ def _component_bounds(bound, dim, ncomp=None):
     return [_bounds.for_component(bound, k) for k in range(ncomp or dim)]
 
 
-# TEMPORARY: the compiled regularisers and solvers do not implement the
-# border correction of definition F yet (see `correct_stencil`).
+# TEMPORARY: the compiled solvers (relaxation, preconditioner) do not
+# implement the border correction of definition F yet (see
+# `correct_stencil`). The compiled regularisers do.
 _C_EXACT = {
     'membrane': ('dft', 'dct2', 'dst2', 'replicate', 'sliding'),
     'bending': ('dft', 'dct2'),
@@ -1078,7 +1079,7 @@ def regulariser_grid(v, absolute=0, membrane=0, bending=0, lame=0,
         return torch.zeros_like(v)
 
     if (c_solvers and not v.requires_grad
-            and _c_supports(weights, bending, lame, bound)):
+            and _c_supports(weights, bending, lame)):
         return c_solvers.c_regulariser_grid(
             v, weights, None,
             absolute, membrane, bending, lame, factor,
@@ -1522,7 +1523,7 @@ def regulariser(x, absolute=0, membrane=0, bending=0, factor=1,
 
     dim = dim or (x.dim() - 1)
     if (c_solvers and not x.requires_grad
-            and _c_supports(weights, bending, bound=bound)):
+            and _c_supports(weights, bending)):
         return c_solvers.c_regulariser(
             x, weights, None, dim,
             absolute, membrane, bending, factor,

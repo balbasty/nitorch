@@ -2,6 +2,7 @@
 #include "../defines.h"            // useful macros
 #include "bounds_common.h"         // boundary conditions + enum
 #include "allocator.h"             // base class handling offset sizes
+#include "border_common.h"         // border correction (definition F)
 // #include "utils.h"                 // unrolled for loop.h"
 #include <ATen/ATen.h>             // tensors
 
@@ -257,6 +258,7 @@ public:
   {
     set_factors(info.absolute, info.membrane, info.bending);
     set_kernel(info.vx0, info.vx1, info.vx2);
+    set_border(info.vx0, info.vx1, info.vx2);
 #ifndef __CUDACC__
     set_vel2mom();
     set_matvec();
@@ -298,6 +300,37 @@ public:
     b110 = static_cast<reduce_t>(2.0*vx0*vx1);
     b101 = static_cast<reduce_t>(2.0*vx0*vx2);
     b011 = static_cast<reduce_t>(2.0*vx1*vx2);
+  }
+
+  // Border correction (see border_common.h): which terms are not zero,
+  // their coefficients, and the interior box. Decided once: the
+  // interior voxels run the plain kernels, the border voxels add B.
+  NI_HOST NI_INLINE void set_border(double vx0, double vx1, double vx2)
+  {
+    BoundType b[3] = {bound0, bound1, bound2};
+    double ivx[3] = {vx0, vx1, vx2};   // (1 / voxel_size**2)
+    needs_border = false;
+    for (int a = 0; a < 3; ++a) {
+      bool on = a < dim;
+      kmem[a] = static_cast<reduce_t>(ivx[a]);
+      kbd[a]  = static_cast<reduce_t>(ivx[a] * ivx[a]);
+      fmem[a] = on && has_membrane && border::membrane_needs(b[a]);
+      fbd[a]  = on && has_bending && border::bending_diag_needs(b[a]);
+      fedge[a] = on && has_bending && border::bending_edge_needs(b[a]);
+      needs_border = needs_border || fmem[a] || fbd[a] || fedge[a];
+      for (int bb = 0; bb < 3; ++bb) {
+        kbc[a][bb] = static_cast<reduce_t>(ivx[a] * ivx[bb]);
+        fcorner[a][bb] = on && bb < dim && a < bb && has_bending &&
+                         border::bending_corner_needs(b[a], b[bb]);
+        needs_border = needs_border || fcorner[a][bb];
+      }
+    }
+    // (dct1 folds its ghost samples onto the second voxel)
+    box.set(X, Y, Z,
+            dim > 0 ? (bound0 == BoundType::DCT1 ? 2 : 1) : 0,
+            dim > 1 ? (bound1 == BoundType::DCT1 ? 2 : 1) : 0,
+            dim > 2 ? (bound2 == BoundType::DCT1 ? 2 : 1) : 0);
+    region = 0;
   }
 
 #ifdef __CUDACC__
@@ -393,6 +426,15 @@ public:
 #endif
 
   NI_HOST NI_INLINE int64_t voxcount() const { return N * X * Y * Z; }
+
+  // Voxels of each region (0: all, 1: interior, 2: border). The CUDA
+  // host code mutates `region` and launches one kernel per region.
+  NI_HOST NI_INLINE bool split() const { return needs_border; }
+  NI_HOST NI_DEVICE NI_INLINE int64_t voxcount(uint8_t r) const {
+    return r == 1 ? N * box.interior_count()
+         : r == 2 ? N * box.border_count() : N * X * Y * Z;
+  }
+  NI_HOST NI_INLINE void set_region(uint8_t r) { region = r; }
  
 
 private:
@@ -432,6 +474,8 @@ private:
 
   NI_DEVICE void finish(offset_t x, offset_t y, offset_t z,
     scalar_t * out, const scalar_t * inp, const scalar_t * hes) const;
+  NI_DEVICE void border(offset_t x, offset_t y, offset_t z, offset_t n) const;
+  NI_DEVICE NI_INLINE void voxel(offset_t i, offset_t r) const;
 
   /* ~~~ OPTIONS ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ */
   offset_t          dim;            // dimensionality (1 or 2 or 3)
@@ -451,6 +495,16 @@ private:
 #endif
 
   uint8_t   mode;
+  uint8_t   region;         // 0: all voxels, 1: interior, 2: border
+  bool      needs_border;
+  border::BorderBox<offset_t> box;
+  reduce_t  kmem[3];        // membrane coefficient of each axis
+  reduce_t  kbd[3];         // bending (second differences) coefficients
+  reduce_t  kbc[3][3];      // bending (cross terms) coefficients
+  bool      fmem[3];        // non-zero border terms
+  bool      fbd[3];
+  bool      fedge[3];
+  bool      fcorner[3][3];
   bool      has_absolute;
   bool      has_membrane;
   bool      has_bending;
@@ -543,6 +597,33 @@ void RegulariserImpl<scalar_t,offset_t,reduce_t>::dispatch(
 }
 
 
+// Voxel `i` (linear index) of the region `r`
+template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
+void RegulariserImpl<scalar_t,offset_t,reduce_t>::voxel(
+    offset_t i, offset_t r) const {
+  offset_t n, x, y, z;
+  if (r == 0) {
+    offset_t YZ  = Y * Z;
+    offset_t XYZ = X * YZ;
+    n  = (i/XYZ);
+    x  = (i/YZ) % X;
+    y  = (i/Z)  % Y;
+    z  =  i     % Z;
+    dispatch(x, y, z, n);
+  } else if (r == 1) {
+    offset_t M = box.interior_count();
+    n = i / M;
+    box.decode_interior(i % M, x, y, z);
+    dispatch(x, y, z, n);
+  } else {
+    offset_t M = box.border_count();
+    n = i / M;
+    box.decode(i % M, x, y, z);
+    dispatch(x, y, z, n);
+    border(x, y, z, n);
+  }
+}
+
 #ifdef __CUDACC__
 
 template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
@@ -550,44 +631,27 @@ void RegulariserImpl<scalar_t,offset_t,reduce_t>::loop(
   int threadIdx, int blockIdx, int blockDim, int gridDim) const {
 
   offset_t index = static_cast<offset_t>(blockIdx * blockDim + threadIdx);
-  offset_t YZ   = Y * Z;
-  offset_t XYZ  = X * YZ;
-  offset_t NXYZ = N * XYZ;
-  offset_t n, x, y, z;
-  for (offset_t i=index; index < NXYZ; index += blockDim*gridDim, i=index)
-  {
-      // Convert index: linear to sub
-      n  = (i/XYZ);
-      x  = (i/YZ) % X;
-      y  = (i/Z)  % Y;
-      z  =  i     % Z;
-      dispatch(x, y, z, n);
-  }
+  offset_t count = static_cast<offset_t>(voxcount(region));
+  for (offset_t i=index; index < count; index += blockDim*gridDim, i=index)
+    voxel(i, region);
 }
 
 #else
 
 // This bit loops over all target voxels. We therefore need to
 // convert linear indices to multivariate indices. The way I do it
-// might not be optimal.
+// might not be optimal. Without border correction, all voxels run the
+// plain kernels; otherwise the interior voxels, then the border voxels
+// (which add the border correction).
 template <typename scalar_t, typename offset_t, typename reduce_t> NI_HOST
 void RegulariserImpl<scalar_t,offset_t,reduce_t>::loop() const
 {
-  // Parallelize across voxels
-  offset_t YZ   = Y * Z;
-  offset_t XYZ  = X * YZ;
-  offset_t NXYZ = N * XYZ;
-  at::parallel_for(0, NXYZ, GRAIN_SIZE, [&](offset_t start, offset_t end) {
-    offset_t n, x, y, z;
-    for (offset_t i = start; i < end; ++i) {
-      // Convert index: linear to sub
-      n  = (i/XYZ);
-      x  = (i/YZ) % X;
-      y  = (i/Z)  % Y;
-      z  =  i     % Z;
-      dispatch(x, y, z, n);
-    }
-  });
+  for (uint8_t r = (needs_border ? 1 : 0); r < (needs_border ? 3 : 1); ++r)
+    at::parallel_for(0, voxcount(r), GRAIN_SIZE,
+                     [&](offset_t start, offset_t end) {
+      for (offset_t i = start; i < end; ++i)
+        voxel(i, r);
+    });
 }
 
 #endif
@@ -680,35 +744,47 @@ void RegulariserImpl<scalar_t,offset_t,reduce_t>::matvec_none(
 /* ========================================================================== */
 /*                               MACRO HELPERS                                */
 /* ========================================================================== */
-// ~~~ Exact operator at the borders (see `row_weight` and
-//     `replicate_inward` in bounds_common.h) ~~~
 template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
 void RegulariserImpl<scalar_t,offset_t,reduce_t>::finish(
     offset_t x, offset_t y, offset_t z,
     scalar_t * out, const scalar_t * inp, const scalar_t * hes) const
 {
-  reduce_t w = bound::row_weight<reduce_t>(bound0, x, X)
-             * bound::row_weight<reduce_t>(bound1, y, Y)
-             * bound::row_weight<reduce_t>(bound2, z, Z);
-  int8_t rx = 0, ry = 0, rz = 0;
-  if (has_bending) {
-    rx = bound::replicate_inward(bound0, x, X);
-    ry = bound::replicate_inward(bound1, y, Y);
-    rz = bound::replicate_inward(bound2, z, Z);
-  }
-  if (rx || ry || rz)
-    for (offset_t c = 0; c < C; ++c) {
-      const scalar_t * i = inp + c * inp_sC;
-      reduce_t center = static_cast<reduce_t>(*i), corr = 0;
-      if (rx) corr += b200 * (static_cast<reduce_t>(i[rx * inp_sX]) - center);
-      if (ry) corr += b020 * (static_cast<reduce_t>(i[ry * inp_sY]) - center);
-      if (rz) corr += b002 * (static_cast<reduce_t>(i[rz * inp_sZ]) - center);
-      out[c * out_sC] += static_cast<scalar_t>(bending[c] * corr);
-    }
-  if (w != static_cast<reduce_t>(1))
-    for (offset_t c = 0; c < C; ++c)
-      out[c * out_sC] = static_cast<scalar_t>(w * out[c * out_sC]);
   matvec(out, hes, inp);
+}
+
+// ~~~ Border correction (see border_common.h) ~~~
+template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
+void RegulariserImpl<scalar_t,offset_t,reduce_t>::border(
+    offset_t x, offset_t y, offset_t z, offset_t n) const
+{
+  typedef border::View<reduce_t, scalar_t, offset_t> View;
+  scalar_t *out = out_ptr + (x*out_sX + y*out_sY + z*out_sZ + n*out_sN);
+  const scalar_t *inp = inp_ptr + (x*inp_sX + y*inp_sY + z*inp_sZ + n*inp_sN);
+  const scalar_t *wgt = wgt_ptr + (x*wgt_sX + y*wgt_sY + z*wgt_sZ + n*wgt_sN);
+  for (offset_t c = 0; c < C; ++c, inp += inp_sC, out += out_sC, wgt += wgt_sC)
+  {
+    View V(inp, x, y, z, X, Y, Z, inp_sX, inp_sY, inp_sZ,
+           bound0, bound1, bound2);
+    View W(wgt, x, y, z, X, Y, Z, wgt_sX, wgt_sY, wgt_sZ,
+           wbound0, wbound1, wbound2);
+    const View * pW = wgt_ptr ? &W : static_cast<const View *>(0);
+    reduce_t m = membrane[c], b = bending[c], B = 0;
+    for (int a = 0; a < dim; ++a) {
+      if (m && fmem[a])
+        B += m * kmem[a] * border::membrane(V, pW, a);
+      if (!b) continue;
+      if (fbd[a])
+        B += b * kbd[a] * border::bending_diag(V, a);
+      for (int bb = 0; bb < dim; ++bb) {
+        if (bb == a) continue;
+        if (fedge[a])
+          B += b * kbc[a][bb] * border::bending_edge(V, a, bb);
+        if (fcorner[a][bb])
+          B += b * kbc[a][bb] * border::bending_corner(V, a, bb);
+      }
+    }
+    *out += static_cast<scalar_t>(B);
+  }
 }
 
 #define GET_COORD1_(x) offset_t x##0  = x - 1, x##1 = x + 1;
@@ -1413,20 +1489,32 @@ NI_HOST Tensor regulariser_impl(
     if (info.canUse32BitIndexMath())
     {
       RegulariserImpl<scalar_t, int32_t, double> algo(info);
-      auto palgo = alloc_and_copy_to_device(&algo, stream);
-      regulariser_kernel
-          <<<GET_BLOCKS(algo.voxcount()), CUDA_NUM_THREADS, 0, stream>>>
-          (palgo);
-      cudaFree(palgo);
+      // (interior, then border voxels, if they need a border correction)
+      for (uint8_t r = algo.split() ? 1 : 0; r < (algo.split() ? 3 : 1); ++r)
+      {
+        algo.set_region(r);
+        if (!algo.voxcount(r)) continue;
+        auto palgo = alloc_and_copy_to_device(&algo, stream);
+        regulariser_kernel
+            <<<GET_BLOCKS(algo.voxcount(r)), CUDA_NUM_THREADS, 0, stream>>>
+            (palgo);
+        cudaFree(palgo);
+      }
     }
     else
     {
       RegulariserImpl<scalar_t, int64_t, double> algo(info);
-      auto palgo = alloc_and_copy_to_device(&algo, stream);
-      regulariser_kernel
-          <<<GET_BLOCKS(algo.voxcount()), CUDA_NUM_THREADS, 0, stream>>>
-          (palgo);
-      cudaFree(palgo);
+      // (interior, then border voxels, if they need a border correction)
+      for (uint8_t r = algo.split() ? 1 : 0; r < (algo.split() ? 3 : 1); ++r)
+      {
+        algo.set_region(r);
+        if (!algo.voxcount(r)) continue;
+        auto palgo = alloc_and_copy_to_device(&algo, stream);
+        regulariser_kernel
+            <<<GET_BLOCKS(algo.voxcount(r)), CUDA_NUM_THREADS, 0, stream>>>
+            (palgo);
+        cudaFree(palgo);
+      }
     }
   });
   /*

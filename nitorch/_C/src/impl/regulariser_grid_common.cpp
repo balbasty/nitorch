@@ -2,6 +2,7 @@
 #include "../defines.h"            // useful macros
 #include "bounds_common.h"         // boundary conditions + enum
 #include "allocator.h"             // base class handling offset sizes
+#include "border_common.h"         // border correction (definition F)
 #include <ATen/ATen.h>             // tensors
 #include <cmath>                   // fma (fused multiply add)
 
@@ -297,6 +298,64 @@ public:
     wz010 = -mu*vx1/vx2 + w010/vx2;
     wz001 = -2.0*mu-lam + w001/vx2;
     w2    = 0.25*mu+0.25*lam;
+    set_border();
+  }
+
+  // Border correction (see border_common.h): which terms are not zero,
+  // their coefficients, and the interior box. Decided once: the
+  // interior voxels run the plain kernels, the border voxels add B.
+  // Component c has its own boundary conditions (sliding axes), and its
+  // energy is scaled by its squared voxel size.
+  NI_HOST NI_INLINE void set_border()
+  {
+    BoundType b[3] = {bound0, bound1, bound2};
+    double ivx[3] = {vx0, vx1, vx2};   // (1 / voxel_size**2)
+    double lam1 = membrane, lam2 = bending, mu = lame_shear, lam = lame_div;
+    needs_border = false;
+    bool dct1[3] = {false, false, false};
+    for (int c = 0; c < 3; ++c)
+    for (int a = 0; a < 3; ++a) {
+      BoundType bca = border::component_bound(b[a], a, c);
+      cbound[c][a] = bca;
+      bool on = a < dim && c < dim;
+      dct1[a] = dct1[a] || (on && bca == BoundType::DCT1);
+      double r = on ? ivx[a] / ivx[c] : 0.;  // (vx_c / vx_a)**2
+      kmem[c][a] = static_cast<reduce_t>(lam1 * r + mu * (a == c ? 2. : r)
+                                         + (a == c ? lam : 0.));
+      kbd[c][a]  = static_cast<reduce_t>(lam2 * ivx[a] * r);
+      fmem[c][a] = on && kmem[c][a] && border::membrane_needs(bca);
+      fbd[c][a]  = on && lam2 && border::bending_diag_needs(bca);
+      fedge[c][a] = on && lam2 && border::bending_edge_needs(bca);
+      needs_border = needs_border || fmem[c][a] || fbd[c][a] || fedge[c][a];
+    }
+    for (int c = 0; c < 3; ++c)
+    for (int a = 0; a < 3; ++a)
+    for (int bb = 0; bb < 3; ++bb) {
+      bool on = a < dim && bb < dim && c < dim;
+      kbc[c][a][bb] = static_cast<reduce_t>(
+        on ? lam2 * ivx[a] * ivx[bb] / ivx[c] : 0.);
+      fcorner[c][a][bb] = on && lam2 && a < bb &&
+        border::bending_corner_needs(cbound[c][a], cbound[c][bb]);
+      needs_border = needs_border || fcorner[c][a][bb];
+    }
+    // linear-elastic cross terms of the output component i and input
+    // component j: shear (scatter axis j, difference axis i) and
+    // divergence (scatter axis i, difference axis j)
+    for (int i = 0; i < 3; ++i)
+    for (int j = 0; j < 3; ++j) {
+      bool on = i < dim && j < dim && i != j;
+      fshear[i][j] = on && mu &&
+        border::lame_cross_needs(cbound[i][j], cbound[j][j]);
+      fdiv[i][j] = on && lam &&
+        border::lame_cross_needs(cbound[i][i], cbound[j][i]);
+      needs_border = needs_border || fshear[i][j] || fdiv[i][j];
+    }
+    // (dct1 folds its ghost samples onto the second voxel)
+    box.set(X, Y, Z,
+            dim > 0 ? (dct1[0] ? 2 : 1) : 0,
+            dim > 1 ? (dct1[1] ? 2 : 1) : 0,
+            dim > 2 ? (dct1[2] ? 2 : 1) : 0);
+    region = 0;
   }
 
 #ifndef __CUDACC__
@@ -416,6 +475,15 @@ public:
 #endif
 
   NI_HOST NI_INLINE int64_t voxcount() const { return N * X * Y * Z; }
+
+  // Voxels of each region (0: all, 1: interior, 2: border). The CUDA
+  // host code mutates `region` and launches one kernel per region.
+  NI_HOST NI_INLINE bool split() const { return needs_border; }
+  NI_HOST NI_DEVICE NI_INLINE int64_t voxcount(uint8_t r) const {
+    return r == 1 ? N * box.interior_count()
+         : r == 2 ? N * box.border_count() : N * X * Y * Z;
+  }
+  NI_HOST NI_INLINE void set_region(uint8_t r) { region = r; }
  
 
 private:
@@ -461,10 +529,25 @@ NI_DEVICE void matvec(const scalar_t *, const scalar_t *, scalar_t *) const;
   { return c == 0 ? vx0 : c == 1 ? vx1 : vx2; }
   NI_DEVICE void finish(offset_t x, offset_t y, offset_t z,
     scalar_t * out0, const scalar_t * inp0, const scalar_t * hes0) const;
+  NI_DEVICE void border(offset_t x, offset_t y, offset_t z, offset_t n) const;
+  NI_DEVICE NI_INLINE void voxel(offset_t i, offset_t r) const;
 
   /* ~~~ OPTIONS ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ */
   offset_t          dim;            // dimensionality (2 or 3)
   uint8_t           mode;
+  uint8_t           region;         // 0: all voxels, 1: interior, 2: border
+  bool              needs_border;
+  border::BorderBox<offset_t> box;
+  BoundType         cbound[3][3];   // bound of each component, along each axis
+  reduce_t          kmem[3][3];     // membrane-like coefficients [comp][axis]
+  reduce_t          kbd[3][3];      // bending (second differences)
+  reduce_t          kbc[3][3][3];   // bending (cross terms) [comp][axis][axis]
+  bool              fmem[3][3];     // non-zero border terms
+  bool              fbd[3][3];
+  bool              fedge[3][3];
+  bool              fcorner[3][3][3];
+  bool              fshear[3][3];   // [output comp][input comp]
+  bool              fdiv[3][3];
   BoundType         bound0;         // boundary condition  // x|W
   BoundType         bound1;         // boundary condition  // y|H
   BoundType         bound2;         // boundary condition  // z|D
@@ -596,6 +679,33 @@ void RegulariserGridImpl<scalar_t,offset_t,reduce_t>::dispatch(
 }
 
 
+// Voxel `i` (linear index) of the region `r`
+template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
+void RegulariserGridImpl<scalar_t,offset_t,reduce_t>::voxel(
+    offset_t i, offset_t r) const {
+  offset_t n, x, y, z;
+  if (r == 0) {
+    offset_t YZ  = Y * Z;
+    offset_t XYZ = X * YZ;
+    n  = (i/XYZ);
+    x  = (i/YZ) % X;
+    y  = (i/Z)  % Y;
+    z  =  i     % Z;
+    dispatch(x, y, z, n);
+  } else if (r == 1) {
+    offset_t M = box.interior_count();
+    n = i / M;
+    box.decode_interior(i % M, x, y, z);
+    dispatch(x, y, z, n);
+  } else {
+    offset_t M = box.border_count();
+    n = i / M;
+    box.decode(i % M, x, y, z);
+    dispatch(x, y, z, n);
+    border(x, y, z, n);
+  }
+}
+
 #if __CUDACC__
 
 template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
@@ -603,44 +713,27 @@ void RegulariserGridImpl<scalar_t,offset_t,reduce_t>::loop(
   int threadIdx, int blockIdx, int blockDim, int gridDim) const {
 
   offset_t index = static_cast<offset_t>(blockIdx * blockDim + threadIdx);
-  offset_t YZ   = Y * Z;
-  offset_t XYZ  = X * YZ;
-  offset_t NXYZ = N * XYZ;
-  offset_t n, x, y, z;
-  for (offset_t i=index; index < NXYZ; index += blockDim*gridDim, i=index)
-  {
-      // Convert index: linear to sub
-      n  = (i/XYZ);
-      x  = (i/YZ) % X;
-      y  = (i/Z)  % Y;
-      z  =  i     % Z;
-      dispatch(x, y, z, n);
-  }
+  offset_t count = static_cast<offset_t>(voxcount(region));
+  for (offset_t i=index; index < count; index += blockDim*gridDim, i=index)
+    voxel(i, region);
 }
 
 #else
 
 // This bit loops over all target voxels. We therefore need to
 // convert linear indices to multivariate indices. The way I do it
-// might not be optimal.
+// might not be optimal. Without border correction, all voxels run the
+// plain kernels; otherwise the interior voxels, then the border voxels
+// (which add the border correction).
 template <typename scalar_t, typename offset_t, typename reduce_t> NI_HOST
 void RegulariserGridImpl<scalar_t,offset_t,reduce_t>::loop() const
 {
-  // Parallelize across voxels
-  offset_t YZ   = Y * Z;
-  offset_t XYZ  = X * YZ;
-  offset_t NXYZ = N * XYZ;
-  at::parallel_for(0, NXYZ, GRAIN_SIZE, [&](offset_t start, offset_t end) {
-    offset_t n, x, y, z;
-    for (offset_t i = start; i < end; ++i) {
-      // Convert index: linear to sub
-      n  = (i/XYZ);
-      x  = (i/YZ) % X;
-      y  = (i/Z)  % Y;
-      z  =  i     % Z;
-      dispatch(x, y, z, n);
-    }
-  });
+  for (uint8_t r = (needs_border ? 1 : 0); r < (needs_border ? 3 : 1); ++r)
+    at::parallel_for(0, voxcount(r), GRAIN_SIZE,
+                     [&](offset_t start, offset_t end) {
+      for (offset_t i = start; i < end; ++i)
+        voxel(i, r);
+    });
 }
 
 #endif
@@ -765,35 +858,56 @@ void RegulariserGridImpl<scalar_t,offset_t,reduce_t>::matvec_none(
 /* ========================================================================== */
 /*                               MACRO HELPERS                                */
 /* ========================================================================== */
-// ~~~ Exact operator at the borders (see `row_weight` and
-//     `replicate_inward` in bounds_common.h) ~~~
 template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
 void RegulariserGridImpl<scalar_t,offset_t,reduce_t>::finish(
     offset_t x, offset_t y, offset_t z,
     scalar_t * out0, const scalar_t * inp0, const scalar_t * hes0) const
 {
-  reduce_t w = bound::row_weight<reduce_t>(bound0, x, X)
-             * bound::row_weight<reduce_t>(bound1, y, Y)
-             * bound::row_weight<reduce_t>(bound2, z, Z);
-  int8_t rx = 0, ry = 0, rz = 0;
-  if (bending) {
-    rx = bound::replicate_inward(bound0, x, X);
-    ry = bound::replicate_inward(bound1, y, Y);
-    rz = bound::replicate_inward(bound2, z, Z);
-  }
-  if (rx || ry || rz)
-    for (offset_t c = 0; c < dim; ++c) {
-      const scalar_t * i = inp0 + c * inp_sC;
-      reduce_t center = static_cast<reduce_t>(*i), corr = 0;
-      if (rx) corr += w200 * (static_cast<reduce_t>(i[rx * inp_sX]) - center);
-      if (ry) corr += w020 * (static_cast<reduce_t>(i[ry * inp_sY]) - center);
-      if (rz) corr += w002 * (static_cast<reduce_t>(i[rz * inp_sZ]) - center);
-      out0[c * out_sC] += static_cast<scalar_t>(corr / voxel_size(c));
-    }
-  if (w != static_cast<reduce_t>(1))
-    for (offset_t c = 0; c < dim; ++c)
-      out0[c * out_sC] = static_cast<scalar_t>(w * out0[c * out_sC]);
   matvec(hes0, inp0, out0);
+}
+
+// ~~~ Border correction (see border_common.h) ~~~
+template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
+void RegulariserGridImpl<scalar_t,offset_t,reduce_t>::border(
+    offset_t x, offset_t y, offset_t z, offset_t n) const
+{
+  typedef border::View<reduce_t, scalar_t, offset_t> View;
+  scalar_t *out = out_ptr + (x*out_sX + y*out_sY + z*out_sZ + n*out_sN);
+  const scalar_t *inp = inp_ptr + (x*inp_sX + y*inp_sY + z*inp_sZ + n*inp_sN);
+  const scalar_t *wgt = wgt_ptr + (x*wgt_sX + y*wgt_sY + z*wgt_sZ + n*wgt_sN);
+  View W(wgt, x, y, z, X, Y, Z, wgt_sX, wgt_sY, wgt_sZ,
+         wbound0, wbound1, wbound2);
+  const View * pW = wgt_ptr ? &W : static_cast<const View *>(0);
+  for (offset_t c = 0; c < dim; ++c, out += out_sC)
+  {
+    View V(inp + c * inp_sC, x, y, z, X, Y, Z, inp_sX, inp_sY, inp_sZ,
+           cbound[c][0], cbound[c][1], cbound[c][2]);
+    reduce_t B = 0;
+    for (int a = 0; a < dim; ++a) {
+      if (fmem[c][a])
+        B += kmem[c][a] * border::membrane(V, pW, a);
+      if (fbd[c][a])
+        B += kbd[c][a] * border::bending_diag(V, a);
+      for (int bb = 0; bb < dim; ++bb) {
+        if (bb == a) continue;
+        if (fedge[c][a])
+          B += kbc[c][a][bb] * border::bending_edge(V, a, bb);
+        if (fcorner[c][a][bb])
+          B += kbc[c][a][bb] * border::bending_corner(V, a, bb);
+      }
+    }
+    // linear-elastic cross terms
+    for (offset_t j = 0; j < dim; ++j) {
+      if (!fshear[c][j] && !fdiv[c][j]) continue;
+      View Vj(inp + j * inp_sC, x, y, z, X, Y, Z, inp_sX, inp_sY, inp_sZ,
+              cbound[j][0], cbound[j][1], cbound[j][2]);
+      if (fshear[c][j])
+        B += lame_shear * border::lame_cross(V, Vj, j, c);
+      if (fdiv[c][j])
+        B += lame_div * border::lame_cross(V, Vj, c, j);
+    }
+    *out += static_cast<scalar_t>(B);
+  }
 }
 
 #define GET_COORD1_(x) offset_t x##0  = x - 1, x##1 = x + 1;
@@ -1973,14 +2087,26 @@ NI_HOST Tensor regulariser_grid_impl(
     if (info.canUse32BitIndexMath())
     {
       RegulariserGridImpl<scalar_t, int32_t, double> algo(info);
-      regulariser_kernel<<<GET_BLOCKS(algo.voxcount()), CUDA_NUM_THREADS, 0,
-                           at::cuda::getCurrentCUDAStream()>>>(algo);
+      // (interior, then border voxels, if they need a border correction)
+      for (uint8_t r = algo.split() ? 1 : 0; r < (algo.split() ? 3 : 1); ++r)
+      {
+        algo.set_region(r);
+        if (!algo.voxcount(r)) continue;
+        regulariser_kernel<<<GET_BLOCKS(algo.voxcount(r)), CUDA_NUM_THREADS, 0,
+                             at::cuda::getCurrentCUDAStream()>>>(algo);
+      }
     }
     else
     {
       RegulariserGridImpl<scalar_t, int64_t, double> algo(info);
-      regulariser_kernel<<<GET_BLOCKS(algo.voxcount()), CUDA_NUM_THREADS, 0,
-                           at::cuda::getCurrentCUDAStream()>>>(algo);
+      // (interior, then border voxels, if they need a border correction)
+      for (uint8_t r = algo.split() ? 1 : 0; r < (algo.split() ? 3 : 1); ++r)
+      {
+        algo.set_region(r);
+        if (!algo.voxcount(r)) continue;
+        regulariser_kernel<<<GET_BLOCKS(algo.voxcount(r)), CUDA_NUM_THREADS, 0,
+                             at::cuda::getCurrentCUDAStream()>>>(algo);
+      }
     }
   });
 
