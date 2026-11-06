@@ -1,8 +1,32 @@
+/*
+FMG RESTRICTION
+
+The restriction (do_adjoint == true) maps a fine image to a coarse image
+with a gather over output (coarse) voxels (no atomics), separably in each
+dimension:
+
+  out[j] = sum_i  (1/s) * Lin((x_j - i) / s) * sign(i) * inp[fold(i)],
+  x_j    = (j + 0.5) * s - 0.5,     s = fine size / coarse size,
+
+where Lin is the linear B-spline (hat) and fold/sign implement the
+boundary condition on the fine grid. FMG always restricts by a factor of
+two (coarse size = ceil(fine size / 2), see fmg_common.cpp), so that
+s = 2 (even sizes), s = (2m-1)/m < 2 (odd sizes) or s = 1 (size 1).
+The support |x_j - i| < s <= 2 is therefore exactly covered by the four
+taps floor(x_j) - 1 .. floor(x_j) + 2, and the kernel `restrict2x<D>`
+uses a fixed, fully unrolled, 4^D-tap stencil. (With s > 2 the stencil
+would be truncated -- this was already the case of the legacy kernels.)
+
+The legacy kernels (restrict{1,2,3}d) compute the same operator and are
+kept for comparison; they can be selected by setting the environment
+variable `NI_MULTIRES_RESTRICT_LEGACY=1`.
+*/
 #include "common.h"                // write C++/CUDA compatible code
 #include "../defines.h"            // useful macros
 #include "bounds_common.h"         // boundary conditions + enum
 #include "interpolation_common.h"  // interpolation weights + enum
 #include "allocator.h"             // base class handling offset sizes
+#include "gather_common.h"         // NI_PRAGMA_UNROLL, gather_env_flag
 #include <ATen/ATen.h>             // tensors
 #include <tuple>                   // needed by prepare_tensors
 
@@ -49,6 +73,34 @@ namespace { // anonymous namespace > everything inside has internal linkage
 
 const auto L = ni::InterpolationType::Linear;
 const auto Q = ni::InterpolationType::Quadratic;
+
+static NI_HOST bool multires_restrict_use_legacy()
+{
+  return gather_env_flag("NI_MULTIRES_RESTRICT_LEGACY");
+}
+
+// Taps of the (factor 2) restriction along one dimension, for output
+// voxel j: input offsets `o` (folded, times stride), weights `w` and
+// boundary signs `s` of input voxels floor(x)-1 .. floor(x)+2.
+// The expressions replicate the legacy kernels exactly.
+template <typename reduce_t, typename offset_t>
+static NI_INLINE NI_DEVICE void restrict2x_taps(
+  offset_t j, reduce_t scale, BoundType bound, offset_t size, offset_t stride,
+  offset_t o[4], reduce_t w[4], int8_t s[4])
+{
+  reduce_t x  = (j + 0.5) * scale - 0.5;
+  offset_t i1 = static_cast<offset_t>(std::floor(x));
+  w[0] = interpolation::weight(L, (x - i1 + 1) / scale) / scale;
+  w[1] = interpolation::weight(L, (x - i1)     / scale) / scale;
+  w[2] = interpolation::weight(L, (1 + i1 - x) / scale) / scale;
+  w[3] = interpolation::weight(L, (2 + i1 - x) / scale) / scale;
+  NI_PRAGMA_UNROLL
+  for (int k = 0; k < 4; ++k) {
+    offset_t i = i1 - 1 + k;
+    s[k] = bound::sign(bound, i, size);
+    o[k] = bound::index(bound, i, size) * stride;
+  }
+}
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 //                        INDEXING UTILS
@@ -212,7 +264,8 @@ public:
     NAME##_ptr(static_cast<scalar_t*>(info.NAME##_ptr))
 
     INIT_ALLOC_INFO_5D(inp),
-    INIT_ALLOC_INFO_5D(out)
+    INIT_ALLOC_INFO_5D(out),
+    legacy_restrict(multires_restrict_use_legacy())
   {
 #ifndef __CUDACC__
       set_resize();
@@ -232,11 +285,14 @@ public:
       case 3:
         resize_ = &Self::resize3d; break;
       case 1+ADJ:
-        resize_ = &Self::restrict1d; break; 
+        resize_ = legacy_restrict ? &Self::restrict1d
+                                  : &Self::template restrict2x<1>; break;
       case 2+ADJ:
-        resize_ = &Self::restrict2d; break;
+        resize_ = legacy_restrict ? &Self::restrict2d
+                                  : &Self::template restrict2x<2>; break;
       case 3+ADJ:
-        resize_ = &Self::restrict3d; break;
+        resize_ = legacy_restrict ? &Self::restrict3d
+                                  : &Self::template restrict2x<3>; break;
       default:
         resize_ = &Self::resize3d; break;
     }
@@ -278,6 +334,11 @@ private:
   DECLARE_RESIZE(restrict2d)
   DECLARE_RESIZE(restrict3d)
 
+  // Factor-2 restriction with a fixed 4^D-tap stencil (D = dim)
+  template <int D>
+  NI_DEVICE void restrict2x(
+    offset_t w, offset_t h, offset_t d, offset_t n) const;
+
   // ~~~ OPTIONS ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
   int               dim;            // dimensionality (1 or 2 or 3)
   BoundType         bound0;         // boundary condition  // x|W
@@ -307,6 +368,8 @@ private:
   offset_t C;
   DECLARE_STRIDE_INFO_5D(inp)
   DECLARE_STRIDE_INFO_5D(out)
+
+  bool              legacy_restrict; // use restrict{1,2,3}d (legacy)?
 };
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -328,11 +391,14 @@ void MultiResImpl<scalar_t,offset_t,reduce_t>::resize(
       case 3:
         return resize3d(x, y, z, n);
       case 1+ADJ:
-        return restrict1d(x, y, z, n); 
+        return legacy_restrict ? restrict1d(x, y, z, n)
+                               : this->template restrict2x<1>(x, y, z, n);
       case 2+ADJ:
-        return restrict2d(x, y, z, n);
+        return legacy_restrict ? restrict2d(x, y, z, n)
+                               : this->template restrict2x<2>(x, y, z, n);
       case 3+ADJ:
-        return restrict3d(x, y, z, n);
+        return legacy_restrict ? restrict3d(x, y, z, n)
+                               : this->template restrict2x<3>(x, y, z, n);
       default:
         return resize3d(x, y, z, n);
     }
@@ -377,30 +443,9 @@ void MultiResImpl<scalar_t,offset_t,reduce_t>::loop(
 template <typename scalar_t, typename offset_t, typename reduce_t> NI_HOST
 void MultiResImpl<scalar_t,offset_t,reduce_t>::loop() const
 {
-  if (!has_atomic_add<scalar_t>::value && (do_adjoint))
-  {
-    // I do not have access to atomic operations so I cannot
-    // parallelize across voxels.
-    at::parallel_for(0, N, 0, [&](offset_t start, offset_t end) {
-      for (offset_t n = start; n < end; ++n) {
-        if (dim == 1) {
-          for (offset_t w=0; w<out_X; ++w)
-            resize(w, 0, 0, n);
-        } else if (dim == 2) {
-          for (offset_t h=0; h<out_Y; ++h)
-          for (offset_t w=0; w<out_X; ++w)
-            resize(w, h, 0, n);
-        } else {
-          for (offset_t d=0; d<out_Z; ++d)
-          for (offset_t h=0; h<out_Y; ++h)
-          for (offset_t w=0; w<out_X; ++w)
-            resize(w, h, d, n);
-        }
-      }
-    });
-    return;
-  }
-
+  // Both prolongation and restriction gather (each output voxel is
+  // written by a single thread, no atomics), so we can always
+  // parallelize across output voxels, even without atomic operations.
   // Parallelize across voxels   
   offset_t out_YZ   =   out_Z * out_Y;
   offset_t out_XYZ  =  out_YZ * out_X;
@@ -580,7 +625,64 @@ void MultiResImpl<scalar_t,offset_t,reduce_t>::resize1d(offset_t w, offset_t h, 
 }
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-//                     LINEAR RESTRICTION 3D
+//              LINEAR RESTRICTION (FACTOR 2, 4^D TAPS)
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+// Same operator and same order of operations as the legacy kernels
+// restrict{1,2,3}d below (unused dimensions use a single unit tap).
+template <typename scalar_t, typename offset_t, typename reduce_t>
+template <int D>
+NI_DEVICE void MultiResImpl<scalar_t,offset_t,reduce_t>::restrict2x(
+  offset_t w, offset_t h, offset_t d, offset_t n) const
+{
+  constexpr int KY = D > 1 ? 4 : 1;
+  constexpr int KZ = D > 2 ? 4 : 1;
+  offset_t ox[4], oy[4], oz[4];
+  reduce_t wx[4], wy[4], wz[4];
+  int8_t   sx[4], sy[4], sz[4];
+  restrict2x_taps(w, scale0, bound0, inp_X, inp_sX, ox, wx, sx);
+  if (D > 1) {
+    restrict2x_taps(h, scale1, bound1, inp_Y, inp_sY, oy, wy, sy);
+  } else {
+    oy[0] = 0; wy[0] = static_cast<reduce_t>(1); sy[0] = 1;
+  }
+  if (D > 2) {
+    restrict2x_taps(d, scale2, bound2, inp_Z, inp_sZ, oz, wz, sz);
+  } else {
+    oz[0] = 0; wz[0] = static_cast<reduce_t>(1); sz[0] = 1;
+  }
+
+  scalar_t *out_ptr_NCXYZ = out_ptr + n * out_sN + w * out_sX
+                                    + h * out_sY + d * out_sZ;
+  const scalar_t *inp_ptr_NC = inp_ptr + n * inp_sN;
+
+  for (offset_t c = 0; c < C; ++c, out_ptr_NCXYZ += out_sC,
+                                   inp_ptr_NC    += inp_sC)
+  {
+    reduce_t acc = static_cast<reduce_t>(0);
+    NI_PRAGMA_UNROLL
+    for (int kz = 0; kz < KZ; ++kz) {
+      reduce_t accz = static_cast<reduce_t>(0);
+      NI_PRAGMA_UNROLL
+      for (int ky = 0; ky < KY; ++ky) {
+        const offset_t oyz = oz[kz] + oy[ky];
+        const int8_t   syz = static_cast<int8_t>(sz[kz] * sy[ky]);
+        reduce_t accy = static_cast<reduce_t>(0);
+        NI_PRAGMA_UNROLL
+        for (int kx = 0; kx < 4; ++kx)
+          accy += static_cast<reduce_t>(bound::get(
+                    inp_ptr_NC, oyz + ox[kx],
+                    static_cast<int8_t>(syz * sx[kx]))) * wx[kx];
+        accz += accy * wy[ky];
+      }
+      acc += accz * wz[kz];
+    }
+    *out_ptr_NCXYZ = static_cast<scalar_t>(acc);
+  }
+}
+
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+//                LINEAR RESTRICTION 3D (LEGACY)
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
