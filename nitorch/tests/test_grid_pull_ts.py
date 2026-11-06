@@ -61,9 +61,9 @@ def test_ts_pushpull_bounds_are_the_extension(bound, n):
     coords = torch.arange(-m, n + m, dtype=torch.double)
     x = torch.randn([1, 1, n], dtype=torch.double)
     b = [bound_to_nitorch(bound, 'int')]
-    y = _ts.grid_pull(x, coords[None, :, None], b, [1], 1)
-    assert torch.allclose(y, utils.pad(x, [m], mode=bound, side='both'))
+    y_pull = _ts.grid_pull(x, coords[None, :, None], b, [1], 1)
+    assert torch.allclose(y_pull, utils.pad(x, [m], mode=bound, side='both'))
     z = torch.randn([1, 1, n + 2 * m], dtype=torch.double)
-    y = _ts.grid_push(z, coords[None, :, None], [n], b, [1], 1)
-    assert torch.allclose(y, utils.pad(z, [m], mode=bound, side='both',
-                                       adjoint=True))
+    # push is the transpose of pull: <push(z), x> == <z, pull(x)>
+    pz = _ts.grid_push(z, coords[None, :, None], [n], b, [1], 1)
+    assert torch.allclose((pz * x).sum(), (z * y_pull).sum())

@@ -1,5 +1,5 @@
 """Boundary conditions of `core.bounds`, and the tools built on them:
-`core.utils.pad` (and its adjoint), `core.utils.roll`, and the second
+`core.utils.pad`, `core.utils.roll`, and the second
 central differences of `spatial.diff1d`/`div1d`."""
 import pytest
 import torch
@@ -52,7 +52,7 @@ def _dense_pad(n, m, bound):
 @pytest.mark.parametrize('shape', [(5,), (4, 3), (3, 4, 2), (1, 3)])
 @pytest.mark.parametrize('bound', BOUNDS + ['mixed'])
 @pytest.mark.parametrize('margin', [1, 2, 3])
-def test_pad_and_adjoint(shape, bound, margin):
+def test_pad(shape, bound, margin):
     dim = len(shape)
     bound = BOUNDS[-dim:] if bound == 'mixed' else [bound] * dim
     torch.manual_seed(0)
@@ -62,9 +62,6 @@ def test_pad_and_adjoint(shape, bound, margin):
         E = torch.kron(E, _dense_pad(n, margin, b))
     y = utils.pad(x, [margin] * dim, mode=bound, side='both')
     assert torch.allclose(y.reshape(2, -1), x.reshape(2, -1) @ E.T)
-    z = torch.randn_like(y)
-    w = utils.pad(z, [margin] * dim, mode=bound, side='both', adjoint=True)
-    assert torch.allclose(w.reshape(2, -1), z.reshape(2, -1) @ E)
 
 
 @pytest.mark.parametrize('bound', BOUNDS)

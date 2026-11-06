@@ -1034,7 +1034,7 @@ def ensure_shape(inp, shape, mode='constant', value=0, side='post'):
     return inp
 
 
-def pad(inp, padsize, mode='constant', value=0, side=None, adjoint=False):
+def pad(inp, padsize, mode='constant', value=0, side=None):
     """Pad a tensor.
 
     This function is a bit more generic than torch's native pad, but probably
@@ -1071,16 +1071,11 @@ def pad(inp, padsize, mode='constant', value=0, side=None, adjoint=False):
         Use padsize to pad on left side ('pre'), right side ('post') or
         both sides ('both'). If None, the padding side for the left and
         right sides should be provided in alternate order.
-    adjoint : bool, default=False
-        Apply the adjoint (transpose) of the padding: `inp` is a padded
-        tensor, and the values of its margins are added back onto the
-        voxels they were copied from (with their sign). In 'constant'
-        mode, the margins are cropped (`value` is ignored).
 
     Returns
     -------
     tensor
-        Padded tensor (or unpadded tensor, if `adjoint`).
+        Padded tensor.
 
     """
     # Argument checking
@@ -1119,9 +1114,6 @@ def pad(inp, padsize, mode='constant', value=0, side=None, adjoint=False):
         raise ValueError("'sliding' depends on the component of a displacement "
                          "field: pad each component with "
                          "`bounds.for_component(bound, comp)`")
-    if adjoint:
-        bound = [getattr(bounds, m) for m in mode]
-        return _pad_bound_adjoint(inp, padpre, padpost, bound)
     if all(m == 'zero' for m in mode):
         return _pad_constant(inp, padpre, padpost, value)
     else:
@@ -1184,24 +1176,6 @@ def _pad_bound(inp, padpre, padpost, bound):
         out.index_copy_(d, pos, src)
     return out
 
-
-def _pad_bound_adjoint(inp, padpre, padpost, bound):
-    # transpose of `_pad_bound`: add the (signed) margins of each axis back
-    # onto the voxels they copy, in reverse order (in place)
-    if any(p < 0 for p in (*padpre, *padpost)):
-        raise NotImplementedError('Adjoint of a negative padding')
-    out = inp.clone()
-    for d in reversed(range(out.dim())):
-        if not (padpre[d] or padpost[d]):
-            continue
-        n = out.shape[d] - padpre[d] - padpost[d]
-        pos, idx, sign = _pad_margins(n, padpre[d], padpost[d], bound[d], out.device)
-        src = out.index_select(d, pos)
-        if sign is not None:
-            src = src * sign.to(src.dtype).reshape([-1] + [1] * (out.dim() - d - 1))
-        out = out.narrow(d, padpre[d], n)
-        out.index_add_(d, idx, src)
-    return out.contiguous()
 
 
 def roll(inp, shifts=1, dims=None, bound='dft'):
