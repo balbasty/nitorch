@@ -81,7 +81,7 @@ namespace { // anonymous namespace > everything inside has internal linkage
 enum class PullKind { Generic, NearestIso, LinearIso, QuadraticIso };
 
 // Maximum number of taps of the forward 1D kernel (order 7 -> 8 taps)
-#define NI_RESIZE_MAX_TAPS 8
+constexpr int resize_max_taps = 8;
 
 // Forward taps of fine voxel `w`: unfolded coarse indices `b` and weights
 // `wt`. Each branch replicates *exactly* the arithmetic of the
@@ -126,7 +126,7 @@ NI_HOST int pull_taps1d(PullKind kind, InterpolationType itp,
       int64_t b0, b1;
       interpolation::bounds(itp, x, b0, b1);
       int n = 0;
-      for (int64_t bb = b0; bb <= b1 && n < NI_RESIZE_MAX_TAPS; ++bb, ++n) {
+      for (int64_t bb = b0; bb <= b1 && n < resize_max_taps; ++bb, ++n) {
         scalar_t dx = x - bb;
         b[n]  = bb;
         wt[n] = static_cast<weight_t>(interpolation::fastweight(itp, dx));
@@ -1659,10 +1659,10 @@ NI_HOST GatherTables<weight_t> ResizeAllocator::build_adjoint_tables() const
         kind = PullKind::QuadraticIso;
     }
 
-    int64_t  b[NI_RESIZE_MAX_TAPS];
-    weight_t wt[NI_RESIZE_MAX_TAPS];
-    int64_t  jj[NI_RESIZE_MAX_TAPS];
-    weight_t vv[NI_RESIZE_MAX_TAPS];
+    int64_t  b[resize_max_taps];
+    weight_t wt[resize_max_taps];
+    int64_t  jj[resize_max_taps];
+    weight_t vv[resize_max_taps];
     for (int64_t w = 0; w < T; ++w) {
       int n = pull_taps1d<scalar_t, weight_t>(kind, itp[d], scl[d], shf[d], w, b, wt);
       int m = fold_taps<weight_t>(bnd[d], S, n, b, wt, jj, vv);
