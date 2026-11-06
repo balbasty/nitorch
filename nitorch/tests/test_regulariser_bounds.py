@@ -100,42 +100,87 @@ def _mixed(bound, dim):
 
 
 # ----------------------------------------------------------------------
-#   The references agree
+#   The reference (definition F)
 # ----------------------------------------------------------------------
 
-@pytest.mark.parametrize('shape', [(5,), (5, 4), (4, 3, 3), (1, 4), (2, 3)])
-@pytest.mark.parametrize('bound', BOUNDS + ['mixed'])
+DEF_SHAPES = [(5,), (2,), (1,), (5, 4), (2, 3), (1, 4), (4, 3, 3), (2, 2, 3)]
+
+
+def _def_bounds(dim, grid):
+    bounds = list(BOUNDS)
+    if dim > 1:
+        bounds += [['dct1', 'replicate', 'dst1'][:dim],
+                   ['dst2', 'dct1', 'dct2'][:dim]]
+        if grid:
+            bounds += ['sliding', ['sliding', 'dft', 'zero'][:dim]]
+    return bounds
+
+
+def _def_cases(dim, vx):
+    """(name, terms, ncomp) of every energy, field and grid"""
+    cases = [('absolute', ref.terms_absolute(dim), 1),
+             ('membrane', ref.terms_membrane(dim, vx), 1),
+             ('bending', ref.terms_bending(dim, vx), 1)]
+    if dim > 1:
+        cases += [
+            ('membrane', ref.per_component(dim, ref.terms_membrane(dim, vx), vx), dim),
+            ('bending', ref.per_component(dim, ref.terms_bending(dim, vx), vx), dim),
+            ('shear', ref.terms_lame_shear(dim, vx), dim),
+            ('div', ref.terms_lame_div(dim), dim)]
+    return cases
+
+
+def _is_sliding(bound):
+    return 'sliding' in ([bound] if isinstance(bound, str) else bound)
+
+
+@pytest.mark.parametrize('shape', DEF_SHAPES)
 @pytest.mark.parametrize('weighted', [False, True])
-def test_lattice_is_the_period_energy(shape, bound, weighted):
-    """The row weights make the energy of the rows of the lattice that of
-    one period of the extended field (fields; grids without coupling)"""
+def test_definition_symmetric_psd(shape, weighted):
+    """Every energy of definition F is symmetric positive semi-definite,
+    and the stencil is exact with periodic boundaries"""
     dim = len(shape)
-    bound = _mixed(bound, dim)
+    vx = VX[:dim]
+    torch.manual_seed(0)
     weights = torch.rand(shape, dtype=dt) + 0.5 if weighted else None
-    for name, case in FIELD_CASES.items():
-        terms = field_terms(dim, VX, **case)
-        A = ref.operator(shape, bound, terms, 1, weights)
-        B = ref.lattice_operator(shape, bound, terms, 1, weights)
-        assert torch.allclose(A, B, atol=1e-10), name
+    for bound in _def_bounds(dim, grid=True):
+        for name, terms, ncomp in _def_cases(dim, vx):
+            if _is_sliding(bound) and ncomp == 1:
+                continue
+            A, S = ref.operators(shape, bound, terms, ncomp, weights)
+            assert torch.allclose(A, A.T, atol=1e-10), (bound, name)
+            assert torch.linalg.eigvalsh(A).min() > -1e-10, (bound, name)
+            if bound == 'dft':
+                assert torch.allclose(A, S, atol=1e-10), (bound, name)
 
 
-@pytest.mark.parametrize('shape', [(5, 4), (4, 3, 3)])
-@pytest.mark.parametrize('bound', ['dft', 'zero', 'replicate'])
-def test_lattice_lame_is_the_period_energy(shape, bound):
-    """Without mirrors, the linear-elastic energy is also that of the
-    extended field"""
+@pytest.mark.parametrize('shape', DEF_SHAPES)
+def test_stencil_plus_correction_is_the_operator(shape):
+    """A = S + B, with the closed forms of the border correction B
+    (`ref.border_correction`)"""
     dim = len(shape)
-    for name in ('shear', 'div'):
-        terms = grid_terms(dim, VX, **GRID_CASES[name])
-        A = ref.operator(shape, bound, terms, dim)
-        B = grid_matrix(shape, bound, terms)
-        assert torch.allclose(A, B, atol=1e-10), name
+    vx = VX[:dim]
+    torch.manual_seed(0)
+    for bound in _def_bounds(dim, grid=True):
+        for weighted in (False, True):
+            weights = torch.rand(shape, dtype=dt) + 0.5 if weighted else None
+            for name, terms, ncomp in _def_cases(dim, vx):
+                if _is_sliding(bound) and ncomp == 1:
+                    continue
+                if weighted and name not in ('absolute', 'membrane'):
+                    continue
+                A, S = ref.operators(shape, bound, terms, ncomp, weights)
+                x = torch.randn([ncomp, *shape], dtype=dt)
+                Bx = ((A - S) @ x.flatten()).reshape(x.shape)
+                target = ref.border_correction(x, bound, name, vx, weights)
+                assert torch.allclose(Bx, target, atol=1e-10), \
+                    (bound, name, ncomp, weighted)
 
 
 @pytest.mark.parametrize('shape', [(5, 4), (4, 3, 3)])
 def test_sliding_is_a_reflection(shape):
-    """One period of the sliding extension along an axis is the field
-    followed by its mirror image (as a displacement field)"""
+    """The sliding extension along an axis is the field followed by its
+    mirror image (as a displacement field)"""
     dim = len(shape)
     torch.manual_seed(0)
     v = torch.randn([*shape, dim], dtype=dt)
@@ -144,7 +189,15 @@ def test_sliding_is_a_reflection(shape):
         bound[d] = 'sliding'
         ext = []
         for k, cbound in enumerate(ref.component_bounds(bound, dim, dim)):
-            E = ref.kron([ref.axis(n, b)[0] for n, b in zip(shape, cbound)])
+            # samples [0, 2n) along d, [0, n) along the other axes
+            Es = []
+            for a, (n, b) in enumerate(zip(shape, cbound)):
+                E = torch.zeros(n * (1 + (a == d)), n, dtype=dt)
+                for j in range(E.shape[0]):
+                    i, s = ref.extend_index(j, n, b)
+                    E[j, i] = s
+                Es.append(E)
+            E = ref.kron(Es)
             shape_ext = list(shape)
             shape_ext[d] *= 2
             ext.append((E @ v[..., k].flatten()).reshape(shape_ext))
@@ -152,34 +205,6 @@ def test_sliding_is_a_reflection(shape):
         first, second = ext.split(shape[d], d)
         assert torch.equal(first, v)
         assert torch.equal(second, ref.reflect(v, d))
-
-
-@pytest.mark.parametrize('shape', [(5,), (5, 4), (4, 3, 3)])
-@pytest.mark.parametrize('bound', ['sliding', 'mixed-sliding'])
-@pytest.mark.parametrize('weighted', [False, True])
-def test_lattice_sliding_is_the_period_energy(shape, bound, weighted):
-    """With sliding boundaries, every grid energy, including the
-    linear-elastic one, is that of one period of the extended field"""
-    dim = len(shape)
-    bound = _mixed(bound, dim)
-    weights = torch.rand(shape, dtype=dt) + 0.5 if weighted else None
-    for name, case in GRID_CASES.items():
-        terms = grid_terms(dim, VX, **case)
-        A = ref.operator(shape, bound, terms, dim, weights)
-        B = grid_matrix(shape, bound, terms, weights)
-        assert torch.allclose(A, B, atol=1e-10), name
-
-
-@pytest.mark.parametrize('shape', [(5, 4), (4, 3, 3)])
-def test_lattice_lame_mirrors_are_not_the_period_energy(shape):
-    """Control: extending every component evenly (dct2) is not a
-    reflection, and its linear-elastic energy is not that of the
-    extended field"""
-    dim = len(shape)
-    terms = grid_terms(dim, VX, **GRID_CASES['shear'])
-    A = ref.operator(shape, 'dct2', terms, dim)
-    B = grid_matrix(shape, 'dct2', terms)
-    assert not torch.allclose(A, B, atol=1e-6)
 
 
 # ----------------------------------------------------------------------
@@ -198,7 +223,7 @@ def test_field_energies(shape, bound, weighted):
     for name, fn in (('absolute', lambda e: spatial.absolute(e, **opt)),
                      ('membrane', lambda e: spatial.membrane(e, voxel_size=vx, **opt)),
                      ('bending', lambda e: spatial.bending(e, voxel_size=vx, **opt))):
-        A = ref.operator(shape, bound, field_terms(dim, vx, **{name[0]: 1}),
+        A = ref.period_operator(shape, bound, field_terms(dim, vx, **{name[0]: 1}),
                          1, weights)
         assert torch.allclose(apply_matrix(fn, shape), A, atol=1e-10), name
 
@@ -252,7 +277,7 @@ def test_regulariser(shape, bound, weighted):
     x = torch.randn([2, *shape], dtype=dt)
     weights = torch.rand([1, *shape], dtype=dt) + 0.5 if weighted else None
     for name, case in FIELD_CASES.items():
-        A = ref.operator(shape, bound, field_terms(dim, vx, **case), 1,
+        A = ref.period_operator(shape, bound, field_terms(dim, vx, **case), 1,
                          None if weights is None else weights[0])
         y = spatial.regulariser(x, **_field_kwargs(case), voxel_size=vx,
                                 bound=bound, dim=dim, weights=weights)
@@ -280,7 +305,7 @@ def test_regulariser_grid(shape, bound, weighted, kernel):
                                      kernel=kernel)
         assert torch.allclose(y, target, atol=1e-9), name
         if bound not in MIRRORS or not (case.get('shear') or case.get('div')):
-            A = ref.operator(shape, bound, terms, dim, weights)
+            A = ref.period_operator(shape, bound, terms, dim, weights)
             vflat = v.movedim(-1, 0).flatten()
             assert torch.allclose(target, (A @ vflat).reshape(dim, *shape)
                                   .movedim(0, -1), atol=1e-9), name
@@ -300,7 +325,7 @@ def test_regulariser_grid_sliding_backends(shape, backend, bound):
     v = torch.randn([*shape, dim], dtype=dt)
     vflat = v.movedim(-1, 0).flatten()
     for name, case in GRID_CASES.items():
-        A = ref.operator(shape, bound, grid_terms(dim, vx, **case), dim)
+        A = ref.period_operator(shape, bound, grid_terms(dim, vx, **case), dim)
         target = (A @ vflat).reshape(dim, *shape).movedim(0, -1)
         opt = dict(**_grid_kwargs(case), voxel_size=vx, bound=bound)
         if backend == 'C':
@@ -384,7 +409,7 @@ def test_solve_field(bound, optim, name):
     g = torch.randn([1, *shape], dtype=dt)
     h = torch.rand([1, *shape], dtype=dt) + 1
     prm = dict(absolute=1e-3, **{name: 0.5})
-    A = ref.operator(shape, bound, field_terms(dim, vx, a=1e-3, **{name[0]: 0.5}))
+    A = ref.period_operator(shape, bound, field_terms(dim, vx, a=1e-3, **{name[0]: 0.5}))
     opt = dict(voxel_size=vx, bound=bound, dim=dim, **prm)
     if optim == 'fmg':
         x = spatial.solve_field_fmg(h, g, nb_cycles=8, nb_iter=4, **opt)
