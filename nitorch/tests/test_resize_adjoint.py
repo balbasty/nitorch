@@ -58,7 +58,11 @@ def push(y, coarse, factor, bound, interpolation, mode, normalize=False):
 
 
 def _dot(a, b):
-    return (a * b).sum().item()
+    return (a.double() * b.double()).sum().item()
+
+
+CUDA = pytest.mark.skipif(not torch.cuda.is_available(), reason='needs CUDA')
+DEVICES = ['cpu', pytest.param('cuda', marks=CUDA)]
 
 
 BOUNDS = ['dct2', 'dct1', 'dft', 'dst2', 'zero']
@@ -73,12 +77,14 @@ INTERPOLATIONS = [0, 1, 2, 3]
 @pytest.mark.parametrize('bound', BOUNDS)
 @pytest.mark.parametrize('factor', FACTORS)
 @pytest.mark.parametrize('mode', MODES)
-def test_resize_adjoint(dim, interpolation, bound, factor, mode):
+@pytest.mark.parametrize('device', DEVICES)
+def test_resize_adjoint(dim, interpolation, bound, factor, mode, device):
     g = torch.Generator().manual_seed(1234)
     coarse = COARSE[dim]
     fine = _fine_shape(coarse, factor)
     x = torch.randn([2, 3, *coarse], dtype=torch.double, generator=g)
     y = torch.randn([2, 3, *fine], dtype=torch.double, generator=g)
+    x, y = x.to(device), y.to(device)
     Ax = pull(x, fine, factor, bound, interpolation, mode)
     Aty = push(y, coarse, factor, bound, interpolation, mode)
     assert Aty.shape == x.shape
@@ -131,12 +137,13 @@ def test_resize_adjoint_anisotropic(dim, bound, interpolation, factor):
 @pytest.mark.parametrize('factor', FACTORS)
 @pytest.mark.parametrize('mode', MODES)
 @pytest.mark.parametrize('dtype', [torch.double, torch.float])
+@pytest.mark.parametrize('device', DEVICES)
 def test_gather_matches_scatter(monkeypatch, dim, interpolation, bound,
-                                factor, mode, dtype):
+                                factor, mode, dtype, device):
     g = torch.Generator().manual_seed(42)
     coarse = COARSE[dim]
     fine = _fine_shape(coarse, factor)
-    y = torch.randn([2, 2, *fine], dtype=dtype, generator=g)
+    y = torch.randn([2, 2, *fine], dtype=dtype, generator=g).to(device)
     monkeypatch.delenv(SCATTER_ENV, raising=False)
     gather = push(y, coarse, factor, bound, interpolation, mode)
     monkeypatch.setenv(SCATTER_ENV, '1')
@@ -158,12 +165,13 @@ def test_gather_large_kernel():
         assert abs(_dot(Ax, y) - _dot(x, Aty)) <= 1e-10
 
 
-def test_gather_strided_input():
+@pytest.mark.parametrize('device', DEVICES)
+def test_gather_strided_input(device):
     """Non-contiguous input/output tensors."""
     g = torch.Generator().manual_seed(0)
     coarse, fine = (5, 6, 4), (10, 12, 8)
     y = torch.randn([2, 3, *fine[::-1]], dtype=torch.double, generator=g)
-    y = y.permute(0, 1, 4, 3, 2)
+    y = y.to(device).permute(0, 1, 4, 3, 2)
     assert not y.is_contiguous()
     ref = push(y.contiguous(), coarse, 2, 'dct2', 1, 'edge')
     out = push(y, coarse, 2, 'dct2', 1, 'edge')
@@ -209,3 +217,23 @@ def test_normalize_scaling(dim, mode, adjoint):
         raw = pull(x, fine, 2, 'dct2', 1, mode, normalize=False)
         out = pull(x, fine, 2, 'dct2', 1, mode, normalize=True)
     torch.testing.assert_close(out, raw * expected, rtol=1e-12, atol=1e-12)
+
+
+@CUDA
+@pytest.mark.parametrize('dim', [1, 2, 3])
+@pytest.mark.parametrize('interpolation', INTERPOLATIONS)
+@pytest.mark.parametrize('bound', ['dct2', 'dft', 'zero'])
+@pytest.mark.parametrize('factor', [2, 1.5, 0.7])
+def test_resize_adjoint_half(dim, interpolation, bound, factor):
+    """Half precision on CUDA (the pull accumulates in half: loose tol)."""
+    g = torch.Generator().manual_seed(3)
+    coarse = COARSE[dim]
+    fine = _fine_shape(coarse, factor)
+    x = torch.randn([1, 2, *coarse], generator=g).half().cuda()
+    y = torch.randn([1, 2, *fine], generator=g).half().cuda()
+    Ax = pull(x, fine, factor, bound, interpolation, 'edge')
+    Aty = push(y, coarse, factor, bound, interpolation, 'edge')
+    assert Ax.dtype == Aty.dtype == torch.half
+    lhs, rhs = _dot(Ax, y), _dot(x, Aty)
+    scale = Ax.double().norm().item() * y.double().norm().item()
+    assert abs(lhs - rhs) <= 2e-2 * scale, (lhs, rhs)

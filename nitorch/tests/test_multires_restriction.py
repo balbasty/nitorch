@@ -18,6 +18,18 @@ if not hasattr(spatial, 'fmg_restriction'):
 
 from nitorch._C.grid import bound_to_nitorch  # noqa: E402
 
+CUDA = pytest.mark.skipif(not torch.cuda.is_available(), reason='needs CUDA')
+DEVICES = ['cpu', pytest.param('cuda', marks=CUDA)]
+
+
+def exact_tol(x):
+    """Bitwise on CPU. On CUDA, nvcc may contract multiply-adds
+    differently in the two kernels."""
+    if x.device.type == 'cpu':
+        return dict(rtol=0, atol=0)
+    tol = 1e-12 if x.dtype is torch.double else 1e-6
+    return dict(rtol=tol, atol=tol)
+
 LEGACY_ENV = 'NI_MULTIRES_RESTRICT_LEGACY'
 BOUNDS = ['replicate', 'dct1', 'dct2', 'dst1', 'dst2', 'dft', 'zero']
 SHAPES = {
@@ -119,41 +131,45 @@ def _cases():
 
 @pytest.mark.parametrize('dim,shape,bound', list(_cases()))
 @pytest.mark.parametrize('dtype', [torch.double, torch.float])
-def test_restriction_matches_legacy(monkeypatch, dim, shape, bound, dtype):
+@pytest.mark.parametrize('device', DEVICES)
+def test_restriction_matches_legacy(monkeypatch, dim, shape, bound, dtype,
+                                    device):
     """New kernel == legacy kernel (factor 2, even and odd sizes)."""
     g = torch.Generator().manual_seed(0)
-    x = torch.randn([2, 3, *shape], generator=g).to(dtype)
+    x = torch.randn([2, 3, *shape], generator=g).to(dtype).to(device)
     monkeypatch.delenv(LEGACY_ENV, raising=False)
     new = restrict(x, bound)
     monkeypatch.setenv(LEGACY_ENV, '1')
     old = restrict(x, bound)
     # same operations in the same order: bitwise identical on CPU
-    torch.testing.assert_close(new, old, rtol=0, atol=0)
+    torch.testing.assert_close(new, old, **exact_tol(x))
 
 
 @pytest.mark.parametrize('dim,shape,bound', list(_cases()))
-def test_restriction_dense_reference(dim, shape, bound):
+@pytest.mark.parametrize('device', DEVICES)
+def test_restriction_dense_reference(dim, shape, bound, device):
     """Kernel == independent dense implementation of the operator,
     including boundary folding at odd sizes."""
     g = torch.Generator().manual_seed(1)
     x = torch.randn([1, 2, *shape], dtype=torch.double, generator=g)
     cshape = coarse_shape(shape)
-    out = restrict(x, bound, cshape)
+    out = restrict(x.to(device), bound, cshape).cpu()
     ref = dense_restrict(x, bound, cshape)
     torch.testing.assert_close(out, ref, rtol=1e-12, atol=1e-12)
 
 
 @pytest.mark.parametrize('dim', [1, 2, 3])
-def test_restriction_strided(dim):
+@pytest.mark.parametrize('device', DEVICES)
+def test_restriction_strided(dim, device):
     g = torch.Generator().manual_seed(2)
     shape = SHAPES[dim][1]
     x = torch.randn([2, 3, *shape[::-1]], dtype=torch.double, generator=g)
-    x = x.permute(0, 1, *range(x.dim() - 1, 1, -1))
+    x = x.to(device).permute(0, 1, *range(x.dim() - 1, 1, -1))
     if dim > 1:
         assert not x.is_contiguous()
     out = restrict(x, 'dct2')
     ref = restrict(x.contiguous(), 'dct2')
-    torch.testing.assert_close(out, ref, rtol=0, atol=0)
+    torch.testing.assert_close(out, ref, **exact_tol(x))
 
 
 def test_restriction_preserves_constants():
