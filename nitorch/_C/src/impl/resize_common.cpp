@@ -2039,9 +2039,9 @@ Tensor resize_impl(
   Tensor out = do_adjoint ? source : target;
   if (normalize)
     switch (out.dim() - 2) {
-      case 1:  out *= scales[0];
-      case 2:  out *= scales[0] * scales[1];
-      default: out *= scales[0] * scales[1] * scales[2];
+      case 1:  out *= scales[0]; break;
+      case 2:  out *= scales[0] * scales[1]; break;
+      default: out *= scales[0] * scales[1] * scales[2]; break;
     }
   /*
   Our implementation uses more stack per thread than the available local 
@@ -2099,9 +2099,9 @@ Tensor resize_impl(
   Tensor out = do_adjoint ? source : target;
   if (normalize)
     switch (out.dim() - 2) {
-      case 1:  out *= scales[0];
-      case 2:  out *= scales[0] * scales[1];
-      default: out *= scales[0] * scales[1] * scales[2];
+      case 1:  out *= scales[0]; break;
+      case 2:  out *= scales[0] * scales[1]; break;
+      default: out *= scales[0] * scales[1] * scales[2]; break;
     }
   return out;
 }

@@ -170,7 +170,7 @@ def test_gather_strided_input():
     torch.testing.assert_close(out, ref, rtol=0, atol=1e-12)
 
 
-@pytest.mark.parametrize('dim', [3])
+@pytest.mark.parametrize('dim', [1, 2, 3])
 @pytest.mark.parametrize('bound', ['dct2', 'dft'])
 def test_restriction_is_normalized_adjoint(dim, bound):
     """`restriction` == (prod of Edge scales) * A^T, A = edge linear pull."""
@@ -183,3 +183,29 @@ def test_restriction_is_normalized_adjoint(dim, bound):
     ref = push(y, coarse, 2, bound, 1, 'edge')
     ref = ref * math.prod(s / f for s, f in zip(coarse, fine))
     torch.testing.assert_close(out, ref, rtol=1e-12, atol=1e-12)
+
+
+@pytest.mark.parametrize('dim', [1, 2, 3])
+@pytest.mark.parametrize('mode', MODES)
+@pytest.mark.parametrize('adjoint', [False, True])
+def test_normalize_scaling(dim, mode, adjoint):
+    """normalize=True scales by the product of the scales of the *used*
+    spatial dimensions only (the switch used to fall through, scaling 1D
+    by s0**3 and 2D by (s0*s1)**2 -- and by NaN for 1D/2D 'center')."""
+    g = torch.Generator().manual_seed(0)
+    coarse = COARSE[dim]
+    fine = _fine_shape(coarse, 2)
+    if mode == 'edge':
+        scales = [s / f for s, f in zip(coarse, fine)]
+    else:
+        scales = [(s - 1) / (f - 1) for s, f in zip(coarse, fine)]
+    expected = math.prod(scales)
+    if adjoint:
+        y = torch.randn([1, 2, *fine], dtype=torch.double, generator=g)
+        raw = push(y, coarse, 2, 'dct2', 1, mode, normalize=False)
+        out = push(y, coarse, 2, 'dct2', 1, mode, normalize=True)
+    else:
+        x = torch.randn([1, 2, *coarse], dtype=torch.double, generator=g)
+        raw = pull(x, fine, 2, 'dct2', 1, mode, normalize=False)
+        out = pull(x, fine, 2, 'dct2', 1, mode, normalize=True)
+    torch.testing.assert_close(out, raw * expected, rtol=1e-12, atol=1e-12)
