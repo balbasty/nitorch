@@ -453,6 +453,11 @@ public:
   // This function is called by the CUDA kernel
   NI_DEVICE void loop(int threadIdx, int blockIdx, 
                       int blockDim, int gridDim) const;
+  // Same, for the gather adjoint (called by its own kernel, gather_kernel)
+  template <int K>
+  NI_DEVICE void gather_loop(int threadIdx, int blockIdx,
+                             int blockDim, int gridDim) const;
+  NI_HOST int gather_K() const { return tab.K; }
 #else
   // Loop over all voxels
   void loop() const;
@@ -563,12 +568,7 @@ void ResizeImpl<scalar_t,offset_t>::resize(
     offset_t x, offset_t y, offset_t z, offset_t n) const {
 #ifdef __CUDACC__
     // dispatch
-    if (gather) {
-#     define NI_CALL_GATHER(k) \
-        return this->template restrict_gather<k>(x, y, z, n);
-      NI_GATHER_K_SWITCH(tab.K, NI_CALL_GATHER)
-#     undef NI_CALL_GATHER
-    }
+    // (the gather adjoint has its own kernel: see gather_kernel)
 #   define ADJ 4
 #   define ISO 8
 #   define NN  InterpolationType::Nearest
@@ -668,24 +668,43 @@ template <typename scalar_t, typename offset_t> NI_DEVICE
 void ResizeImpl<scalar_t,offset_t>::loop(
   int threadIdx, int blockIdx, int blockDim, int gridDim) const {
 
-  // gather: loop over output (source) voxels, else over target voxels
-  offset_t loop_X   = gather ? src_X : tgt_X;
-  offset_t loop_Y   = gather ? src_Y : tgt_Y;
-  offset_t loop_Z   = gather ? src_Z : tgt_Z;
   offset_t index    = blockIdx * blockDim + threadIdx;
-  offset_t loop_YZ   =   loop_Z * loop_Y;
-  offset_t loop_XYZ  =  loop_YZ * loop_X;
-  offset_t loop_NXYZ = loop_XYZ * N;
+  offset_t tgt_YZ   =   tgt_Z * tgt_Y;
+  offset_t tgt_XYZ  =  tgt_YZ * tgt_X;
+  offset_t tgt_NXYZ = tgt_XYZ * N;
   offset_t n, w, h, d;
-  for (offset_t i=index; index < loop_NXYZ; index += blockDim*gridDim, i=index)
+  for (offset_t i=index; index < tgt_NXYZ; index += blockDim*gridDim, i=index)
   {
       // Convert index: linear to sub
-      n  = (i/loop_XYZ);
-      w  = (i/loop_YZ) % loop_X;
-      h  = (i/loop_Z)  % loop_Y;
-      d  = i % loop_Z;
+      n  = (i/tgt_XYZ);
+      w  = (i/tgt_YZ) % tgt_X;
+      h  = (i/tgt_Z)  % tgt_Y;
+      d  = i % tgt_Z;
 
       resize(w, h, d, n);
+  }
+}
+
+// Gather adjoint: loop over output (source) voxels
+template <typename scalar_t, typename offset_t>
+template <int K>
+NI_DEVICE void ResizeImpl<scalar_t,offset_t>::gather_loop(
+  int threadIdx, int blockIdx, int blockDim, int gridDim) const {
+
+  const offset_t src_YZ   =   src_Z * src_Y;
+  const offset_t src_XYZ  =  src_YZ * src_X;
+  const offset_t src_NXYZ = src_XYZ * N;
+  const offset_t stride   = static_cast<offset_t>(blockDim) * gridDim;
+  for (offset_t i = static_cast<offset_t>(blockIdx) * blockDim + threadIdx;
+       i < src_NXYZ; i += stride)
+  {
+      // Convert index: linear to sub
+      offset_t n  = (i/src_XYZ);
+      offset_t w  = (i/src_YZ) % src_X;
+      offset_t h  = (i/src_Z)  % src_Y;
+      offset_t d  = i % src_Z;
+
+      this->template restrict_gather<K>(w, h, d, n);
   }
 }
 
@@ -1661,6 +1680,30 @@ C10_LAUNCH_BOUNDS_1(1024)
 __global__ void resize_kernel(const ResizeImpl<scalar_t,offset_t> * f) {
   f->loop(threadIdx.x, blockIdx.x, blockDim.x, gridDim.x);
 }
+
+// Separate kernel for the gather adjoint, so that it neither inherits the
+// (large) stack frame of the legacy kernels nor adds its register
+// pressure to them.
+#define NI_GATHER_NUM_THREADS 256
+
+template <int K, typename scalar_t, typename offset_t>
+C10_LAUNCH_BOUNDS_1(NI_GATHER_NUM_THREADS)
+__global__ void gather_kernel(const ResizeImpl<scalar_t,offset_t> * f) {
+  f->template gather_loop<K>(threadIdx.x, blockIdx.x, blockDim.x, gridDim.x);
+}
+
+template <typename scalar_t, typename offset_t>
+NI_HOST void launch_gather_kernel(const ResizeImpl<scalar_t,offset_t> & algo,
+                                  const ResizeImpl<scalar_t,offset_t> * palgo,
+                                  cudaStream_t stream)
+{
+  const int nblocks = GET_BLOCKS(algo.voxcount(), NI_GATHER_NUM_THREADS);
+# define NI_LAUNCH_GATHER(k) \
+    gather_kernel<k, scalar_t, offset_t> \
+      <<<nblocks, NI_GATHER_NUM_THREADS, 0, stream>>>(palgo); break;
+  NI_GATHER_K_SWITCH(algo.gather_K(), NI_LAUNCH_GATHER)
+# undef NI_LAUNCH_GATHER
+}
 #endif
 
 
@@ -1841,7 +1884,10 @@ Tensor resize_impl(
       if (use_gather)
         algo.set_gather(upload_gather_tables<int32_t>(tab, source.device(), keep));
       auto palgo = alloc_and_copy_to_device(&algo, stream);
-      resize_kernel<<<GET_BLOCKS(algo.voxcount()), CUDA_NUM_THREADS, 0, stream>>>(palgo);
+      if (use_gather)
+        launch_gather_kernel(algo, palgo, stream);
+      else
+        resize_kernel<<<GET_BLOCKS(algo.voxcount()), CUDA_NUM_THREADS, 0, stream>>>(palgo);
       cudaFree(palgo);
     }
     else
@@ -1850,7 +1896,10 @@ Tensor resize_impl(
       if (use_gather)
         algo.set_gather(upload_gather_tables<int64_t>(tab, source.device(), keep));
       auto palgo = alloc_and_copy_to_device(&algo, stream);
-      resize_kernel<<<GET_BLOCKS(algo.voxcount()), CUDA_NUM_THREADS, 0, stream>>>(palgo);
+      if (use_gather)
+        launch_gather_kernel(algo, palgo, stream);
+      else
+        resize_kernel<<<GET_BLOCKS(algo.voxcount()), CUDA_NUM_THREADS, 0, stream>>>(palgo);
       cudaFree(palgo);
     }
   });
