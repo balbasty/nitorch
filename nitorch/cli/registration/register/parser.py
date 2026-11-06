@@ -219,7 +219,8 @@ usage:
         --bound BND                     Boundary conditions of the field, used by
                                         the regulariser, solver and exponentiation:
                                         [dft] (circulant), dct2 (free), dct1, dst2,
-                                        dst1, zero (identity at the edges).
+                                        dst1, zero (identity at the edges), sliding
+                                        (slides along the edges, does not cross them).
                                         shoot only supports dft.
     Shoot options:
         --exact [BOOL]                  Exact geodesic shooting [false]: transport the
@@ -724,7 +725,7 @@ nonlin_aliases = {'v': 'svf',
                   'g': 'shoot',
                   'd': 'smalldef'}
 nonlin_choices = list(nonlin_aliases.values()) + ['unset']
-nonlin_bounds = ['dft', 'dct2', 'dct1', 'dst2', 'dst1', 'zero']
+nonlin_bounds = ['dft', 'dct2', 'dct1', 'dst2', 'dst1', 'zero', 'sliding']
 nonlin_choices = cli.Positional('name', nargs='?', default='svf',
                                 validation=cli.Validations.choice(nonlin_choices),
                                 convert=lambda x: nonlin_aliases.get(x, x),

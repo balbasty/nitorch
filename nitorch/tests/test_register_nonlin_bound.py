@@ -23,7 +23,7 @@ from nitorch.tools.registration.pairwise_run import _sync_nonlin_optim
 
 dt = torch.double
 SHAPE = (10, 10, 10)
-BOUNDS = ['dft', 'dct2', 'dct1', 'dst2', 'dst1', 'zero']
+BOUNDS = ['dft', 'dct2', 'dct1', 'dst2', 'dst1', 'zero', 'sliding']
 PENALTY = dict(absolute=1e-2, membrane=1e-1, bending=1.,
                lame=(0.05, 0.2), factor=1.)
 
@@ -122,7 +122,7 @@ def test_exp_backward_bound(monkeypatch, bound):
     assert captured == [bound]
 
 
-@pytest.mark.parametrize('bound', ['dct2', 'zero'])
+@pytest.mark.parametrize('bound', ['dct2', 'zero', 'sliding'])
 def test_regulariser_bound_mismatch_is_detected(bound):
     """The finite-difference check is sensitive to the boundary
     condition: a gradient whose regulariser uses another boundary
@@ -172,7 +172,7 @@ def test_gauss_newton_bound(monkeypatch, bound, solver, fmg):
     assert captured == [bound]
 
 
-@pytest.mark.parametrize('bound', ['dct2', 'zero'])
+@pytest.mark.parametrize('bound', ['dct2', 'zero', 'sliding'])
 def test_gauss_newton_bound_solves_model_system(bound):
     """The Gauss-Newton step solves (H + L) step = -g, with L the
     regulariser of the model (the one used in the gradient), better
@@ -226,7 +226,7 @@ def test_exp_bound(bound):
 
 
 @pytest.mark.parametrize('model', ['svf', 'smalldef'])
-@pytest.mark.parametrize('bound', ['dft', 'dct2'])
+@pytest.mark.parametrize('bound', ['dft', 'dct2', 'sliding'])
 def test_inversion_bound(monkeypatch, model, bound):
     """Numerical inversion uses the boundary condition of the model"""
     captured = []
@@ -296,6 +296,7 @@ def _write(path, dat, affine=None):
 
 @pytest.mark.parametrize('args, expected', [
     ([], 'dft'), (['--bound', 'dct2'], 'dct2'), (['--bound', 'zero'], 'zero'),
+    (['--bound', 'sliding'], 'sliding'),
 ])
 def test_parse_bound(args, expected):
     from nitorch.cli.registration.register.parser import parser
@@ -323,8 +324,9 @@ def test_parse_bound_shoot_rejected():
         check_options(options)
 
 
+@pytest.mark.parametrize('bound', ['dct2', 'sliding'])
 @pytest.mark.parametrize('model', ['svf', 'smalldef'])
-def test_register_bound_json_and_reuse(tmp_path, model):
+def test_register_bound_json_and_reuse(tmp_path, model, bound):
     """`register @nonlin --bound` builds the model with it, saves it in
     the JSON sidecar, and `reslice`/`compose`/`vexp` use it"""
     import numpy as np
@@ -336,14 +338,14 @@ def test_register_bound_json_and_reuse(tmp_path, model):
     mov = _write(tmp_path / 'mov.nii.gz', rng.random([12, 12, 12]))
     out = str(tmp_path / 'nl.nii.gz')
     _cli(['@loss', 'mse', '@@fix', fix, '-o', 'false', '@@mov', mov,
-          '-o', 'false', '@nonlin', model, '--bound', 'dct2', '-o', out,
+          '-o', 'false', '@nonlin', model, '--bound', bound, '-o', out,
           '@@optim', 'gn', '-n', '2', '@optim', '-n', '1',
           '@pyramid', '-l', '0'])
     sidecar = str(tmp_path / 'nl.json')
     with open(sidecar) as f:
         prm = json.load(f)
-    assert prm['bound'] == 'dct2'
-    assert helpers.load_sidecar_bound(sidecar) == 'dct2'
+    assert prm['bound'] == bound
+    assert helpers.load_sidecar_bound(sidecar) == bound
 
     dat = torch.as_tensor(np.asarray(nib.load(out).dataobj), dtype=torch.float)
     dat = dat.reshape([12, 12, 12, 3])
@@ -358,20 +360,20 @@ def test_register_bound_json_and_reuse(tmp_path, model):
                     dat, torch.eye(4), json=sidecar, t0=t0, t1=t1)
                 if t1 < t0 and inversion != 'default':
                     ref = spatial.exp(dat[None], displacement=True,
-                                      bound='dct2')[0]
-                    ref = spatial.grid_inv(ref, type='disp', bound='dct2',
+                                      bound=bound)[0]
+                    ref = spatial.grid_inv(ref, type='disp', bound=bound,
                                            method=inversion)
                 else:
                     ref = spatial.exp(dat[None], displacement=True,
-                                      bound='dct2', inverse=t1 < t0)[0]
+                                      bound=bound, inverse=t1 < t0)[0]
                 assert torch.allclose(disp, ref)
         # vexp: from the sidecar, unless given
         prm['inversion'] = 'default'
         with open(sidecar, 'w') as f:
             json.dump(prm, f)
-        for bound, ref_bound in ((None, 'dct2'), ('dft', 'dft')):
+        for opt_bound, ref_bound in ((None, bound), ('dft', 'dft')):
             fphi = vexp(out, output=str(tmp_path / 'phi.nii.gz'),
-                        bound=bound)
+                        bound=opt_bound)
             phi = torch.as_tensor(np.asarray(nib.load(fphi).dataobj))
             phi = phi.reshape([12, 12, 12, 3]).float()
             ref = spatial.exp(dat[None], displacement=True,
@@ -379,7 +381,7 @@ def test_register_bound_json_and_reuse(tmp_path, model):
             assert torch.allclose(phi, ref, atol=1e-5)
     else:
         idisp = helpers.invert_displacement(dat, out)
-        ref = spatial.grid_inv(dat, type='disp', bound='dct2')
+        ref = spatial.grid_inv(dat, type='disp', bound=bound)
         assert torch.allclose(idisp, ref)
 
 
