@@ -234,41 +234,120 @@ def _membrane_(field, vx, bound, dim, weights=None, out=None):
     return mom * 0.5 if not inplace else mom.mul_(0.5)
 
 
+def _sum_next(t, d):
+    """t[i] + t[i+1] along the axis d (t[n] = 0)"""
+    n = t.shape[d]
+    s = t.clone()
+    s.narrow(d, 0, n - 1).add_(t.narrow(d, 1, n - 1))
+    return s
+
+
+def _bending_cross_(field, a, b, bound, dim, weights=None, bufs=(None, None)):
+    """Cross term of the pair (a, b) of the bending energy, up to its
+    factor 2 / (vx_a vx_b)**2: one mixed difference per half point
+
+        sum_h w_h (D_a D_b x)_h**2,  h = (i + 1/2, j + 1/2)
+
+    where i, j span [-1, n-1] and w_h is 1/4 of the sum of the weights
+    of the voxels of the field of view adjacent to h (this is the mean of
+    the four one-sided compositions at the voxels). The forward
+    differences give the half points >= 1/2; the half planes -1/2 read
+    the extended samples -1, which fold back onto their source voxels."""
+    nb_ = field.dim() - dim
+    da, db = nb_ + a, nb_ + b
+    na, nb = field.shape[da], field.shape[db]
+    ba, bb = bound[a], bound[b]
+    pa, sa = getattr(_bounds, ba)(-1, na)
+    pb, sb = getattr(_bounds, bb)(-1, nb)
+    if weights is not None:
+        weights = weights.expand([*weights.shape[:-dim], *field.shape[-dim:]])
+        wa, wb = weights.dim() - dim + a, weights.dim() - dim + b
+        wsa = _sum_next(weights, wa)                    # w[i] + w[i+1]
+
+    # half points [1/2, n-1/2]^2
+    buf1, buf2 = bufs
+    g = diff1d(field, dim=da, side='f', bound=ba, out=buf1)
+    g = diff1d(g, dim=db, side='f', bound=bb, out=buf2)
+    if weights is None:
+        g.narrow(da, na - 1, 1).mul_(0.5)
+        g.narrow(db, nb - 1, 1).mul_(0.5)
+    else:
+        g = _weight(g, _sum_next(wsa, wb).mul_(0.25), buf2 is not None)
+    y = div1d(g, dim=db, side='f', bound=bb, out=buf1)
+    y = div1d(y, dim=da, side='f', bound=ba, out=buf2)
+
+    def edge(t, d, p, s):
+        # t[0] - t~[-1] along the axis d (None if it vanishes)
+        if s == 1 and p == 0:
+            return None
+        t0 = t.select(d, 0)
+        return t0 if not s else t0 - t.select(d, p) * s
+
+    def fold(d, p, s, val):
+        # adjoint of `edge`
+        y.select(d, 0).add_(val)
+        if s:
+            y.select(d, p).add_(val, alpha=-s)
+
+    # half plane -1/2 of axis a (half points >= 1/2 along b)
+    e = edge(field, da, pa, sa)
+    if e is not None:
+        opt = dict(dim=db - 1, side='f', bound=bb)
+        e = diff1d(e, **opt)
+        if weights is None:
+            e.mul_(0.5).narrow(db - 1, nb - 1, 1).mul_(0.5)
+        else:
+            e = e * _sum_next(weights.select(wa, 0), wb - 1).mul_(0.25)
+        fold(da, pa, sa, div1d(e, **opt))
+    # half plane -1/2 of axis b (half points >= 1/2 along a)
+    e = edge(field, db, pb, sb)
+    if e is not None:
+        opt = dict(dim=da, side='f', bound=ba)
+        e = diff1d(e, **opt)
+        if weights is None:
+            e.mul_(0.5).narrow(da, na - 1, 1).mul_(0.5)
+        else:
+            e = e * wsa.select(wb, 0).mul(0.25)
+        fold(db, pb, sb, div1d(e, **opt))
+    # corner (-1/2, -1/2)
+    e = edge(field, da, pa, sa)
+    if e is not None:
+        e = edge(e, db - 1, pb, sb)
+    if e is not None:
+        e = e * 0.25 if weights is None else \
+            e * weights.select(wb, 0).select(wa, 0).mul(0.25)
+        for i, si in ((0, 1), (pa, -sa)):
+            for j, sj in ((0, 1), (pb, -sb)):
+                if si and sj:
+                    y.select(db, j).select(da, i).add_(e, alpha=si * sj)
+    return y
+
+
 def _bending_(field, vx, bound, dim, weights=None, out=None):
     """Bending of a (..., *spatial) field (voxel sizes and boundary
     conditions: one per axis). Central second differences on the
-    diagonal of the Hessian, the four one-sided compositions of first
-    differences (averaged) off its diagonal."""
+    diagonal of the Hessian, mixed differences (`_bending_cross_`) off
+    its diagonal."""
     dims = list(range(field.dim() - dim, field.dim()))
     inplace = _inplace_ok(field, weights)
-    bufi = torch.empty_like(field) if inplace else None
-    bufij = torch.empty_like(field) if inplace else None
-    bufjj = torch.empty_like(field) if inplace else None
+    buf1 = torch.empty_like(field) if inplace else None
+    buf2 = torch.empty_like(field) if inplace else None
     mom = out.zero_() if (out is not None and inplace) else 0
     for i in range(dim):
         opt = dict(dim=dims[i], bound=bound[i], voxel_size=vx[i],
                    order=2, side='c')
-        d = diff1d(field, **opt, out=bufi)
+        d = diff1d(field, **opt, out=buf1)
         d = _weight(d, weights, inplace)
-        mom += div1d(d, **opt, out=bufij)
+        mom += div1d(d, **opt, out=buf2)
     for i in range(dim):
-        for side_i in 'fb':
-            opti = dict(dim=dims[i], bound=bound[i], side=side_i,
-                        voxel_size=vx[i])
-            di = diff1d(field, **opti, out=bufi)
-            for j in range(i + 1, dim):
-                for side_j in 'fb':
-                    optj = dict(dim=dims[j], bound=bound[j], side=side_j,
-                                voxel_size=vx[j])
-                    dj = diff1d(di, **optj, out=bufij)
-                    dj = _weight(dj, weights, inplace)
-                    dj = div1d(dj, **optj, out=bufjj)
-                    dj = div1d(dj, **opti, out=bufij)
-                    # off diagonal: x2 (upper + lower), /4 (sides)
-                    if inplace:
-                        mom.add_(dj, alpha=0.5)
-                    else:
-                        mom = mom + dj * 0.5
+        for j in range(i + 1, dim):
+            y = _bending_cross_(field, i, j, bound, dim, weights, (buf1, buf2))
+            # off diagonal: x2 (upper + lower)
+            alpha = 2 / (vx[i] * vx[j]) ** 2
+            if inplace:
+                mom.add_(y, alpha=alpha)
+            else:
+                mom = mom + y * alpha
     return mom
 
 
