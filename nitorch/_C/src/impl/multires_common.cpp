@@ -15,7 +15,7 @@ s = 2 (even sizes), s = (2m-1)/m < 2 (odd sizes) or s = 1 (size 1).
 The support |x_j - i| < s <= 2 is therefore exactly covered by the four
 taps floor(x_j) - 1 .. floor(x_j) + 2, and the kernel `restrict2x<D>`
 uses a fixed, fully unrolled, 4^D-tap stencil. (With s > 2 the stencil
-would be truncated -- this was already the case of the legacy kernels.)
+would be truncated, so multires_impl refuses such restrictions.)
 
 The legacy kernels (restrict{1,2,3}d) compute the same operator and are
 kept for comparison; they can be selected by setting the environment
@@ -956,6 +956,19 @@ prepare_scales(Tensor input, Tensor output, bool do_adjoint)
                               static_cast<double>(Zi) / static_cast<double>(Zo)});
 }
 
+// The restriction kernel has a fixed 4-tap stencil per dimension, which
+// covers the support of the stretched kernel only if fine/coarse <= 2.
+NI_HOST NI_INLINE void
+check_restrict_scales(const std::vector<double> & scales, int64_t dim)
+{
+  for (int64_t d = 0; d < dim; ++d)
+    TORCH_CHECK(scales[d] <= 2. + 1e-6,
+                "fmg_restriction only supports downsampling by a factor of "
+                "(at most) 2, but the input/output size ratio along spatial "
+                "dimension ", d, " is ", scales[d], ". Use an output of "
+                "size ceil(input size / 2).");
+}
+
 } // namespace
 
 #ifdef __CUDACC__
@@ -969,6 +982,8 @@ Tensor multires_impl(
 {
   output = prepare_tensor(input, output, factor, do_adjoint);
   auto scales = prepare_scales(input, output, do_adjoint);
+  if (do_adjoint)
+    check_restrict_scales(scales, input.dim() - 2);
 
   MultiResAllocator info(input.dim()-2, bound, scales, do_adjoint);
   info.ioset(input, output);
@@ -1015,6 +1030,8 @@ Tensor multires_impl(
 {
   output = prepare_tensor(input, output, factor, do_adjoint);
   auto scales = prepare_scales(input, output, do_adjoint);
+  if (do_adjoint)
+    check_restrict_scales(scales, input.dim() - 2);
 
   MultiResAllocator info(input.dim()-2, bound, scales, do_adjoint);
   info.ioset(input, output);

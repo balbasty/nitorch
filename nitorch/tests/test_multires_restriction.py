@@ -167,3 +167,20 @@ def test_restriction_preserves_constants():
         for bound in ('dct2', 'replicate'):
             out = restrict(x, bound)
             torch.testing.assert_close(out, torch.ones_like(out))
+
+
+@pytest.mark.parametrize('dim', [1, 2, 3])
+@pytest.mark.parametrize('legacy', [False, True])
+def test_restriction_factor3_raises(monkeypatch, dim, legacy):
+    """The 4-tap stencil only covers factors <= 2: refuse larger ones."""
+    if legacy:
+        monkeypatch.setenv(LEGACY_ENV, '1')
+    else:
+        monkeypatch.delenv(LEGACY_ENV, raising=False)
+    x = torch.randn([1, 1, *([12] * dim)], dtype=torch.double)
+    with pytest.raises(RuntimeError, match='factor of'):
+        restrict(x, 'dct2', [4] * dim)
+    # factor 2 (and the fmg shapes of odd / unit sizes) are fine
+    restrict(x, 'dct2', [6] * dim)
+    for n in (1, 2, 3, 5):
+        restrict(torch.randn([1, 1, *([n] * dim)], dtype=torch.double), 'dct2')
