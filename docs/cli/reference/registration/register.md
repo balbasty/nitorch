@@ -499,7 +499,7 @@ weights of the `--lame` option.
 | `-o`, `--output`            | `[PATH` &vert; `true` &vert; `false]` | Where to write the field. `{dir}` and `{name}` are available. With no value, `true`, `yes` or `1`, the default path is used; `false`, `no` or `0` writes nothing. | `{dir}/{name}.nii.gz` |
 | `-h`, `--hessian`           | `[PATH` &vert; `true` &vert; `false]` | Where to write the Hessian of the matching term at the solution (a map of local confidence), used to weight [`vopt`](vopt.md). `{dir}` and `{name}` are available. With no value, `true`, `yes` or `1`, the default path `{dir}/{name}_hessian.nii.gz` is used; `false`, `no` or `0` writes nothing. | not written |
 | `--inversion`               | `{default,push,newton}` | `@nonlin`, all models. How the side of the warp that is not computed directly is obtained by inverting the other one. `default` keeps the model's usual behaviour; `push` and `newton` are more elaborate inverses. See [below](#choosing-how-the-warp-is-inverted-with-inversion). | `default`          |
-| `--bound`                   | `BND`               | Boundary condition of the field: `dft` (circular), `dct2`, `dct1`, `dst2`, `dst1` or `zero`. `shoot` only accepts `dft`. Not to be confused with `-b` of `@@fix`/`@@mov`, which is the boundary condition of the images. See [below](#choosing-the-boundary-condition-of-the-field-with-bound). | `dft`              |
+| `--bound`                   | `BND`               | Boundary condition of the field: `dft` (circular), `dct2`, `dct1`, `dst2`, `dst1`, `zero` or `sliding`. `shoot` only accepts `dft`. Not to be confused with `-b` of `@@fix`/`@@mov`, which is the boundary condition of the images. See [below](#choosing-the-boundary-condition-of-the-field-with-bound). | `dft`              |
 | `--exact`                   | `[BOOL]`            | `@nonlin shoot`, long form only. Integrate the geodesic exactly rather than by chaining one-step transports. Rejected for `svf` and `smalldef`. See [below](#fast-or-exact-shooting-with-exact). | `false`            |
 | `-2d`                       | `[AXIS]`            | Restrict the deformation to the plane normal to `AXIS`. Without a value, axis 2.                                                     | 3D                 |
 
@@ -548,9 +548,10 @@ The field is defined on a finite lattice, and the regularisation, the scaling an
 | `dct2`, `dct1` | is mirrored            | A free boundary: the field can do anything at the edges. The most natural choice when tissue reaches the edges of the field of view. |
 | `dst2`, `dst1` | is mirrored and negated | Pushes the displacement towards zero at the edges. |
 | `zero`   | is zero                    | The deformation is the identity beyond the edges. |
+| `sliding` | is mirrored, with the component normal to the edge negated | The component of the displacement normal to an edge is antisymmetric across it (it flips, like `dst2`), and the tangential components are symmetric (like `dct2`). The field slides along the edges of the field of view but cannot cross them. A natural choice when the edges of the lattice are physical boundaries that tissue moves along, for example the walls of a container or the edges of a slab. |
 
 !!! tip "When to use it"
-    The default suits images surrounded by background, such as whole-head scans. If the images are cropped, for example slabs, partial fields of view or tissue blocks, so that structures touch the edges of the lattice, use `--bound dct2` (with `svf` or `smalldef`), or pad the lattice with `-p`.
+    The default suits images surrounded by background, such as whole-head scans. If the images are cropped, for example slabs, partial fields of view or tissue blocks, so that structures touch the edges of the lattice, use `--bound dct2` (with `svf` or `smalldef`), or pad the lattice with `-p`. Use `--bound sliding` when tissue should move along the edges but not through them.
 
 #### Fast or exact shooting with `--exact`
 
