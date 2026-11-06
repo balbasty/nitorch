@@ -142,6 +142,34 @@ def for_component(bound, comp):
             for d, b in enumerate(to_nitorch(list(bound)))]
 
 
+def for_pair(bound, i, j):
+    """Boundary condition of each axis for a quantity indexed by a pair of
+    components of a displacement field, such as the entry `(i, j)` of
+    its Jacobian (`d u[i] / d x[j]`) or of a symmetric matrix field that
+    acts on it (`u[i] * u[j]`, e.g., a Hessian).
+
+    Along a 'sliding' axis `d`, it is antisymmetric ('dst2') if exactly
+    one of `i` and `j` is `d`, and symmetric ('dct2') otherwise. The
+    other boundary conditions are shared by all entries.
+
+    Parameters
+    ----------
+    bound : list of bound_like
+        Boundary condition of each axis
+    i, j : int
+        Components of the pair
+
+    Returns
+    -------
+    bound : list of str
+        Boundary condition of each axis, in NITorch's convention
+
+    """
+    return [('dst2' if (d == i) != (d == j) else 'dct2')
+            if b == 'sliding' else b
+            for d, b in enumerate(to_nitorch(list(bound)))]
+
+
 def to_scipy(bound):
     """Convert boundary type to SciPy's convention.
 

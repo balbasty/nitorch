@@ -2,6 +2,7 @@
 
 from ._grid import grid_pull, grid_push, identity_grid, grid_jacobian
 from nitorch.core import utils, py, linalg
+from nitorch.core import bounds as _bounds
 from nitorch.core.jit_policy import maybe_jit
 import torch
 
@@ -91,7 +92,8 @@ def exp_forward(vel, inverse=False, steps=8, interpolation='linear',
     vel /= (2**steps)
     for i in range(steps):
         if jacobian:
-            jac = _composition_jac(jac, vel, type='displacement', identity=id)
+            jac = _composition_jac(jac, vel, type='displacement', identity=id,
+                                   **opt)
         vel = iadd(vel, _pull_vel(vel, id + vel, **opt))
 
     if not displacement:
@@ -309,7 +311,7 @@ def exp_backward(vel, *gradhess, inverse=False, steps=8,
         grad += grad0                            # add all scales (SVF)
         if hess is not None:
             hess0 = hess
-            hess = _pull_vel(hess, grid, **opt)
+            hess = _pull_sym(hess, grid, **opt)
             hess = _jhj(jac, hess)
             hess *= det[..., None]
             hess += hess0
@@ -433,6 +435,41 @@ def _push_vel(vel, grid, *args, **kwargs):
     return vel
 
 
+def _pull_pairs(x, grid, pairs, **kwargs):
+    """Interpolate a field whose channels are indexed by pairs of
+    components (Jacobian, symmetric matrix), each with the boundary
+    conditions of its pair (`core.bounds.for_pair`: they differ along
+    'sliding' axes).
+
+    x : ([batch], *spatial, K) tensor, grid : ([batch], *spatial, ndim)
+    pairs : list of K (i, j) pairs
+    """
+    dim = grid.shape[-1]
+    bound = py.make_list(kwargs.pop('bound'), dim)
+    out = []
+    for k, (i, j) in enumerate(pairs):
+        out.append(_pull_vel(x[..., k:k+1], grid, **kwargs,
+                             bound=_bounds.for_pair(bound, i, j)))
+    return torch.cat(out, -1)
+
+
+def _pull_sym(hess, grid, **kwargs):
+    """Interpolate a field of symmetric matrices (D or D*(D+1)//2
+    channels: diagonal, then upper triangle row by row), or of scalars
+    (one channel), with the boundary conditions of each entry."""
+    kwargs.setdefault('bound', 'dft')
+    kwargs.setdefault('extrapolate', True)
+    dim = grid.shape[-1]
+    if not _bounds.has_sliding(kwargs['bound']):
+        return _pull_vel(hess, grid, **kwargs)
+    pairs = [(i, i) for i in range(dim)]
+    if hess.shape[-1] == 1:
+        pairs = pairs[:1]
+    elif hess.shape[-1] > dim:
+        pairs += [(i, j) for i in range(dim) for j in range(i + 1, dim)]
+    return _pull_pairs(hess, grid, pairs, **kwargs)
+
+
 def _pull_jac(jac, grid, **kwargs):
     """Interpolate a Jacobian field.
 
@@ -460,6 +497,12 @@ def _pull_jac(jac, grid, **kwargs):
     kwargs.setdefault('bound', 'dft')
     kwargs.setdefault('extrapolate', True)
     dim = grid.shape[-1]
+    if _bounds.has_sliding(kwargs['bound']):
+        # entry (i, j) with its own boundary conditions
+        pairs = [(i, j) for i in range(dim) for j in range(dim)]
+        jac = jac.reshape([*jac.shape[:-2], -1])
+        jac = _pull_pairs(jac, grid, pairs, **kwargs)
+        return jac.reshape([*jac.shape[:-1], dim, dim])
 
     jac = jac.reshape([*jac.shape[:-2], -1])
     jac = utils.movedim(jac, -1, -dim-1)
@@ -502,11 +545,12 @@ def _composition_jac(jac, rhs, lhs=None, type='grid', identity=None, **kwargs):
     dim = rhs.shape[-1]
     backend = utils.backend(rhs)
     typer, typel = py.make_list(type, 2)
-    jac_left = grid_jacobian(lhs, type=typel)
+    bound = kwargs.get('bound', 'dft')
+    jac_left = grid_jacobian(lhs, type=typel, bound=bound)
     if typer != 'grid':
         if identity is None:
             identity = identity_grid(rhs.shape[-dim-1:-1], **backend)
         rhs = rhs + identity
-    jac_left = _pull_jac(jac_left, rhs)
+    jac_left = _pull_jac(jac_left, rhs, **kwargs)
     jac = torch.matmul(jac_left, jac)
     return jac

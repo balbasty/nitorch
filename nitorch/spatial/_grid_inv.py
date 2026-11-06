@@ -1,6 +1,8 @@
 # grid_inv needs its own file to avoid circular imports
 import torch
 from nitorch.core import utils
+from nitorch.core import bounds as _bounds
+from nitorch.core.py import make_list
 from ._grid import (grid_push, grid_pull, grid_count, grid_jacobian,
                     identity_grid)
 from ._solvers import solve_grid_fmg, solve_grid
@@ -103,7 +105,8 @@ def grid_inv(grid, type='grid', bound='dft', extrapolate=True,
         `nb_cycles`, `nb_iter`) are accepted too; if any keyword is
         given, `membrane` defaults to 0.
     bound : str, default='dft'
-        Boundary conditions
+        Boundary conditions. With 'sliding', the component normal to
+        the border is antisymmetric (dst2) and the others symmetric (dct2).
     extrapolate : bool, default=True
         Extrapolate the transformation field when
         it is sampled out-of-bounds.
@@ -244,13 +247,28 @@ def _gauss_newton_inv(disp, idisp, identity, nb_iter, solve,
         out = grid_pull(utils.movedim(field, -1, 1), identity + w, **opt)
         return utils.movedim(out, 1, -1)
 
-    # Jacobian of phi (central finite differences), flattened
+    def pull_jac(jac, w):
+        # jac(id + w), with jac (batch, *spatial, dim, dim)
+        if not _bounds.has_sliding(bound):
+            jac = jac.reshape([*jac.shape[:-2], dim * dim])
+            return pull(jac, w).reshape([*w.shape, dim])
+        # sliding: along a sliding axis `a`, d u[c] / d x[d] is
+        # antisymmetric iff exactly one of `c`, `d` is `a` (`for_pair`)
+        bounds = make_list(bound, dim)
+        out = jac.new_empty([*w.shape, dim])
+        for c in range(dim):
+            for d in range(dim):
+                out[..., c, d] = grid_pull(
+                    jac[:, None, ..., c, d], identity + w,
+                    **dict(opt, bound=_bounds.for_pair(bounds, c, d)))[:, 0]
+        return out
+
+    # Jacobian of phi (central finite differences)
     jac = grid_jacobian(disp, type='disp', bound=bound)
-    jac = jac.reshape([*jac.shape[:-2], dim * dim])
 
     for _ in range(nb_iter):
         res = pull(disp, idisp).add_(idisp)             # phi o psi - id
-        jacw = pull(jac, idisp).reshape([*idisp.shape, dim])
+        jacw = pull_jac(jac, idisp)
         hess, grad = _gauss_newton_terms(jacw, res)
         del jacw, res
         idisp = idisp.sub_(solve(hess, grad))
