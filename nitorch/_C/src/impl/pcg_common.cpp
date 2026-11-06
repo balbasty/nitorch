@@ -1,5 +1,8 @@
 #include <ATen/ATen.h>
 #include <vector>
+#include <cmath>
+#include <limits>
+#include <algorithm>
 #include "common.h"
 #include "../defines.h"
 #include "../bounds.h"
@@ -35,16 +38,27 @@ namespace {
     return a;
   }
 
+  // Early stopping: same criterion as the TorchScript solver
+  // (`core.optim.cg(..., stop='max_gain')`), which is invariant to the
+  // scale of the system. With `obj_n = alpha * (alpha * pAp + 2 * rz)`
+  // at iteration n (`rz` after the update), stop when
+  //     |obj_{n-1} - obj_n| / (max_k obj_k - min_k obj_k) < tol
+  // (The previous criterion, `sum(obj_n) < tol * numel`, was absolute: it
+  //  stopped after a few iterations when the gradient and Hessian are
+  //  small, e.g., with the normalised factors of `nitorch register`.)
   template <typename ForwardFn, typename PrecondFn>
   inline void do_pcg(const Tensor & h, const Tensor & g, 
                      Tensor & x, const Tensor & w,
                      int64_t nb_iter, double tol,
                      ForwardFn forward, PrecondFn precond)
   {
-      Tensor alpha, beta, rz, rz0, pAp, obj; // "scalar" tensors (can have a batch dim)
+      Tensor alpha, beta, rz, rz0, pAp; // "scalar" tensors (can have a batch dim)
       Tensor r = at::empty_like(g), z = at::empty_like(g);
 
-      int64_t numel = g.numel() / g.size(1);
+      // objective values (for early stopping)
+      double obj = 0, obj_prev = std::numeric_limits<double>::infinity();
+      double obj_min = std::numeric_limits<double>::infinity();
+      double obj_max = -std::numeric_limits<double>::infinity();
 
       // Initialisation
       forward(h, x, w, r);       // r  = (H + KWK) * x
@@ -60,27 +74,34 @@ namespace {
         pAp = dotprod(p, z);                     // alpha = p' * Ap
         alpha = rz / at::clamp_min(pAp, 1e-12);  // alpha = (r' * z) / (p' * Ap)
 
-        if (tol) {
-          obj = alpha * (alpha * pAp + 2 * rz);
-          obj = at::sum(obj);
-          //NI_TRACE("PCG: %d/%d, obj = %f, tol = %f\n", 
-          //         n, nb_iter, obj.item<double>() / numel, tol);
-          if (obj.item<double>() < tol * numel)
-            break;
-        }
-
         at::addcmul_out(x, x, p, alpha);          // x += alpha * p
         at::addcmul_out(r, r, z, alpha, -1);      // r -= alpha * Ap
         precond(h, r, w, z);                      // z  = (H + diag(W)) \ r
         rz0 = rz;
         rz = dotprod(r, z);
         beta = rz / at::clamp_min_(rz0, 1e-12);
+
+        if (tol) {
+          obj = at::sum(alpha * (alpha * pAp + 2 * rz)).item<double>();
+          if (std::isfinite(obj)) {
+            obj_min = std::min(obj_min, obj);
+            obj_max = std::max(obj_max, obj);
+          }
+          double gain = (obj_prev - obj)
+                      / std::max(obj_max - obj_min, 1e-12);
+          obj_prev = obj;
+          if (std::abs(gain) < tol) {
+            ++n;
+            break;
+          }
+        }
+
         at::addcmul_out(p, z, p, beta);           // p = z + beta * p
       }
 
       if (tol)
         NI_TRACE("PCG: %d/%d, obj = %f, tol = %f\n", 
-                 n, nb_iter, obj.item<double>() / numel, tol);
+                 n, nb_iter, obj, tol);
  
   }
 

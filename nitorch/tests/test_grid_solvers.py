@@ -393,3 +393,28 @@ def test_field_fmg_relax_converges(weighted):
                       **prm)
     x = solve_field_fmg(hess, grad, optim='relax', **prm)
     assert (x - ref).norm() / ref.norm() < 1e-3
+
+
+@pytest.mark.parametrize('bound', ['dft', 'zero', 'dct2'])
+@pytest.mark.parametrize('scale', [1e-3, 1., 1e3])
+def test_cg_stopping_is_scale_invariant(bound, scale):
+    """Early stopping of the (single resolution) conjugate gradient does
+    not depend on the scale of the system: (s*H + s*L) x = s*g has the
+    same solution, with the same number of iterations, for any s.
+    (The compiled solver used to stop when the decrease of the objective
+    was small in absolute terms, i.e., after a few iterations with the
+    small gradients and Hessians of `nitorch register`.)"""
+    g = torch.Generator().manual_seed(0)
+    shape, dim = (10, 9, 8), 3
+    grad = torch.randn(shape + (dim,), dtype=torch.double, generator=g)
+    hess = 0.1 * torch.rand(shape + (6,), dtype=torch.double, generator=g)
+    hess[..., :dim] += 1
+    prm = dict(absolute=1e-2, membrane=1e-1, bending=1., lame=(0.05, 0.2),
+               bound=bound, max_iter=64, tolerance=1e-5)
+    ref = solve_grid(hess, grad, **prm)
+    sol = solve_grid(hess * scale, grad * scale, factor=scale, **prm)
+    assert torch.allclose(sol, ref, rtol=1e-6, atol=1e-8 * ref.abs().max())
+    res = (sym_matvec(hess, sol) - grad +
+           regulariser_grid(sol, **{k: v for k, v in prm.items()
+                                    if k not in ('max_iter', 'tolerance')}))
+    assert res.norm() < 1e-2 * grad.norm()
