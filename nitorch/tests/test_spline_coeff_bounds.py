@@ -93,8 +93,17 @@ def test_pull_extension(bound, expected, order):
 
 
 def test_prefilter_matches_previous():
-    """For the boundaries that torch-interpol handled exactly (dct1,
-    dct2, dft), the coefficients are unchanged"""
+    """For the boundaries that torch-interpol handled (dct1, dct2, dft),
+    the coefficients are unchanged, up to the accuracy of torch-interpol.
+
+    torch-interpol truncates its initial conditions at a horizon of
+    `|pole|**k < exp(-30)` (~1e-13), and its coefficients are ~1e-13
+    (relative) away from a dense solve, whereas ours are ~1e-15 away.
+    With order 6-7 in 3D the coefficients reach ~1e3, so the absolute
+    difference reaches ~1e-10 and depends on the rounding of the torch
+    build: the tolerance must be relative to the coefficients. A change
+    of boundary condition would change the coefficients near the
+    borders by a relative O(1e-2) or more."""
     interpol = pytest.importorskip('interpol.coeff')
     gen = torch.Generator().manual_seed(3)
     x = torch.randn([2, 30, 20, 9], dtype=dt, generator=gen)
@@ -102,7 +111,9 @@ def test_prefilter_matches_previous():
         for order in ORDERS:
             old = interpol.spline_coeff_nd(x, [code] * 3, [order] * 3, 3)
             new = C.spline_coeff_nd(x, name, order, 3)
-            assert torch.allclose(old, new, rtol=0, atol=1e-10)
+            atol = 1e-11 * new.abs().max()
+            assert torch.allclose(old, new, rtol=0, atol=atol), \
+                (name, order, (old - new).abs().max().item())
 
 
 def test_prefilter_inplace():
