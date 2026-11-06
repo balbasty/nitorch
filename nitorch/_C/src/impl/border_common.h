@@ -11,9 +11,12 @@
 // - folds the taps of the kept rows that lie outside of the field of
 //   view back onto their source voxel (with the sign of the extension);
 // - removes the rows centred outside of the field of view (ghost rows).
-// B only lives on the border voxels (`BorderBox`): the kernels run on
-// the interior voxels unchanged, and the border voxels add B (gather
-// form: each voxel computes its own row of B).
+// B only lives on a few planes of each axis (`Targets`): the ghost rows
+// target the planes 0 and n-1, the folds the source planes of the ghost
+// samples. The regularisers run their kernels on all voxels unchanged,
+// then a thin pass over the target planes adds B (gather form: each
+// voxel of a plane computes its own row of the terms of that axis, from
+// tables of offsets and signs computed once: `Axis`, `Plane`).
 //
 // The closed forms (and their dense check) are in
 // nitorch/tests/_regulariser_reference.py (`border_correction`).
@@ -172,154 +175,186 @@ component_bound(BoundType b, int axis, int comp) {
 }
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-//                    A channel seen from a voxel
+//                 Extended samples of an axis (tables)
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-template <typename reduce_t, typename scalar_t, typename offset_t>
-struct View {
-  const scalar_t * ptr;   // pointer to the voxel q
-  offset_t q[3];          // coordinates of q
-  offset_t n[3];          // size of each axis
-  offset_t s[3];          // stride of each axis
-  BoundType b[3];         // boundary condition of each axis
+// Source voxel `p` and sign `s` of the samples that the border terms
+// read along one axis of length n, for one boundary condition (computed
+// once, on the host). Sample k of side 0 (left) / 1 (right):
+//   k = 0: border voxel j0  (0  | n-1)
+//   k = 1: ghost sample jg  (-1 | n)
+//   k = 2: inward voxel j1  (1  | n-2)
+//   k = 3: second ghost jg2 (-2 | n+1)
+template <typename offset_t>
+struct Axis {
+  offset_t p[2][4];
+  int8_t   s[2][4];
 
-  NI_DEVICE View(const scalar_t * ptr,
-                 offset_t x, offset_t y, offset_t z,
-                 offset_t X, offset_t Y, offset_t Z,
-                 offset_t sX, offset_t sY, offset_t sZ,
-                 BoundType b0, BoundType b1, BoundType b2): ptr(ptr) {
-    q[0] = x;  q[1] = y;  q[2] = z;
-    n[0] = X;  n[1] = Y;  n[2] = Z;
-    s[0] = sX; s[1] = sY; s[2] = sZ;
-    b[0] = b0; b[1] = b1; b[2] = b2;
-  }
-
-  // source voxel `p` and sign of the extended sample `j` along `a`
-  NI_DEVICE int8_t src(int a, offset_t j, offset_t & p) const {
-    p = static_cast<offset_t>(bound::index(b[a], j, n[a]));
-    return bound::sign(b[a], j, n[a]);
-  }
-
-  // whether the extended sample `j` along `a` is folded onto q
-  // (returns its sign, 0 if it is not)
-  NI_DEVICE int8_t folds(int a, offset_t j) const {
-    offset_t p;
-    int8_t sgn = src(a, j, p);
-    return (sgn && p == q[a]) ? sgn : static_cast<int8_t>(0);
-  }
-
-  // extended sample `j` along `a` (the other coordinates are q's)
-  NI_DEVICE reduce_t at(int a, offset_t j) const {
-    offset_t p;
-    int8_t sgn = src(a, j, p);
-    if (!sgn) return static_cast<reduce_t>(0);
-    reduce_t v = static_cast<reduce_t>(ptr[(p - q[a]) * s[a]]);
-    return sgn > 0 ? v : -v;
-  }
-
-  // extended sample (ja, jb) along (a, b)
-  NI_DEVICE reduce_t at(int a, offset_t ja, int b2, offset_t jb) const {
-    offset_t pa, pb;
-    int8_t sa = src(a, ja, pa);
-    if (!sa) return static_cast<reduce_t>(0);
-    int8_t sb = src(b2, jb, pb);
-    if (!sb) return static_cast<reduce_t>(0);
-    reduce_t v = static_cast<reduce_t>(
-      ptr[(pa - q[a]) * s[a] + (pb - q[b2]) * s[b2]]);
-    return sa * sb > 0 ? v : -v;
+  NI_HOST NI_DEVICE void set(BoundType b, offset_t n) {
+    for (int side = 0; side < 2; ++side)
+    for (int k = 0; k < 4; ++k) {
+      offset_t d = static_cast<offset_t>(k == 0 ? 0 : k == 1 ? -1 : k == 2 ? 1 : -2);
+      offset_t j = side ? n - 1 - d : d;
+      s[side][k] = bound::sign(b, j, n);
+      // (a zero sample is never read: any index will do)
+      p[side][k] = s[side][k] ? static_cast<offset_t>(bound::index(b, j, n))
+                              : static_cast<offset_t>(0);
+    }
   }
 };
 
-// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-//                    Row of B at the voxel q (gather form)
-// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-// (unit coefficients; `side` 0 is the left border, 1 the right one)
+// A plane j of an axis, seen from its voxels: which border terms target
+// it, and the offsets (from the plane) and signs of their samples.
+template <typename offset_t>
+struct Plane {
+  bool     ghost[2];    // j is the border voxel of the side (ghost row)
+  int8_t   fold[2];     // sign of the ghost sample folded onto j (or 0)
+  int8_t   s[2][4];     // sign of the samples
+  bool     self[2][4];  // whether the sample is the plane j itself
+  offset_t o[2][4];     // offset of the samples from the plane j
 
-#define NI_BORDER_SIDE(V, a)                                     \
-  offset_t n_ = V.n[a];                                          \
-  offset_t j0 = side ? n_ - 1 : static_cast<offset_t>(0);        \
-  offset_t jg = side ? n_     : static_cast<offset_t>(-1);       \
-  bool ghost = V.q[a] == j0;                                     \
-  int8_t fold = V.folds(a, jg);
+  NI_HOST NI_DEVICE void set(const Axis<offset_t> & A, offset_t n,
+                             offset_t j, offset_t stride) {
+    for (int side = 0; side < 2; ++side) {
+      ghost[side] = j == (side ? n - 1 : static_cast<offset_t>(0));
+      fold[side]  = (A.s[side][1] && A.p[side][1] == j) ? A.s[side][1]
+                                                         : static_cast<int8_t>(0);
+      for (int k = 0; k < 4; ++k) {
+        s[side][k]    = A.s[side][k];
+        self[side][k] = A.s[side][k] && A.p[side][k] == j;
+        o[side][k]    = (A.p[side][k] - j) * stride;
+      }
+    }
+  }
 
-// Membrane along `a` (W: weights, with their even boundary condition,
-// or nullptr)
-template <typename reduce_t, typename scalar_t, typename offset_t>
+  NI_HOST NI_DEVICE bool targeted() const {
+    return ghost[0] || ghost[1] || fold[0] || fold[1];
+  }
+};
+
+// Sample k of a side, at the offset `off` in the plane (with the sign
+// `sgn`). DIAG: the coefficient of the voxel itself in that sample
+// (`same`: the in-plane offset is the voxel itself).
+template <bool DIAG, typename reduce_t, typename scalar_t, typename offset_t>
 static NI_INLINE NI_DEVICE reduce_t
-membrane(const View<reduce_t, scalar_t, offset_t> & V,
-         const View<reduce_t, scalar_t, offset_t> * W, int a) {
+sample(const scalar_t * x, const Plane<offset_t> & P, int side, int k,
+       offset_t off = 0, int8_t sgn = 1, bool same = true) {
+  int8_t s = P.s[side][k] * sgn;
+  if (DIAG)
+    return (same && P.self[side][k]) ? static_cast<reduce_t>(s)
+                                     : static_cast<reduce_t>(0);
+  if (!s) return static_cast<reduce_t>(0);
+  reduce_t v = static_cast<reduce_t>(x[P.o[side][k] + off]);
+  return s > 0 ? v : -v;
+}
+
+// Sample (ka, kb) of the sides (sa, sb) of two axes
+template <bool DIAG, typename reduce_t, typename scalar_t, typename offset_t>
+static NI_INLINE NI_DEVICE reduce_t
+sample2(const scalar_t * x,
+        const Plane<offset_t> & Pa, int sa, int ka,
+        const Plane<offset_t> & Pb, int sb, int kb) {
+  int8_t s = Pa.s[sa][ka] * Pb.s[sb][kb];
+  if (DIAG)
+    return (Pa.self[sa][ka] && Pb.self[sb][kb]) ? static_cast<reduce_t>(s)
+                                                : static_cast<reduce_t>(0);
+  if (!s) return static_cast<reduce_t>(0);
+  reduce_t v = static_cast<reduce_t>(x[Pa.o[sa][ka] + Pb.o[sb][kb]]);
+  return s > 0 ? v : -v;
+}
+
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+//            Row of B at a voxel q of the plane j (gather form)
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+// Terms of the axis `a` of the plane P (unit coefficients). `x` points to
+// the voxel q. DIAG: the diagonal of B at q (same closed form, every
+// sample replaced by its coefficient of q).
+
+// Membrane along a (w: weights at q, with the plane PW of their even
+// boundary condition, or nullptr)
+template <bool DIAG, typename reduce_t, typename scalar_t, typename offset_t>
+static NI_INLINE NI_DEVICE reduce_t
+membrane(const scalar_t * x, const Plane<offset_t> & P,
+         const scalar_t * w, const Plane<offset_t> & PW) {
   reduce_t r = 0;
   for (int side = 0; side < 2; ++side) {
-    NI_BORDER_SIDE(V, a)
-    if (!ghost && !fold) continue;
-    reduce_t d = V.at(a, j0) - V.at(a, jg);
-    if (ghost) r -= 0.5 * (W ? W->at(a, jg) : static_cast<reduce_t>(1)) * d;
-    if (fold)  r -= 0.5 * fold * (W ? W->at(a, j0) : static_cast<reduce_t>(1)) * d;
+    if (!P.ghost[side] && !P.fold[side]) continue;
+    reduce_t d = sample<DIAG,reduce_t>(x, P, side, 0)
+               - sample<DIAG,reduce_t>(x, P, side, 1);
+    if (P.ghost[side])
+      r -= 0.5 * (w ? static_cast<reduce_t>(w[PW.o[side][1]]) : 1.) * d;
+    if (P.fold[side])
+      r -= 0.5 * P.fold[side] *
+           (w ? static_cast<reduce_t>(w[PW.o[side][0]]) : 1.) * d;
   }
   return r;
 }
 
-// Bending: central second differences along `a`
-template <typename reduce_t, typename scalar_t, typename offset_t>
+// Bending: central second differences along a
+template <bool DIAG, typename reduce_t, typename scalar_t, typename offset_t>
 static NI_INLINE NI_DEVICE reduce_t
-bending_diag(const View<reduce_t, scalar_t, offset_t> & V, int a) {
+bending_diag(const scalar_t * x, const Plane<offset_t> & P) {
   reduce_t r = 0;
   for (int side = 0; side < 2; ++side) {
-    NI_BORDER_SIDE(V, a)
-    if (!ghost && !fold) continue;
-    offset_t j1  = side ? n_ - 2 : static_cast<offset_t>(1);
-    offset_t jg2 = side ? n_ + 1 : static_cast<offset_t>(-2);
-    reduce_t xg = V.at(a, jg), x0 = V.at(a, j0);
-    if (ghost) r -= V.at(a, jg2) - 2 * xg + x0;
-    if (fold)  r += fold * (xg - 2 * x0 + V.at(a, j1));
+    if (!P.ghost[side] && !P.fold[side]) continue;
+    reduce_t x0 = sample<DIAG,reduce_t>(x, P, side, 0),
+             xg = sample<DIAG,reduce_t>(x, P, side, 1);
+    if (P.ghost[side])
+      r -= sample<DIAG,reduce_t>(x, P, side, 3) - 2 * xg + x0;
+    if (P.fold[side])
+      r += P.fold[side] * (xg - 2 * x0 + sample<DIAG,reduce_t>(x, P, side, 2));
   }
   return r;
 }
 
-// Bending: cross term of the pair (a, b), edges of axis `a`
-template <typename reduce_t, typename scalar_t, typename offset_t>
+// Bending: cross term of the pair (a, b), edges of axis a. The Neumann
+// Laplacian along b (in the plane, at qb, with stride sb) of
+// d = x[j0] - x~[jg].
+template <bool DIAG, typename reduce_t, typename scalar_t, typename offset_t>
 static NI_INLINE NI_DEVICE reduce_t
-bending_edge(const View<reduce_t, scalar_t, offset_t> & V, int a, int b) {
+bending_edge(const scalar_t * x, const Plane<offset_t> & P,
+             offset_t qb, offset_t nb, offset_t sb) {
   reduce_t r = 0;
-  offset_t qb = V.q[b], nb = V.n[b];
   for (int side = 0; side < 2; ++side) {
-    NI_BORDER_SIDE(V, a)
-    if (!ghost && !fold) continue;
-    // Neumann Laplacian along b of d = x[j0] - x~[jg]
-    reduce_t d = V.at(a, j0, b, qb) - V.at(a, jg, b, qb), Ld = 0;
+    if (!P.ghost[side] && !P.fold[side]) continue;
+    reduce_t d = sample<DIAG,reduce_t>(x, P, side, 0)
+               - sample<DIAG,reduce_t>(x, P, side, 1), Ld = 0;
+    // (the in-plane neighbours are never q itself)
     if (qb > 0)
-      Ld += d - (V.at(a, j0, b, qb - 1) - V.at(a, jg, b, qb - 1));
+      Ld += d - (sample<DIAG,reduce_t>(x, P, side, 0, -sb, 1, false)
+               - sample<DIAG,reduce_t>(x, P, side, 1, -sb, 1, false));
     if (qb < nb - 1)
-      Ld += d - (V.at(a, j0, b, qb + 1) - V.at(a, jg, b, qb + 1));
-    if (ghost) r -= Ld;
-    if (fold)  r -= fold * Ld;
+      Ld += d - (sample<DIAG,reduce_t>(x, P, side, 0, sb, 1, false)
+               - sample<DIAG,reduce_t>(x, P, side, 1, sb, 1, false));
+    if (P.ghost[side]) r -= Ld;
+    if (P.fold[side])  r -= P.fold[side] * Ld;
   }
   return r;
 }
 
-// Bending: cross term of the pair (a, b), corners (once per pair)
-template <typename reduce_t, typename scalar_t, typename offset_t>
+// Bending: cross term of the pair (a, b), corners (once per pair).
+// Pb: the plane qb of the axis b.
+template <bool DIAG, typename reduce_t, typename scalar_t, typename offset_t>
 static NI_INLINE NI_DEVICE reduce_t
-bending_corner(const View<reduce_t, scalar_t, offset_t> & V, int a, int b) {
+bending_corner(const scalar_t * x, const Plane<offset_t> & Pa,
+               const Plane<offset_t> & Pb) {
   reduce_t r = 0;
   for (int sa = 0; sa < 2; ++sa) {
-    offset_t ja = sa ? V.n[a] - 1 : static_cast<offset_t>(0);
-    offset_t ga = sa ? V.n[a]     : static_cast<offset_t>(-1);
-    bool    a0 = V.q[a] == ja;
-    int8_t  ap = V.folds(a, ga);
+    bool   a0 = Pa.ghost[sa];
+    int8_t ap = Pa.fold[sa];
     if (!a0 && !ap) continue;
     for (int sb = 0; sb < 2; ++sb) {
-      offset_t jb = sb ? V.n[b] - 1 : static_cast<offset_t>(0);
-      offset_t gb = sb ? V.n[b]     : static_cast<offset_t>(-1);
-      bool    b0 = V.q[b] == jb;
-      int8_t  bp = V.folds(b, gb);
+      bool   b0 = Pb.ghost[sb];
+      int8_t bp = Pb.fold[sb];
       reduce_t acc = 0;
       if (a0 && b0) acc -= 1.5;
       if (a0 && bp) acc -= 0.5 * bp;
       if (ap && b0) acc -= 0.5 * ap;
       if (ap && bp) acc += 0.5 * ap * bp;
       if (acc == 0) continue;
-      reduce_t g = V.at(a, ja, b, jb) - V.at(a, ja, b, gb)
-                 - V.at(a, ga, b, jb) + V.at(a, ga, b, gb);
+      reduce_t g = sample2<DIAG,reduce_t>(x, Pa, sa, 0, Pb, sb, 0)
+                 - sample2<DIAG,reduce_t>(x, Pa, sa, 0, Pb, sb, 1)
+                 - sample2<DIAG,reduce_t>(x, Pa, sa, 1, Pb, sb, 0)
+                 + sample2<DIAG,reduce_t>(x, Pa, sa, 1, Pb, sb, 1);
       r += acc * g;
     }
   }
@@ -327,25 +362,282 @@ bending_corner(const View<reduce_t, scalar_t, offset_t> & V, int a, int b) {
 }
 
 // Linear-elastic cross term E_i' C_a' F'F C_b E_j u_j at the voxel q of
-// the component i (Vi: bounds of i at q; Vj: the component j at q)
+// the component i (no diagonal: it reads another component).
+// Pi, Pj: the plane of the components i and j; uj: u_j at q; Ab: the
+// samples of u_j along b (qb, nb, sb: coordinate, size and stride).
 template <typename reduce_t, typename scalar_t, typename offset_t>
 static NI_INLINE NI_DEVICE reduce_t
-lame_cross(const View<reduce_t, scalar_t, offset_t> & Vi,
-           const View<reduce_t, scalar_t, offset_t> & Vj, int a, int b) {
+lame_cross(const scalar_t * uj, const Plane<offset_t> & Pi,
+           const Plane<offset_t> & Pj, const Axis<offset_t> & Ab,
+           offset_t qb, offset_t nb, offset_t sb) {
+  // samples qb + 1 and qb - 1 along b
+  offset_t op = sb, om = -sb;
+  int8_t   sp = 1,  sm = 1;
+  if (qb == nb - 1) { op = (Ab.p[1][1] - qb) * sb; sp = Ab.s[1][1]; }
+  if (qb == 0)      { om = (Ab.p[0][1] - qb) * sb; sm = Ab.s[0][1]; }
   reduce_t r = 0;
-  offset_t qb = Vj.q[b];
   for (int side = 0; side < 2; ++side) {
-    NI_BORDER_SIDE(Vi, a)
     reduce_t sgn = side ? 0.25 : -0.25;
-    if (ghost)
-      r += sgn * (Vj.at(a, jg, b, qb + 1) - Vj.at(a, jg, b, qb - 1));
-    if (fold)
-      r += sgn * fold * (Vj.at(a, j0, b, qb + 1) - Vj.at(a, j0, b, qb - 1));
+    if (Pi.ghost[side])
+      r += sgn * (sample<false,reduce_t>(uj, Pj, side, 1, op, sp)
+                - sample<false,reduce_t>(uj, Pj, side, 1, om, sm));
+    if (Pi.fold[side])
+      r += sgn * Pi.fold[side] *
+           (sample<false,reduce_t>(uj, Pj, side, 0, op, sp)
+          - sample<false,reduce_t>(uj, Pj, side, 0, om, sm));
   }
   return r;
 }
 
-#undef NI_BORDER_SIDE
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+//                       Target planes of an axis
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+// B only lives on the planes 0, n-1 (ghost rows) and on the source
+// planes of the ghost samples -1 and n (folds). The regularisers run
+// their plain kernel on all voxels, then one job per target plane of
+// each axis (in sequence: two jobs of different axes may share voxels).
+template <typename offset_t>
+struct Targets {
+  offset_t j[4];
+  int      n;
+
+  NI_HOST NI_DEVICE void clear() { n = 0; }
+
+  NI_HOST NI_DEVICE void add(offset_t jj) {
+    for (int k = 0; k < n; ++k) if (j[k] == jj) return;
+    j[n++] = jj;
+  }
+
+  // the planes targeted by the samples of A
+  NI_HOST NI_DEVICE void add(const Axis<offset_t> & A, offset_t size) {
+    add(static_cast<offset_t>(0));
+    add(size - 1);
+    for (int side = 0; side < 2; ++side)
+      if (A.s[side][1]) add(A.p[side][1]);
+  }
+};
+
+// One job of the border pass: the plane j of the axis a
+template <typename offset_t, int NC>
+struct PlaneJob {
+  int             a;
+  offset_t        j;
+  Plane<offset_t> P[NC];  // per component (grids) or one (fields)
+  Plane<offset_t> PW;     // weights (even boundary condition)
+};
+
+// linear index -> voxel of the plane j of the axis a (and batch n)
+template <typename offset_t>
+static NI_INLINE NI_DEVICE void
+plane_decode(offset_t i, int a, offset_t j,
+             offset_t X, offset_t Y, offset_t Z,
+             offset_t & x, offset_t & y, offset_t & z, offset_t & n) {
+  if (a == 0) {
+    z = i % Z; i /= Z; y = i % Y; n = i / Y; x = j;
+  } else if (a == 1) {
+    z = i % Z; i /= Z; x = i % X; n = i / X; y = j;
+  } else {
+    y = i % Y; i /= Y; x = i % X; n = i / X; z = j;
+  }
+}
+
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+//                    Border terms of a regulariser
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+// Which terms of B are not zero, their coefficients, and the tables of
+// extended samples. Decided once, on the host.
+
+// Displacement grids: component c has its own boundary conditions
+// (sliding axes), and its energy is scaled by its squared voxel size.
+template <typename reduce_t, typename offset_t>
+struct GridTerms {
+  int            dim;
+  bool           needs;            // whether B is not zero
+  offset_t       n[3];             // size of each axis
+  reduce_t       kmem[3][3];       // membrane-like coefficients [comp][axis]
+  reduce_t       kbd[3][3];        // bending (second differences)
+  reduce_t       kbc[3][3][3];     // bending (cross terms) [comp][axis][axis]
+  reduce_t       mu, lam;          // linear-elastic cross terms
+  bool           fmem[3][3];       // non-zero border terms
+  bool           fbd[3][3];
+  bool           fedge[3][3];
+  bool           fcorner[3][3][3];
+  bool           fshear[3][3];     // [output comp][input comp]
+  bool           fdiv[3][3];
+  bool           fany[3][3];       // any term of the axis [comp][axis]
+  Axis<offset_t> tab[3][3];        // extended samples [comp][axis]
+  Axis<offset_t> wtab[3];          // extended samples of the weights
+
+  // ivx: 1 / voxel_size**2
+  NI_HOST void set(int dim_, const BoundType b[3], const offset_t n_[3],
+                   const double ivx[3], double membrane, double bending,
+                   double mu_, double lam_) {
+    dim = dim_; mu = mu_; lam = lam_;
+    needs = false;
+    BoundType cb[3][3];
+    for (int c = 0; c < 3; ++c)
+    for (int a = 0; a < 3; ++a) {
+      n[a] = n_[a];
+      cb[c][a] = component_bound(b[a], a, c);
+      bool on = a < dim && c < dim;
+      double r = on ? ivx[a] / ivx[c] : 0.;  // (vx_c / vx_a)**2
+      kmem[c][a] = static_cast<reduce_t>(membrane * r + mu * (a == c ? 2. : r)
+                                         + (a == c ? lam : 0.));
+      kbd[c][a]  = static_cast<reduce_t>(bending * ivx[a] * r);
+      fmem[c][a] = on && kmem[c][a] && membrane_needs(cb[c][a]);
+      fbd[c][a]  = on && bending && bending_diag_needs(cb[c][a]);
+      fedge[c][a] = on && bending && bending_edge_needs(cb[c][a]);
+      tab[c][a].set(cb[c][a], n[a]);
+    }
+    for (int a = 0; a < 3; ++a)
+      wtab[a].set(bound::even(b[a]), n[a]);
+    for (int c = 0; c < 3; ++c)
+    for (int a = 0; a < 3; ++a)
+    for (int bb = 0; bb < 3; ++bb) {
+      bool on = a < dim && bb < dim && c < dim;
+      kbc[c][a][bb] = static_cast<reduce_t>(
+        on ? bending * ivx[a] * ivx[bb] / ivx[c] : 0.);
+      fcorner[c][a][bb] = on && bending && a < bb &&
+        bending_corner_needs(cb[c][a], cb[c][bb]);
+    }
+    // linear-elastic cross terms of the output component i and input
+    // component j: shear (scatter axis j, difference axis i) and
+    // divergence (scatter axis i, difference axis j)
+    for (int i = 0; i < 3; ++i)
+    for (int j = 0; j < 3; ++j) {
+      bool on = i < dim && j < dim && i != j;
+      fshear[i][j] = on && mu && lame_cross_needs(cb[i][j], cb[j][j]);
+      fdiv[i][j] = on && lam && lame_cross_needs(cb[i][i], cb[j][i]);
+    }
+    for (int c = 0; c < 3; ++c)
+    for (int a = 0; a < 3; ++a) {
+      bool any = fmem[c][a] || fbd[c][a] || fedge[c][a]
+              || (a != c && fshear[c][a]);
+      for (int k = 0; k < 3; ++k)
+        any = any || fcorner[c][a][k] || (a == c && fdiv[c][k]);
+      fany[c][a] = any;
+      needs = needs || any;
+    }
+  }
+
+  // Terms of the axis a at the voxel q of the component c: B (DIAG =
+  // false) or its diagonal (DIAG = true). x: the input at q (component
+  // 0), sC: its channel stride, s: its spatial strides; w: the weights at
+  // q (or nullptr) and PW their plane q[a]; P: the plane q[a] of each
+  // component along a.
+  template <bool DIAG, typename scalar_t>
+  NI_DEVICE reduce_t axis(int a, int c, const offset_t q[3],
+                          const offset_t s[3], const scalar_t * x,
+                          offset_t sC, const scalar_t * w,
+                          const Plane<offset_t> & PW,
+                          const Plane<offset_t> * P) const {
+    const scalar_t * xc = x + c * sC;
+    reduce_t B = 0;
+    if (fmem[c][a])
+      B += kmem[c][a] * membrane<DIAG,reduce_t>(xc, P[c], w, PW);
+    if (fbd[c][a])
+      B += kbd[c][a] * bending_diag<DIAG,reduce_t>(xc, P[c]);
+    for (int bb = 0; bb < dim; ++bb) {
+      if (bb == a) continue;
+      if (fedge[c][a])
+        B += kbc[c][a][bb] * bending_edge<DIAG,reduce_t>(
+          xc, P[c], q[bb], n[bb], s[bb]);
+      if (fcorner[c][a][bb]) {
+        Plane<offset_t> Pb;
+        Pb.set(tab[c][bb], n[bb], q[bb], s[bb]);
+        if (Pb.targeted())
+          B += kbc[c][a][bb] * bending_corner<DIAG,reduce_t>(xc, P[c], Pb);
+      }
+    }
+    if (DIAG) return B;
+    // linear-elastic cross terms: shear (input component a, difference
+    // axis c) and divergence (scatter axis c, difference axis j)
+    if (a != c && fshear[c][a])
+      B += mu * lame_cross<reduce_t>(x + a * sC, P[c], P[a], tab[a][c],
+                                     q[c], n[c], s[c]);
+    if (a == c)
+      for (int j = 0; j < dim; ++j)
+        if (fdiv[c][j])
+          B += lam * lame_cross<reduce_t>(x + j * sC, P[c], P[j], tab[j][j],
+                                          q[j], n[j], s[j]);
+    return B;
+  }
+};
+
+// Fields: every channel has the same boundary conditions (and its own
+// membrane and bending factors, applied by the caller)
+template <typename reduce_t, typename offset_t>
+struct FieldTerms {
+  int            dim;
+  bool           needs;            // whether B is not zero
+  offset_t       n[3];             // size of each axis
+  reduce_t       kmem[3];          // membrane coefficient of each axis
+  reduce_t       kbd[3];           // bending (second differences)
+  reduce_t       kbc[3][3];        // bending (cross terms)
+  bool           fmem[3];          // non-zero border terms
+  bool           fbd[3];
+  bool           fedge[3];
+  bool           fcorner[3][3];
+  bool           fany[3];          // any term of the axis
+  Axis<offset_t> tab[3];           // extended samples of each axis
+  Axis<offset_t> wtab[3];          // extended samples of the weights
+
+  // ivx: 1 / voxel_size**2
+  NI_HOST void set(int dim_, const BoundType b[3], const offset_t n_[3],
+                   const double ivx[3], bool has_membrane, bool has_bending) {
+    dim = dim_;
+    needs = false;
+    for (int a = 0; a < 3; ++a) {
+      bool on = a < dim;
+      n[a] = n_[a];
+      kmem[a] = static_cast<reduce_t>(ivx[a]);
+      kbd[a]  = static_cast<reduce_t>(ivx[a] * ivx[a]);
+      fmem[a] = on && has_membrane && membrane_needs(b[a]);
+      fbd[a]  = on && has_bending && bending_diag_needs(b[a]);
+      fedge[a] = on && has_bending && bending_edge_needs(b[a]);
+      fany[a] = fmem[a] || fbd[a] || fedge[a];
+      for (int bb = 0; bb < 3; ++bb) {
+        kbc[a][bb] = static_cast<reduce_t>(ivx[a] * ivx[bb]);
+        fcorner[a][bb] = on && bb < dim && a < bb && has_bending &&
+                         bending_corner_needs(b[a], b[bb]);
+        fany[a] = fany[a] || fcorner[a][bb];
+      }
+      needs = needs || fany[a];
+      tab[a].set(b[a], n[a]);
+      wtab[a].set(bound::even(b[a]), n[a]);
+    }
+  }
+
+  // Terms of the axis a at the voxel q of one channel (factors m and b),
+  // B (DIAG = false) or its diagonal (DIAG = true). x: the channel at q,
+  // s: its spatial strides; w: its weights at q (or nullptr) and PW their
+  // plane q[a]; P: the plane q[a] of the axis a.
+  template <bool DIAG, typename scalar_t>
+  NI_DEVICE reduce_t axis(int a, const offset_t q[3], const offset_t s[3],
+                          const scalar_t * x, reduce_t m, reduce_t b,
+                          const scalar_t * w, const Plane<offset_t> & PW,
+                          const Plane<offset_t> & P) const {
+    reduce_t B = 0;
+    if (m && fmem[a])
+      B += m * kmem[a] * membrane<DIAG,reduce_t>(x, P, w, PW);
+    if (!b) return B;
+    if (fbd[a])
+      B += b * kbd[a] * bending_diag<DIAG,reduce_t>(x, P);
+    for (int bb = 0; bb < dim; ++bb) {
+      if (bb == a) continue;
+      if (fedge[a])
+        B += b * kbc[a][bb] * bending_edge<DIAG,reduce_t>(
+          x, P, q[bb], n[bb], s[bb]);
+      if (fcorner[a][bb]) {
+        Plane<offset_t> Pb;
+        Pb.set(tab[bb], n[bb], q[bb], s[bb]);
+        if (Pb.targeted())
+          B += b * kbc[a][bb] * bending_corner<DIAG,reduce_t>(x, P, Pb);
+      }
+    }
+    return B;
+  }
+};
 
 } // namespace border
 } // namespace ni
