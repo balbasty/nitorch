@@ -5,7 +5,7 @@ import os
 
 
 def vexp(inp, type='displacement', unit='voxel', inverse=False,
-         bound='dft', steps=8, device=None, output=None, inversion=None):
+         bound=None, steps=8, device=None, output=None, inversion=None):
     """Exponentiate a stationary velocity fields.
 
     Parameters
@@ -22,8 +22,10 @@ def vexp(inp, type='displacement', unit='voxel', inverse=False,
         If mm, the input orientation matrix is used to convert voxels to mm.
     inverse : bool, default=False
         Whether to return the inverse field.
-    bound : str, default='dft'
+    bound : str, optional
         Boundary conditions.
+        If None, read it from the sidecar `<inp>.json` written by
+        `nitorch register` (if any), else 'dft'.
     steps : int, default=8
         Number of scaling and squaring steps.
     device : str, optional
@@ -71,16 +73,21 @@ def vexp(inp, type='displacement', unit='voxel', inverse=False,
     dat = dat.to(device=device)
     aff = aff.to(device=device)
 
-    # inversion method
+    # inversion method and boundary conditions
+    sidecar_inversion, sidecar_bound = 'default', 'dft'
+    if fname and (inversion is None or bound is None):
+        from ..helpers import (find_shoot_json, load_sidecar_model,
+                               load_sidecar_bound)
+        sidecar = find_shoot_json(fname)
+        if sidecar:
+            model, inv = load_sidecar_model(sidecar)
+            if model == 'svf':
+                sidecar_inversion = inv
+                sidecar_bound = load_sidecar_bound(sidecar)
     if inversion is None:
-        inversion = 'default'
-        if fname:
-            from ..helpers import find_shoot_json, load_sidecar_model
-            sidecar = find_shoot_json(fname)
-            if sidecar:
-                model, sidecar_inversion = load_sidecar_model(sidecar)
-                if model == 'svf':
-                    inversion = sidecar_inversion
+        inversion = sidecar_inversion
+    if bound is None:
+        bound = sidecar_bound
     inversion = spatial.check_inversion(inversion)
 
     # exponentiate

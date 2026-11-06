@@ -1010,7 +1010,8 @@ class PairwiseRegisterStep:
                 if is_svf:
                     # propagate backward by scaling and squaring
                     g, h = spatial.exp_backward(vel00, g, h,
-                                                steps=self.nonlin.steps)
+                                                steps=self.nonlin.steps,
+                                                bound=self.nonlin.bound)
 
                 sumgrad = (g.mul_(factor) if sumgrad is None else
                            sumgrad.add_(g, alpha=factor))

@@ -70,6 +70,7 @@ class Bound:
                 return None
             one = torch.ones([1], dtype=torch.int8, device=i.device)
             zero = torch.zeros([1], dtype=torch.int8, device=i.device)
+            # (as `periodic1` in `src/impl/bounds_common.h`)
             n2 = 2 * (n + 1)
             i = torch.where(i < 0, -i + (n-1), i)
             i = i.remainder(n2)
