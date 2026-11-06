@@ -26,7 +26,7 @@ namespace ni {
 namespace _index {
  
 template <typename size_t>
-static NI_INLINE NI_DEVICE size_t inbounds(size_t coord, size_t size) {
+static NI_INLINE NI_HOST_DEVICE size_t inbounds(size_t coord, size_t size) {
   return coord;
 }
 
@@ -35,7 +35,7 @@ static NI_INLINE NI_DEVICE size_t inbounds(size_t coord, size_t size) {
 //    -1 --> 1
 //     n --> n-2 
 template <typename size_t>
-static NI_INLINE NI_DEVICE size_t reflect1c(size_t coord, size_t size) {
+static NI_INLINE NI_HOST_DEVICE size_t reflect1c(size_t coord, size_t size) {
   if (size == 1) return 0;
   size_t size_twice = (size-1)*2;
   coord = coord < 0 ? -coord : coord;
@@ -52,7 +52,7 @@ static NI_INLINE NI_DEVICE size_t reflect1c(size_t coord, size_t size) {
 //     n --> undefined [n-1]
 //   n+1 --> n-1
 template <typename size_t>
-static NI_INLINE NI_DEVICE size_t reflect1s(size_t coord, size_t size) {
+static NI_INLINE NI_HOST_DEVICE size_t reflect1s(size_t coord, size_t size) {
   if (size == 1) return 0;
   size_t size_twice = (size+1)*2;
   coord = coord == -1 ? 0 : coord < 0 ? -coord-2 : coord;
@@ -66,7 +66,7 @@ static NI_INLINE NI_DEVICE size_t reflect1s(size_t coord, size_t size) {
 //    -1 --> 0
 //     n --> n-1
 template <typename size_t>
-static NI_INLINE NI_DEVICE size_t reflect2(size_t coord, size_t size) {
+static NI_INLINE NI_HOST_DEVICE size_t reflect2(size_t coord, size_t size) {
   size_t size_twice = size*2;
   coord = coord < 0 ? size_twice - ((-coord-1) % size_twice) - 1
                     : coord % size_twice;
@@ -79,7 +79,7 @@ static NI_INLINE NI_DEVICE size_t reflect2(size_t coord, size_t size) {
 //    -1 --> n-1
 //     n --> 0
 template <typename size_t>
-static NI_INLINE NI_DEVICE size_t circular(size_t coord, size_t size) {
+static NI_INLINE NI_HOST_DEVICE size_t circular(size_t coord, size_t size) {
   coord = coord < 0 ? (size + coord%size) % size : coord % size;
   return coord;
 }
@@ -90,7 +90,7 @@ static NI_INLINE NI_DEVICE size_t circular(size_t coord, size_t size) {
 //     n --> n-1
 //   n+1 --> n-1
 template <typename size_t>
-static NI_INLINE NI_DEVICE size_t replicate(size_t coord, size_t size) {
+static NI_INLINE NI_HOST_DEVICE size_t replicate(size_t coord, size_t size) {
   coord = coord <= 0 ? 0 : coord >= size ? size - 1 : coord;
   return coord;
 }
@@ -105,21 +105,21 @@ static NI_INLINE NI_DEVICE size_t replicate(size_t coord, size_t size) {
 namespace _sign {
 
 template <typename size_t>
-static NI_INLINE NI_DEVICE int8_t inbounds(size_t coord, size_t size) {
+static NI_INLINE NI_HOST_DEVICE int8_t inbounds(size_t coord, size_t size) {
   return coord < 0 || coord >= size ? 0 : 1;
 }
 
 // Boundary condition of a DCT/DFT
 // No sign modification based on coordinates
 template <typename size_t>
-static NI_INLINE NI_DEVICE int8_t constant(size_t coord, size_t size) {
+static NI_INLINE NI_HOST_DEVICE int8_t constant(size_t coord, size_t size) {
   return static_cast<int8_t>(1);
 }
 
 // Boundary condition of a DST-I
 // Periodic sign change based on coordinates
 template <typename size_t>
-static NI_INLINE NI_DEVICE int8_t periodic1(size_t coord, size_t size) {
+static NI_INLINE NI_HOST_DEVICE int8_t periodic1(size_t coord, size_t size) {
   if (size == 1) return 1;
   size_t size_twice = (size+1)*2;
   coord = coord < 0 ? size - coord - 1 : coord;
@@ -132,7 +132,7 @@ static NI_INLINE NI_DEVICE int8_t periodic1(size_t coord, size_t size) {
 // Boundary condition of a DST-II
 // Periodic sign change based on coordinates
 template <typename size_t>
-static NI_INLINE NI_DEVICE int8_t periodic2(size_t coord, size_t size) {
+static NI_INLINE NI_HOST_DEVICE int8_t periodic2(size_t coord, size_t size) {
   coord = (coord < 0 ? size - coord - 1 : coord);
   return static_cast<int8_t>((coord/size) % 2 ? -1 : 1);
 }
@@ -161,12 +161,12 @@ std::ostream& operator<<(std::ostream& os, const BoundType & bound) {
 
 // Check if coordinates within bounds
 template <typename size_t>
-static NI_INLINE NI_DEVICE bool inbounds(size_t coord, size_t size) {
+static NI_INLINE NI_HOST_DEVICE bool inbounds(size_t coord, size_t size) {
   return coord >= 0 && coord < size;
 }
 
 template <typename scalar_t, typename size_t>
-static NI_INLINE NI_DEVICE bool inbounds(scalar_t coord, size_t size, scalar_t tol) {
+static NI_INLINE NI_HOST_DEVICE bool inbounds(scalar_t coord, size_t size, scalar_t tol) {
   return coord >= -tol && coord < (scalar_t)(size-1)+tol;
 }
 
@@ -191,7 +191,7 @@ add(scalar_t *ptr, offset_t offset, scalar_t val,
 }
 
 template <typename size_t>
-static NI_INLINE NI_DEVICE int64_t index(BoundType bound_type, size_t coord, size_t size) {
+static NI_INLINE NI_HOST_DEVICE int64_t index(BoundType bound_type, size_t coord, size_t size) {
   switch (bound_type) {
     case BoundType::Replicate:  return _index::replicate(coord, size);
     case BoundType::DCT1:       return _index::reflect1c(coord, size);
@@ -205,7 +205,7 @@ static NI_INLINE NI_DEVICE int64_t index(BoundType bound_type, size_t coord, siz
 }
 
 template <typename size_t>
-static NI_INLINE NI_DEVICE int8_t sign(BoundType bound_type, size_t coord, size_t size) {
+static NI_INLINE NI_HOST_DEVICE int8_t sign(BoundType bound_type, size_t coord, size_t size) {
   switch (bound_type) {
     case BoundType::Replicate:  return _sign::constant(coord, size);
     case BoundType::DCT1:       return _sign::constant(coord, size);

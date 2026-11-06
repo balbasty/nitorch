@@ -1,11 +1,23 @@
 /*
-WARNING
+ADJOINT ("restrict") PATH
 
-The "restrict" functions are not very robust.
-I'd like to reimplement restrict similarly to what I did in "multires",
-i.e., without relying on atomic adds (and looping across output voxels  
-rather than "target" voxels). It should be more stable, but it needs
-some thinking to work with arbitrary scaling factors. 
+By default, the adjoint of the resize pull is computed as a *gather*:
+we loop over output (coarse, "source") voxels and each output voxel is
+written exactly once (no atomic adds). The 1D adjoint operator of each
+spatial dimension is tabulated on the host by running the exact same
+forward formula as the pull (`x = scale*w + shift`, interpolation
+bounds/weights, `bound::index`, `bound::sign`) over every fine
+("target") voxel `w` and filing each contribution under its folded
+coarse index (see `ResizeAllocator::build_adjoint_tables`). Boundary
+images (dct1/dct2/dft/dst/zero...) are therefore exact by construction.
+The N-D operator is the separable (Kronecker) product of the 1D tables.
+Rows are padded to a common length K; the kernel is templated on K
+(1..8, fully unrollable) with a runtime-K fallback.
+
+The legacy scatter implementation (loop over fine voxels and
+`bound::add`, atomic on CUDA) is kept for comparison and can be
+selected by setting the environment variable
+`NI_RESIZE_ADJOINT_SCATTER=1`.
 */
 #include "common.h"                // write C++/CUDA compatible code
 #include "../defines.h"            // useful macros
@@ -15,6 +27,11 @@ some thinking to work with arbitrary scaling factors.
 #include "allocator.h"             // base class handling offset sizes
 #include <ATen/ATen.h>             // tensors
 #include <tuple>                   // needed by prepare_tensors
+#include <vector>                  // adjoint tables (host side)
+#include <cstdlib>                 // std::getenv
+#include <cstring>                 // std::strcmp
+#include <type_traits>
+#include <algorithm>                // std::max
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 // CPU/GPU -specific parameters
@@ -32,6 +49,12 @@ some thinking to work with arbitrary scaling factors.
   }
 #endif
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+#ifdef __CUDACC__
+# define NI_PRAGMA_UNROLL _Pragma("unroll")
+#else
+# define NI_PRAGMA_UNROLL
+#endif
 
 // maximum number of channels
 // > not used in mode isotropic nearest/linear
@@ -56,6 +79,91 @@ namespace ni {
 NI_NAMESPACE_DEVICE { // cpu / cuda / ...
 
 namespace { // anonymous namespace > everything inside has internal linkage
+
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+//                    ADJOINT TABLES (HOST SIDE)
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+// Type of the tabulated weights / accumulator of the gather kernel.
+// (float for float/half, double for double)
+template <typename scalar_t> struct resize_weight { typedef float type; };
+template <> struct resize_weight<double> { typedef double type; };
+
+// Which 1D formula the forward (pull) path uses along a dimension.
+// This mirrors the dispatch in `ResizeImpl::set_resize` / `resize`.
+enum class PullKind { Generic, NearestIso, LinearIso, QuadraticIso };
+
+// Maximum number of taps of the forward 1D kernel (order 7 -> 8 taps)
+#define NI_RESIZE_MAX_TAPS 8
+
+// Forward taps of fine voxel `w`: unfolded coarse indices `b` and weights
+// `wt`. Each branch replicates *exactly* the arithmetic of the
+// corresponding pull implementation, so that the gather is the
+// transpose of the pull.
+template <typename weight_t>
+NI_HOST int pull_taps1d(PullKind kind, InterpolationType itp,
+                        double scale, double shift, int64_t w,
+                        int64_t * b, weight_t * wt)
+{
+  switch (kind) {
+    case PullKind::NearestIso: {      // resize*d_nearest
+      b[0]  = static_cast<int64_t>(std::round(scale * w + shift));
+      wt[0] = static_cast<weight_t>(1);
+      return 1;
+    }
+    case PullKind::LinearIso: {       // resize*d_linear
+      weight_t x   = scale * w + shift;
+      int64_t  ix0 = static_cast<int64_t>(std::floor(x));
+      weight_t dx1 = x - ix0;
+      weight_t dx0 = 1. - dx1;
+      b[0] = ix0;     wt[0] = dx0;
+      b[1] = ix0 + 1; wt[1] = dx1;
+      return 2;
+    }
+    case PullKind::QuadraticIso: {    // resize3d_quadratic
+      weight_t x   = scale * w + shift;
+      int64_t  ix1 = static_cast<int64_t>(std::floor(x+0.5));
+      weight_t dx1 = interpolation::weight(itp, x - ix1);
+      weight_t dx0 = interpolation::fastweight(itp, x - (ix1 - 1));
+      weight_t dx2 = interpolation::fastweight(itp, (ix1 + 1) - x);
+      b[0] = ix1 - 1; wt[0] = dx0;
+      b[1] = ix1;     wt[1] = dx1;
+      b[2] = ix1 + 1; wt[2] = dx2;
+      return 3;
+    }
+    default: {                        // resize*d (generic)
+      weight_t x = scale * w + shift;
+      int64_t b0, b1;
+      interpolation::bounds(itp, x, b0, b1);
+      int n = 0;
+      for (int64_t bb = b0; bb <= b1 && n < NI_RESIZE_MAX_TAPS; ++bb, ++n) {
+        weight_t dx = x - bb;
+        b[n]  = bb;
+        wt[n] = interpolation::fastweight(itp, dx);
+      }
+      return n;
+    }
+  }
+}
+
+// Sparse tables of the 1D adjoint operators (one per spatial dimension).
+// Row j (coarse/output index) holds up to K entries
+//   (offset of the fine voxel [already multiplied by its stride], weight)
+// stored at [j*K, j*K + len[j]).  Entries beyond len[j] are padding.
+template <typename weight_t>
+struct AdjointTables {
+  int K = 1;
+  int64_t S[3] = {1, 1, 1};
+  std::vector<int32_t>  len[3];
+  std::vector<int64_t>  off[3];
+  std::vector<weight_t> wgt[3];
+};
+
+static NI_HOST bool resize_adjoint_use_scatter()
+{
+  const char * env = std::getenv("NI_RESIZE_ADJOINT_SCATTER");
+  return env && *env && std::strcmp(env, "0") != 0;
+}
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 //                        INDEXING UTILS
@@ -99,6 +207,10 @@ public:
   {
     return src_32b_ok && tgt_32b_ok;
   }
+
+  // Tabulate the 1D adjoint operators (must be called after ioset)
+  template <typename weight_t>
+  NI_HOST AdjointTables<weight_t> build_adjoint_tables() const;
 
 private:
 
@@ -208,6 +320,8 @@ class ResizeImpl {
 public:
 
   // ~~~ CONSTRUCTOR ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  typedef typename resize_weight<scalar_t>::type weight_t;
+
   ResizeImpl(const ResizeAllocator & info):
 
 #define COPY_FROM_INFO(name) name(info.name)
@@ -236,10 +350,33 @@ public:
     NAME##_ptr(static_cast<scalar_t*>(info.NAME##_ptr))
 
     INIT_ALLOC_INFO_5D(src),
-    INIT_ALLOC_INFO_5D(tgt)
+    INIT_ALLOC_INFO_5D(tgt),
+    gather(false),
+    tab_K(1),
+    tab_len0(nullptr), tab_len1(nullptr), tab_len2(nullptr),
+    tab_off0(nullptr), tab_off1(nullptr), tab_off2(nullptr),
+    tab_wgt0(nullptr), tab_wgt1(nullptr), tab_wgt2(nullptr)
   {
 #ifndef __CUDACC__
       set_resize();
+#endif
+  }
+
+  // Switch to the gather implementation of the adjoint.
+  // Pointers must point to memory accessible by the device that runs
+  // the kernel (host memory on CPU, device memory on CUDA).
+  NI_HOST void set_gather(int K,
+                          const int32_t  * const len[3],
+                          const offset_t * const off[3],
+                          const weight_t * const wgt[3])
+  {
+    gather   = true;
+    tab_K    = K;
+    tab_len0 = len[0]; tab_len1 = len[1]; tab_len2 = len[2];
+    tab_off0 = off[0]; tab_off1 = off[1]; tab_off2 = off[2];
+    tab_wgt0 = wgt[0]; tab_wgt1 = wgt[1]; tab_wgt2 = wgt[2];
+#ifndef __CUDACC__
+    set_resize();
 #endif
   }
 
@@ -251,6 +388,20 @@ public:
 #   define NN  InterpolationType::Nearest
 #   define LIN InterpolationType::Linear
 #   define QUD InterpolationType::Quadratic
+    if (gather) {
+      switch (tab_K) {
+        case 1: resize_ = &Self::template restrict_gather<1>; break;
+        case 2: resize_ = &Self::template restrict_gather<2>; break;
+        case 3: resize_ = &Self::template restrict_gather<3>; break;
+        case 4: resize_ = &Self::template restrict_gather<4>; break;
+        case 5: resize_ = &Self::template restrict_gather<5>; break;
+        case 6: resize_ = &Self::template restrict_gather<6>; break;
+        case 7: resize_ = &Self::template restrict_gather<7>; break;
+        case 8: resize_ = &Self::template restrict_gather<8>; break;
+        default: resize_ = &Self::template restrict_gather<0>; break;
+      }
+      return;
+    }
     uint8_t mode = dim + 4 * do_adjoint + 8 * iso;
     switch (mode) {
       case 1:
@@ -349,8 +500,11 @@ public:
   void loop() const;
 #endif
 
+  // Number of voxels looped over: output (coarse) voxels in gather
+  // mode, target voxels otherwise.
   NI_HOST NI_DEVICE int64_t voxcount() const { 
-    return N * tgt_X * tgt_Y * tgt_Z;
+    return gather ? N * src_X * src_Y * src_Z
+                  : N * tgt_X * tgt_Y * tgt_Z;
   }
 
 private:
@@ -394,6 +548,12 @@ private:
   DECLARE_RESIZE(restrict3d_linear)
   DECLARE_RESIZE(restrict3d_quadratic)
 
+  // Gather implementation of the adjoint. K > 0: compile-time row length
+  // (must equal tab_K). K == 0: runtime row length (tab_K).
+  template <int K>
+  NI_DEVICE void restrict_gather(
+    offset_t jx, offset_t jy, offset_t jz, offset_t n) const;
+
   // ~~~ OPTIONS ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
   int               dim;            // dimensionality (1 or 2 or 3)
   BoundType         bound0;         // boundary condition  // x|W
@@ -430,6 +590,19 @@ private:
   offset_t C;
   DECLARE_STRIDE_INFO_5D(src)
   DECLARE_STRIDE_INFO_5D(tgt)
+
+  // ~~~ ADJOINT TABLES (gather mode) ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  bool              gather;         // use gather adjoint?
+  int               tab_K;          // (padded) row length
+  const int32_t   * tab_len0;       // row lengths            // x|W
+  const int32_t   * tab_len1;       // row lengths            // y|H
+  const int32_t   * tab_len2;       // row lengths            // z|D
+  const offset_t  * tab_off0;       // fine offsets [S0 x K]  // x|W
+  const offset_t  * tab_off1;       // fine offsets [S1 x K]  // y|H
+  const offset_t  * tab_off2;       // fine offsets [S2 x K]  // z|D
+  const weight_t  * tab_wgt0;       // weights      [S0 x K]  // x|W
+  const weight_t  * tab_wgt1;       // weights      [S1 x K]  // y|H
+  const weight_t  * tab_wgt2;       // weights      [S2 x K]  // z|D
 };
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -441,6 +614,19 @@ void ResizeImpl<scalar_t,offset_t>::resize(
     offset_t x, offset_t y, offset_t z, offset_t n) const {
 #ifdef __CUDACC__
     // dispatch
+    if (gather) {
+      switch (tab_K) {
+        case 1: return this->template restrict_gather<1>(x, y, z, n);
+        case 2: return this->template restrict_gather<2>(x, y, z, n);
+        case 3: return this->template restrict_gather<3>(x, y, z, n);
+        case 4: return this->template restrict_gather<4>(x, y, z, n);
+        case 5: return this->template restrict_gather<5>(x, y, z, n);
+        case 6: return this->template restrict_gather<6>(x, y, z, n);
+        case 7: return this->template restrict_gather<7>(x, y, z, n);
+        case 8: return this->template restrict_gather<8>(x, y, z, n);
+        default: return this->template restrict_gather<0>(x, y, z, n);
+      }
+    }
 #   define ADJ 4
 #   define ISO 8
 #   define NN  InterpolationType::Nearest
@@ -540,18 +726,22 @@ template <typename scalar_t, typename offset_t> NI_DEVICE
 void ResizeImpl<scalar_t,offset_t>::loop(
   int threadIdx, int blockIdx, int blockDim, int gridDim) const {
 
+  // gather: loop over output (source) voxels, else over target voxels
+  offset_t loop_X   = gather ? src_X : tgt_X;
+  offset_t loop_Y   = gather ? src_Y : tgt_Y;
+  offset_t loop_Z   = gather ? src_Z : tgt_Z;
   offset_t index    = blockIdx * blockDim + threadIdx;
-  offset_t tgt_YZ   =   tgt_Z * tgt_Y;
-  offset_t tgt_XYZ  =  tgt_YZ * tgt_X;
-  offset_t tgt_NXYZ = tgt_XYZ * N;
+  offset_t loop_YZ   =   loop_Z * loop_Y;
+  offset_t loop_XYZ  =  loop_YZ * loop_X;
+  offset_t loop_NXYZ = loop_XYZ * N;
   offset_t n, w, h, d;
-  for (offset_t i=index; index < tgt_NXYZ; index += blockDim*gridDim, i=index)
+  for (offset_t i=index; index < loop_NXYZ; index += blockDim*gridDim, i=index)
   {
       // Convert index: linear to sub
-      n  = (i/tgt_XYZ);
-      w  = (i/tgt_YZ) % tgt_X;
-      h  = (i/tgt_Z)  % tgt_Y;
-      d  = i % tgt_Z;
+      n  = (i/loop_XYZ);
+      w  = (i/loop_YZ) % loop_X;
+      h  = (i/loop_Z)  % loop_Y;
+      d  = i % loop_Z;
 
       resize(w, h, d, n);
   }
@@ -570,7 +760,7 @@ void ResizeImpl<scalar_t,offset_t>::loop(
 template <typename scalar_t, typename offset_t> NI_HOST
 void ResizeImpl<scalar_t,offset_t>::loop() const
 {
-  if (!has_atomic_add<scalar_t>::value && (do_adjoint))
+  if (!has_atomic_add<scalar_t>::value && do_adjoint && !gather)
   {
     // I do not have access to atomic operations so I cannot
     // parallelize across voxels.
@@ -594,19 +784,31 @@ void ResizeImpl<scalar_t,offset_t>::loop() const
     return;
   }
 
-  // Parallelize across voxels   
-  offset_t tgt_YZ   =   tgt_Z * tgt_Y;
-  offset_t tgt_XYZ  =  tgt_YZ * tgt_X;
-  offset_t tgt_NXYZ = tgt_XYZ * N;
-  at::parallel_for(0, tgt_NXYZ, GRAIN_SIZE,
+  // Parallelize across voxels
+  // (gather: output/source voxels -- each written by a single thread;
+  //  otherwise: target voxels)
+  offset_t loop_X   = gather ? src_X : tgt_X;
+  offset_t loop_Y   = gather ? src_Y : tgt_Y;
+  offset_t loop_Z   = gather ? src_Z : tgt_Z;
+  offset_t loop_YZ   =   loop_Z * loop_Y;
+  offset_t loop_XYZ  =  loop_YZ * loop_X;
+  offset_t loop_NXYZ = loop_XYZ * N;
+  int64_t grain = GRAIN_SIZE;
+  if (gather) {
+    // each output voxel costs ~K^dim multiply-adds per channel
+    int64_t work = 1;
+    for (int d = 0; d < dim; ++d) work *= tab_K;
+    grain = std::max<int64_t>(1, GRAIN_SIZE / std::max<int64_t>(1, work));
+  }
+  at::parallel_for(0, loop_NXYZ, grain,
                    [&](offset_t start, offset_t end) {
     offset_t n, w, h, d;
     for (offset_t i = start; i < end; ++i) {
       // Convert index: linear to sub
-      n  = (i/tgt_XYZ);
-      w  = (i/tgt_YZ) % tgt_X;
-      h  = (i/tgt_Z)  % tgt_Y;
-      d  = i % tgt_Z;
+      n  = (i/loop_XYZ);
+      w  = (i/loop_YZ) % loop_X;
+      h  = (i/loop_Z)  % loop_Y;
+      d  = i % loop_Z;
 
       resize(w, h, d, n);
     }
@@ -1450,6 +1652,148 @@ void ResizeImpl<scalar_t,offset_t>::restrict1d_nearest(offset_t w, offset_t h, o
 }
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+//                     ADJOINT AS A GATHER
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+// out[n, c, jx, jy, jz] = sum_{kz, ky, kx} wz[kz] * wy[ky] * wx[kx]
+//                         * inp[n, c, ox[kx] + oy[ky] + oz[kz]]
+// where (o*, w*) are the entries of the rows jx/jy/jz of the 1D adjoint
+// tables. Each output voxel is written exactly once (no atomics).
+template <typename scalar_t, typename offset_t>
+template <int K>
+NI_DEVICE void ResizeImpl<scalar_t,offset_t>::restrict_gather(
+  offset_t jx, offset_t jy, offset_t jz, offset_t n) const
+{
+  const int KK = K > 0 ? K : tab_K;      // row stride == row capacity
+  const int lx = tab_len0[jx];
+  const int ly = tab_len1[jy];
+  const int lz = tab_len2[jz];
+  const offset_t * ox = tab_off0 + jx * KK;
+  const offset_t * oy = tab_off1 + jy * KK;
+  const offset_t * oz = tab_off2 + jz * KK;
+  const weight_t * wx = tab_wgt0 + jx * KK;
+  const weight_t * wy = tab_wgt1 + jy * KK;
+  const weight_t * wz = tab_wgt2 + jz * KK;
+
+  const scalar_t * inp_ptr_NC = tgt_ptr + n * tgt_sN;
+  scalar_t * out_ptr_NCXYZ = src_ptr + n  * src_sN
+                                     + jx * src_sX
+                                     + jy * src_sY
+                                     + jz * src_sZ;
+
+  for (offset_t c = 0; c < C; ++c, inp_ptr_NC    += tgt_sC,
+                                   out_ptr_NCXYZ += src_sC) {
+    weight_t acc = static_cast<weight_t>(0);
+    NI_PRAGMA_UNROLL
+    for (int kz = 0; kz < KK; ++kz) {
+      if (kz >= lz) break;
+      const scalar_t * inp_z = inp_ptr_NC + oz[kz];
+      weight_t accz = static_cast<weight_t>(0);
+      NI_PRAGMA_UNROLL
+      for (int ky = 0; ky < KK; ++ky) {
+        if (ky >= ly) break;
+        const scalar_t * inp_yz = inp_z + oy[ky];
+        weight_t accy = static_cast<weight_t>(0);
+        NI_PRAGMA_UNROLL
+        for (int kx = 0; kx < KK; ++kx) {
+          if (kx >= lx) break;
+          accy += wx[kx] * static_cast<weight_t>(inp_yz[ox[kx]]);
+        }
+        accz += wy[ky] * accy;
+      }
+      acc += wz[kz] * accz;
+    }
+    *out_ptr_NCXYZ = static_cast<scalar_t>(acc);
+  }
+}
+
+template <typename weight_t>
+NI_HOST AdjointTables<weight_t> ResizeAllocator::build_adjoint_tables() const
+{
+  AdjointTables<weight_t> tab;
+  const int64_t S_[3] = {src_X, src_Y, src_Z};
+  const int64_t T_[3] = {tgt_X, tgt_Y, tgt_Z};
+  const int64_t sT[3] = {tgt_sX, tgt_sY, tgt_sZ};
+  const BoundType         bnd[3] = {bound0, bound1, bound2};
+  const InterpolationType itp[3] = {interpolation0, interpolation1, interpolation2};
+  const double            shf[3] = {shift0, shift1, shift2};
+  const double            scl[3] = {scale0, scale1, scale2};
+
+  // Sparse rows: rows[d][j] = list of (fine index w, signed weight)
+  std::vector<std::vector<std::pair<int64_t, weight_t> > > rows[3];
+  int K = 1;
+
+  for (int d = 0; d < 3; ++d) {
+    if (d >= dim) {
+      // unused dimension: identity
+      tab.S[d] = 1;
+      rows[d].assign(1, std::vector<std::pair<int64_t, weight_t> >(
+                          1, std::make_pair(int64_t(0), weight_t(1))));
+      continue;
+    }
+    const int64_t S = S_[d], T = T_[d];
+    tab.S[d] = S;
+    rows[d].resize(S);
+
+    // Same 1D formula as the pull (see set_resize / resize)
+    PullKind kind = PullKind::Generic;
+    if (iso) {
+      if (itp[d] == InterpolationType::Nearest)
+        kind = PullKind::NearestIso;
+      else if (itp[d] == InterpolationType::Linear)
+        kind = PullKind::LinearIso;
+      else if (itp[d] == InterpolationType::Quadratic && dim == 3)
+        kind = PullKind::QuadraticIso;
+    }
+
+    int64_t  b[NI_RESIZE_MAX_TAPS];
+    weight_t wt[NI_RESIZE_MAX_TAPS];
+    int64_t  jj[NI_RESIZE_MAX_TAPS];
+    weight_t vv[NI_RESIZE_MAX_TAPS];
+    for (int64_t w = 0; w < T; ++w) {
+      int ntaps = pull_taps1d<weight_t>(kind, itp[d], scl[d], shf[d], w, b, wt);
+      // fold taps and merge those that land on the same coarse voxel
+      int m = 0;
+      for (int k = 0; k < ntaps; ++k) {
+        int8_t s = bound::sign(bnd[d], b[k], S);
+        if (!s) continue;
+        int64_t j = bound::index(bnd[d], b[k], S);
+        if (j < 0 || j >= S) continue;  // defensive (e.g. NaN coordinate)
+        weight_t v = s < 0 ? -wt[k] : wt[k];
+        int l = 0;
+        for (; l < m; ++l) if (jj[l] == j) break;
+        if (l < m) vv[l] += v;
+        else { jj[m] = j; vv[m] = v; ++m; }
+      }
+      for (int l = 0; l < m; ++l)
+        if (vv[l] != static_cast<weight_t>(0))
+          rows[d][jj[l]].push_back(std::make_pair(w, vv[l]));
+    }
+    for (int64_t j = 0; j < S; ++j)
+      K = std::max<int>(K, static_cast<int>(rows[d][j].size()));
+  }
+
+  // Flatten (row stride K, shared by all dimensions)
+  tab.K = K;
+  for (int d = 0; d < 3; ++d) {
+    const int64_t S = tab.S[d];
+    const int64_t stride = d < dim ? sT[d] : 0;
+    tab.len[d].assign(S, 0);
+    tab.off[d].assign(S * K, 0);
+    tab.wgt[d].assign(S * K, static_cast<weight_t>(0));
+    for (int64_t j = 0; j < S; ++j) {
+      const auto & row = rows[d][j];
+      tab.len[d][j] = static_cast<int32_t>(row.size());
+      for (size_t k = 0; k < row.size(); ++k) {
+        tab.off[d][j * K + k] = row[k].first * stride;
+        tab.wgt[d][j * K + k] = row[k].second;
+      }
+    }
+  }
+  return tab;
+}
+
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 //                  CUDA KERNEL (MUST BE OUT OF CLASS)
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -1487,14 +1831,16 @@ check_same_nonspatial(Tensor source, Tensor target)
 }
 
 NI_HOST NI_INLINE std::tuple<Tensor, Tensor>
-prepare_tensors(Tensor source, Tensor target, ArrayRef<double> factor, bool do_adjoint)
+prepare_tensors(Tensor source, Tensor target, ArrayRef<double> factor, bool do_adjoint,
+                bool zero_source = true)
 {
   bool source_defined = (source.defined() && source.numel() > 0);
   bool target_defined = (target.defined() && target.numel() > 0);
 
   if (source_defined && target_defined) {
     check_same_nonspatial(source, target);
-    if (do_adjoint)
+    // (the gather adjoint writes every output voxel: no need to zero)
+    if (do_adjoint && zero_source)
       source.zero_();
     return std::tuple<Tensor, Tensor>(source, target);
   }
@@ -1605,6 +1951,45 @@ prepare_affines(Tensor source, Tensor target, ArrayRef<double> factor, GridAlign
 #ifdef __CUDACC__
 
 // ~~~ CUDA ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+namespace {
+
+// Copy the host tables to the device and point `algo` at them.
+// The device tensors are appended to `keep`, which must outlive the kernel.
+template <typename scalar_t, typename offset_t, typename weight_t>
+NI_HOST void upload_adjoint_tables(ResizeImpl<scalar_t, offset_t> & algo,
+                                   AdjointTables<weight_t> & tab,
+                                   at::Device device,
+                                   std::vector<Tensor> & keep)
+{
+  auto opt = at::TensorOptions().device(device);
+  auto off_type = std::is_same<offset_t, int32_t>::value ? at::kInt : at::kLong;
+  auto wgt_type = std::is_same<weight_t, double>::value ? at::kDouble : at::kFloat;
+  const int32_t  * len[3];
+  const offset_t * off[3];
+  const weight_t * wgt[3];
+  for (int d = 0; d < 3; ++d) {
+    int64_t nlen = static_cast<int64_t>(tab.len[d].size());
+    int64_t ntab = static_cast<int64_t>(tab.off[d].size());
+    // from_blob does not own the host memory; .to() makes a (blocking)
+    // device copy.
+    Tensor tlen = at::from_blob(tab.len[d].data(), {nlen}, at::kInt)
+                    .to(opt.dtype(at::kInt));
+    Tensor toff = at::from_blob(tab.off[d].data(), {ntab}, at::kLong)
+                    .to(opt.dtype(off_type));
+    Tensor twgt = at::from_blob(tab.wgt[d].data(), {ntab}, wgt_type)
+                    .to(opt.dtype(wgt_type));
+    len[d] = static_cast<const int32_t  *>(tlen.data_ptr());
+    off[d] = static_cast<const offset_t *>(toff.data_ptr());
+    wgt[d] = static_cast<const weight_t *>(twgt.data_ptr());
+    keep.push_back(tlen);
+    keep.push_back(toff);
+    keep.push_back(twgt);
+  }
+  algo.set_gather(tab.K, len, off, wgt);
+}
+
+} // namespace
  
 NI_HOST
 Tensor resize_impl(
@@ -1612,7 +1997,8 @@ Tensor resize_impl(
   BoundVectorRef bound, InterpolationVectorRef interpolation, 
   GridAlignVectorRef mode, bool do_adjoint, bool normalize)
 {
-  auto tensors = prepare_tensors(source, target, factor, do_adjoint);
+  bool use_gather = do_adjoint && !resize_adjoint_use_scatter();
+  auto tensors = prepare_tensors(source, target, factor, do_adjoint, !use_gather);
   source = std::get<0>(tensors);
   target = std::get<1>(tensors);
   auto affines = prepare_affines(source, target, factor, mode, do_adjoint);
@@ -1624,9 +2010,17 @@ Tensor resize_impl(
   auto stream = at::cuda::getCurrentCUDAStream();
 
   AT_DISPATCH_FLOATING_TYPES_AND_HALF(source.scalar_type(), "resize_impl", [&] {
+    typedef typename resize_weight<scalar_t>::type weight_t;
+    AdjointTables<weight_t> tab;
+    if (use_gather)
+      tab = info.build_adjoint_tables<weight_t>();
+    // device copies of the tables (kept alive until the kernel is done)
+    std::vector<Tensor> keep;
     if (info.canUse32BitIndexMath())
     {
       ResizeImpl<scalar_t, int32_t> algo(info);
+      if (use_gather)
+        upload_adjoint_tables(algo, tab, source.device(), keep);
       auto palgo = alloc_and_copy_to_device(&algo, stream);
       resize_kernel<<<GET_BLOCKS(algo.voxcount()), CUDA_NUM_THREADS, 0, stream>>>(palgo);
       cudaFree(palgo);
@@ -1634,6 +2028,8 @@ Tensor resize_impl(
     else
     {
       ResizeImpl<scalar_t, int64_t> algo(info);
+      if (use_gather)
+        upload_adjoint_tables(algo, tab, source.device(), keep);
       auto palgo = alloc_and_copy_to_device(&algo, stream);
       resize_kernel<<<GET_BLOCKS(algo.voxcount()), CUDA_NUM_THREADS, 0, stream>>>(palgo);
       cudaFree(palgo);
@@ -1669,7 +2065,8 @@ Tensor resize_impl(
   BoundVectorRef bound, InterpolationVectorRef interpolation,  
   GridAlignVectorRef mode, bool do_adjoint, bool normalize)
 {
-  auto tensors = prepare_tensors(source, target, factor, do_adjoint);
+  bool use_gather = do_adjoint && !resize_adjoint_use_scatter();
+  auto tensors = prepare_tensors(source, target, factor, do_adjoint, !use_gather);
   source = std::get<0>(tensors);
   target = std::get<1>(tensors);
   auto affines = prepare_affines(source, target, factor, mode, do_adjoint);
@@ -1681,7 +2078,22 @@ Tensor resize_impl(
 
   AT_DISPATCH_FLOATING_TYPES(source.scalar_type(), "resize_impl", [&] {
     ResizeImpl<scalar_t, int64_t> algo(info);
-    algo.loop();
+    if (use_gather) {
+      typedef typename resize_weight<scalar_t>::type weight_t;
+      AdjointTables<weight_t> tab = info.build_adjoint_tables<weight_t>();
+      const int32_t  * len[3];
+      const int64_t  * off[3];
+      const weight_t * wgt[3];
+      for (int d = 0; d < 3; ++d) {
+        len[d] = tab.len[d].data();
+        off[d] = tab.off[d].data();
+        wgt[d] = tab.wgt[d].data();
+      }
+      algo.set_gather(tab.K, len, off, wgt);
+      algo.loop();
+    } else {
+      algo.loop();
+    }
   });
 
   Tensor out = do_adjoint ? source : target;
