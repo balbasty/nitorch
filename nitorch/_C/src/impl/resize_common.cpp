@@ -86,8 +86,11 @@ enum class PullKind { Generic, NearestIso, LinearIso, QuadraticIso };
 // Forward taps of fine voxel `w`: unfolded coarse indices `b` and weights
 // `wt`. Each branch replicates *exactly* the arithmetic of the
 // corresponding pull implementation, so that the gather is the
-// transpose of the pull.
-template <typename weight_t>
+// transpose of the pull. All intermediate values are computed in the
+// type of the pull (`scalar_t`, e.g. at::Half on CUDA) -- so that the
+// sparsity pattern and weights match the pull exactly, even at knots --
+// and the weights are then stored as `weight_t` (float for half).
+template <typename scalar_t, typename weight_t>
 NI_HOST int pull_taps1d(PullKind kind, InterpolationType itp,
                         double scale, double shift, int64_t w,
                         int64_t * b, weight_t * wt)
@@ -99,34 +102,34 @@ NI_HOST int pull_taps1d(PullKind kind, InterpolationType itp,
       return 1;
     }
     case PullKind::LinearIso: {       // resize*d_linear
-      weight_t x   = scale * w + shift;
+      scalar_t x   = scale * w + shift;
       int64_t  ix0 = static_cast<int64_t>(std::floor(x));
-      weight_t dx1 = x - ix0;
-      weight_t dx0 = 1. - dx1;
-      b[0] = ix0;     wt[0] = dx0;
-      b[1] = ix0 + 1; wt[1] = dx1;
+      scalar_t dx1 = x - ix0;
+      scalar_t dx0 = 1. - dx1;
+      b[0] = ix0;     wt[0] = static_cast<weight_t>(dx0);
+      b[1] = ix0 + 1; wt[1] = static_cast<weight_t>(dx1);
       return 2;
     }
     case PullKind::QuadraticIso: {    // resize3d_quadratic
-      weight_t x   = scale * w + shift;
+      scalar_t x   = scale * w + shift;
       int64_t  ix1 = static_cast<int64_t>(std::floor(x+0.5));
-      weight_t dx1 = interpolation::weight(itp, x - ix1);
-      weight_t dx0 = interpolation::fastweight(itp, x - (ix1 - 1));
-      weight_t dx2 = interpolation::fastweight(itp, (ix1 + 1) - x);
-      b[0] = ix1 - 1; wt[0] = dx0;
-      b[1] = ix1;     wt[1] = dx1;
-      b[2] = ix1 + 1; wt[2] = dx2;
+      scalar_t dx1 = interpolation::weight(itp, x - ix1);
+      scalar_t dx0 = interpolation::fastweight(itp, x - (ix1 - 1));
+      scalar_t dx2 = interpolation::fastweight(itp, (ix1 + 1) - x);
+      b[0] = ix1 - 1; wt[0] = static_cast<weight_t>(dx0);
+      b[1] = ix1;     wt[1] = static_cast<weight_t>(dx1);
+      b[2] = ix1 + 1; wt[2] = static_cast<weight_t>(dx2);
       return 3;
     }
     default: {                        // resize*d (generic)
-      weight_t x = scale * w + shift;
+      scalar_t x = scale * w + shift;
       int64_t b0, b1;
       interpolation::bounds(itp, x, b0, b1);
       int n = 0;
       for (int64_t bb = b0; bb <= b1 && n < NI_RESIZE_MAX_TAPS; ++bb, ++n) {
-        weight_t dx = x - bb;
+        scalar_t dx = x - bb;
         b[n]  = bb;
-        wt[n] = interpolation::fastweight(itp, dx);
+        wt[n] = static_cast<weight_t>(interpolation::fastweight(itp, dx));
       }
       return n;
     }
@@ -182,7 +185,8 @@ public:
   }
 
   // Tabulate the 1D adjoint operators (must be called after ioset)
-  template <typename weight_t>
+  // (scalar_t: type of the pull arithmetic, weight_t: type of the tables)
+  template <typename scalar_t, typename weight_t>
   NI_HOST GatherTables<weight_t> build_adjoint_tables() const;
 
 private:
@@ -1628,7 +1632,7 @@ NI_DEVICE void ResizeImpl<scalar_t,offset_t>::restrict_gather(
 // Transpose of the pull: run the forward 1D formula over every fine
 // voxel `w` and file each (folded, signed, merged) contribution under the
 // coarse voxel it reads from.
-template <typename weight_t>
+template <typename scalar_t, typename weight_t>
 NI_HOST GatherTables<weight_t> ResizeAllocator::build_adjoint_tables() const
 {
   const int64_t S_[3] = {src_X, src_Y, src_Z};
@@ -1660,7 +1664,7 @@ NI_HOST GatherTables<weight_t> ResizeAllocator::build_adjoint_tables() const
     int64_t  jj[NI_RESIZE_MAX_TAPS];
     weight_t vv[NI_RESIZE_MAX_TAPS];
     for (int64_t w = 0; w < T; ++w) {
-      int n = pull_taps1d<weight_t>(kind, itp[d], scl[d], shf[d], w, b, wt);
+      int n = pull_taps1d<scalar_t, weight_t>(kind, itp[d], scl[d], shf[d], w, b, wt);
       int m = fold_taps<weight_t>(bnd[d], S, n, b, wt, jj, vv);
       for (int l = 0; l < m; ++l)
         rows[d][jj[l]].push_back(std::make_pair(w, vv[l]));
@@ -1875,7 +1879,7 @@ Tensor resize_impl(
     typedef typename gather_weight<scalar_t>::type weight_t;
     GatherTables<weight_t> tab;
     if (use_gather)
-      tab = info.build_adjoint_tables<weight_t>();
+      tab = info.build_adjoint_tables<scalar_t, weight_t>();
     // device copies of the tables (kept alive until the kernel is done)
     std::vector<Tensor> keep;
     if (info.canUse32BitIndexMath())
@@ -1948,7 +1952,7 @@ Tensor resize_impl(
     ResizeImpl<scalar_t, int64_t> algo(info);
     if (use_gather) {
       typedef typename gather_weight<scalar_t>::type weight_t;
-      GatherTables<weight_t> tab = info.build_adjoint_tables<weight_t>();
+      GatherTables<weight_t> tab = info.build_adjoint_tables<scalar_t, weight_t>();
       algo.set_gather(host_gather_ptrs(tab));
       algo.loop();
     } else {
