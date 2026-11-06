@@ -18,6 +18,13 @@ for displacement fields.
     Combination of all regularisers.
 All these functions accept non-stationary weight maps.
 
+Boundary conditions: every energy is a sum of squared finite
+differences, one row per voxel of the field of view, computed on the
+field extended by its boundary condition. Rows centred outside of the
+field of view do not exist, and the weights multiply each row once.
+The convolution kernels (`spconv`) differ from these operators near the
+borders; `correct_stencil` adds the difference.
+
 Another set of functions generate an equivalent convolution kernel
 - regulariser_kernel / regulariser_grid_kernel
     Return a sparse convolution kernel
@@ -53,29 +60,13 @@ else:
 # ----------------------------------------------------------------------
 #   Boundary conditions
 # ----------------------------------------------------------------------
-# Every energy is a sum of rows centred on the voxels of the field of
-# view (no ghost rows, no row weights), built from finite differences
-# (`diff1d`) of the field extended according to its boundary condition:
-#
-#     A = E' D' F' W F D E
-#
-# where `E` extends the field, `D` are finite differences, `F` keeps the
-# rows centred on the voxels and `W` are the (optional) voxel weights,
-# applied once per row. `diff1d` implements `F D E` and `div1d` its
-# exact adjoint.
-#
-# Displacement grids may also use 'sliding' boundary conditions, which
-# reflect the vector field geometrically: along a sliding axis `d`, the
-# component `d` (normal to the border) is antisymmetric ('dst2') and the
-# other components are symmetric ('dct2'), so that each component has
-# its own boundary conditions (`core.bounds.for_component`).
-#
-# A stencil (convolution, `spconv`) applied to the extended field and
-# read at the voxels sums all the rows of the extended lattice within
-# its radius, instead of the rows centred on the voxels. Near the borders
-# it differs from `A` by `B = A - S` (folds of the taps of the kept rows
-# that lie outside of the field of view, minus the rows centred outside
-# of it), which `correct_stencil` adds.
+# A = E' D' F' W F D E, where `E` extends the field, `D` are finite
+# differences, `F` keeps the rows centred on the voxels and `W` are the
+# (optional) voxel weights. `diff1d` implements `F D E` and `div1d` its
+# adjoint. Along a 'sliding' axis `d` of a displacement grid, the
+# component `d` is antisymmetric ('dst2') and the others symmetric
+# ('dct2'): each component has its own boundary conditions
+# (`core.bounds.for_component`).
 
 
 def _no_sliding(bound):
