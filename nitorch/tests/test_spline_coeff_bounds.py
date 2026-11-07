@@ -100,11 +100,20 @@ def test_prefilter_matches_previous():
     `|pole|**k < exp(-30)` (~1e-13), and its coefficients are ~1e-13
     (relative) away from a dense solve, whereas ours are ~1e-15 away.
     With order 6-7 in 3D the coefficients reach ~1e3, so the absolute
-    difference reaches ~1e-10 and depends on the rounding of the torch
-    build: the tolerance must be relative to the coefficients. A change
-    of boundary condition would change the coefficients near the
-    borders by a relative O(1e-2) or more."""
+    difference reaches ~1e-10: the tolerance must be relative to the
+    coefficients. A change of boundary condition would change the
+    coefficients near the borders by a relative O(1e-2) or more.
+
+    With torch < 2.10, torch-interpol compiles its prefilter with
+    TorchScript, where `torch.as_tensor(pole, dtype=torch.double)`
+    rounds the pole to float32 (relative error ~1e-8), so its
+    coefficients are only accurate to ~1e-8: there is nothing to
+    compare against (the exactness of ours is checked against a dense
+    solve in `test_prefilter_is_inverse`)."""
     interpol = pytest.importorskip('interpol.coeff')
+    if isinstance(interpol.dct1_initial, torch.jit.ScriptFunction):
+        pytest.skip('torch-interpol is TorchScript-compiled (torch < 2.10) '
+                    'and rounds its poles to float32')
     gen = torch.Generator().manual_seed(3)
     x = torch.randn([2, 30, 20, 9], dtype=dt, generator=gen)
     for name, code in (('dct1', 2), ('dct2', 3), ('dft', 6)):
