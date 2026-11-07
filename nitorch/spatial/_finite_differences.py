@@ -46,6 +46,41 @@ def _singleton_weights(order, bound, dim, x):
                                   for d in range(x.dim())])
 
 
+def _outside(x, bound, side):
+    """Value of the sample just outside of the first (side=0) or last
+    (side=-1) voxel along the first dimension (at least 2 voxels)"""
+    inward = 1 if side == 0 else -2
+    other = -1 if side == 0 else 0
+    if bound in ('dct2', 'replicate'):
+        return x[side]
+    if bound == 'dct1':
+        return x[inward]
+    if bound == 'dst2':
+        return -x[side]
+    if bound == 'dft':
+        return x[other]
+    return torch.zeros_like(x[side])  # dst1, zero
+
+
+def _fold_outside(y, r, bound):
+    """y += transpose of `_outside` applied to the first and last rows
+    `r[0]` and `r[-1]` (in place, along the first dimension)"""
+    if bound in ('dct2', 'replicate'):
+        y[0].add_(r[0])
+        y[-1].add_(r[-1])
+    elif bound == 'dct1':
+        r0, r1 = r[0].clone(), r[-1].clone()
+        y[1].add_(r0)
+        y[-2].add_(r1)
+    elif bound == 'dst2':
+        y[0].sub_(r[0])
+        y[-1].sub_(r[-1])
+    elif bound == 'dft':
+        r0, r1 = r[0].clone(), r[-1].clone()
+        y[-1].add_(r0)
+        y[0].add_(r1)
+
+
 def diff1d(x, order=1, dim=-1, voxel_size=1, side='c', bound='dct2', out=None):
     """Finite differences along a dimension.
 
@@ -219,13 +254,16 @@ def diff1d(x, order=1, dim=-1, voxel_size=1, side='c', bound='dct2', out=None):
         #    as possible and then (eventually) deal with the remaining
         #    1st order using the approximate implementation.
         if order == 2:
-            fwd = diff1d(x, order=order-1, dim=0, voxel_size=voxel_size,
-                         side='f', bound=bound, out=out)
-            bwd = diff1d(x, order=order-1, dim=0, voxel_size=voxel_size,
-                         side='b', bound=bound)
-            diff = fwd.sub_(bwd)
+            # diff[i] = x[i+1] - 2 * x[i] + x[i-1], with x[-1] and x[end+1]
+            # given by the boundary condition (x has at least 2 voxels)
+            diff = torch.empty_like(x) if out is None else out
+            addto(x[2:], x[:-2], out=diff[1:-1]).sub_(x[1:-1], alpha=2)
+            first = (x[1] - 2 * x[0]).add_(_outside(x, bound, 0))
+            last = (x[-2] - 2 * x[-1]).add_(_outside(x, bound, -1))
+            diff[0].copy_(first)
+            diff[-1].copy_(last)
             if voxel_size != 1:
-                diff = diff.div_(voxel_size)
+                diff = diff.div_(voxel_size * voxel_size)
         else:
             diff = diff1d(x, order=2, dim=0, voxel_size=voxel_size,
                           side=side, bound=bound)
@@ -504,17 +542,18 @@ def div1d(x, order=1, dim=-1, voxel_size=1, side='c', bound='dct2', out=None):
         #    the order is odd, and then unroll all remaining second-order
         #    differences.
         if order == 2:
-            # exact implementation
-            # (I use the forward and backward implementations to save
-            #  code, but it could be reimplemented exactly to
-            #  save speed)
-            fwd = div1d(x, order=order-1, dim=0, voxel_size=voxel_size,
-                        side='f', bound=bound, out=out)
-            bwd = div1d(x, order=order-1, dim=0, voxel_size=voxel_size,
-                        side='b', bound=bound)
-            div = fwd.sub_(bwd)
+            # transpose of the second central difference: the same
+            # stencil (with zeros outside), plus the samples that the
+            # boundary condition folds back onto the voxels
+            div = torch.empty_like(x) if out is None else out
+            addto(x[2:], x[:-2], out=div[1:-1]).sub_(x[1:-1], alpha=2)
+            first = x[1] - 2 * x[0]
+            last = x[-2] - 2 * x[-1]
+            div[0].copy_(first)
+            div[-1].copy_(last)
+            _fold_outside(div, x, bound)
             if voxel_size != 1:
-                div = div_(div, voxel_size)
+                div = div_(div, voxel_size * voxel_size)
         elif order % 2:
             # odd order -> start with a first order
             div = div1d(x, order=1, dim=0, voxel_size=voxel_size,

@@ -1324,18 +1324,19 @@ class LogAffine2d(LogAffine):
         return s
 
 
-def _rotate_grad(grad, aff=None, dense=None):
+def _rotate_grad(grad, aff=None, dense=None, bound='dft'):
     """Rotate grad by the jacobian of `aff o dense`.
     grad : (..., dim) tensor       Spatial gradients
     aff : (dim+1, dim+1) tensor    Affine matrix
     dense : (..., dim) tensor      Dense vox2vox displacement field
+    bound : str                    Boundary conditions of `dense`
     returns : (..., dim) tensor    Rotated gradients.
     """
     if aff is None and dense is None:
         return grad
     dim = grad.shape[-1]
     if dense is not None:
-        jac = spatial.grid_jacobian(dense, type='disp')
+        jac = spatial.grid_jacobian(dense, type='disp', bound=bound)
         if aff is not None:
             jac = torch.matmul(aff[:dim, :dim], jac)
     else:
@@ -1461,7 +1462,8 @@ class NonLinModel(TransformationModel):
             return obj
 
     def __init__(self, dat=None, factor=1, penalty=None,
-                 steps=8, kernel=None, inversion='default', **backend):
+                 steps=8, kernel=None, inversion='default', bound='dft',
+                 **backend):
         """
 
         Parameters
@@ -1493,10 +1495,18 @@ class NonLinModel(TransformationModel):
             'newton' refines the push inverse with regularised
             Gauss-Newton steps: it is the most inverse-consistent, and
             the slowest.
+        bound : str, default='dft'
+            Boundary conditions of the field, used consistently by the
+            regulariser, the Gauss-Newton solver, the exponentiation
+            (and its backward pass), the numerical inversion, the
+            Jacobian and the resampling across pyramid levels.
+            'dft' (circulant) is the only one supported by `shoot`,
+            whose Greens kernel is computed by FFT.
         **backend
         """
         super().__init__()
         self.inversion = spatial.check_inversion(inversion)
+        self.bound = self._check_bound(bound)
         self.factor = factor
         self.penalty = dict(penalty or regutils.defaults_velocity())
         if factor is not None:
@@ -1510,6 +1520,9 @@ class NonLinModel(TransformationModel):
             self.dat = None
         self._cache = None
         self._icache = None
+
+    def _check_bound(self, bound):
+        return bound
 
     affine = property(lambda self: self.dat.affine if self.dat is not None else None)
     shape = property(lambda self: self.dat.shape if self.dat is not None else None)
@@ -1580,12 +1593,14 @@ class NonLinModel(TransformationModel):
         factor = penalty.pop('factor')
         return spatial.regulariser_grid(v, **penalty,
                                         factor=factor / py.prod(self.shape),
-                                        voxel_size=self.voxel_size)
+                                        voxel_size=self.voxel_size,
+                                        bound=self.bound)
 
     def greens_apply(self, m):
         return spatial.greens_apply(m, self.kernel, self.factor, self.voxel_size)
 
     def downsample_(self, factor=2, **kwargs):
+        kwargs.setdefault('bound', self.bound)
         self.clear_cache()
         self.dat.downsample_(factor, **kwargs)
         if self.kernel is not None:
@@ -1593,6 +1608,7 @@ class NonLinModel(TransformationModel):
         return self
 
     def downsample(self, factor=2, **kwargs):
+        kwargs.setdefault('bound', self.bound)
         dat = self.dat.downsample(factor, **kwargs)
         obj = type(self)(dat, self.factor, self.penalty, self.steps,
                          **self._init_options())
@@ -1601,6 +1617,7 @@ class NonLinModel(TransformationModel):
         return obj
 
     def upsample_(self, factor=2, **kwargs):
+        kwargs.setdefault('bound', self.bound)
         self.clear_cache()
         self.dat.upsample_(factor, **kwargs)
         if self.kernel is not None:
@@ -1608,6 +1625,7 @@ class NonLinModel(TransformationModel):
         return self
 
     def upsample(self, factor=2, **kwargs):
+        kwargs.setdefault('bound', self.bound)
         dat = self.dat.upsample(factor, **kwargs)
         obj = type(self)(dat, self.factor, self.penalty, self.steps,
                          **self._init_options())
@@ -1618,7 +1636,7 @@ class NonLinModel(TransformationModel):
     def _init_options(self):
         """Options (other than data and penalty) that copies of this
         model (pyramid levels) must keep"""
-        return dict(inversion=self.inversion)
+        return dict(inversion=self.inversion, bound=self.bound)
 
     def _prm_as_str(self):
         s = []
@@ -1629,6 +1647,8 @@ class NonLinModel(TransformationModel):
         s += [f'{key}={value}' for key, value in self.penalty.items()]
         if self.inversion != 'default':
             s += [f'inversion={self.inversion}']
+        if self.bound != 'dft':
+            s += [f'bound={self.bound}']
         return s
 
 
@@ -1636,6 +1656,14 @@ class ShootModel(NonLinModel):
     """Initial velocity exponentiated by geodesic shooting"""
 
     model = 'shoot'
+
+    def _check_bound(self, bound):
+        if bound not in ('dft', 'circular', 'wrap'):
+            raise ValueError(
+                f'Geodesic shooting only supports circulant (dft) '
+                f'boundary conditions (its Greens kernel is computed by '
+                f'FFT), not {bound!r}')
+        return bound
 
     def __init__(self, *args, fast=True, **kwargs):
         """
@@ -1685,7 +1713,8 @@ class ShootModel(NonLinModel):
         if cache_result:
             self._cache = grid
         if jacobian:
-            jac = spatial.grid_jacobian(grid, type='displacement')
+            jac = spatial.grid_jacobian(grid, type='displacement',
+                                        bound=self.bound)
             if add_identity:
                 grid = self.add_identity(grid)
             return grid, jac
@@ -1713,7 +1742,8 @@ class ShootModel(NonLinModel):
         if cache_result:
             self._icache = grid
         if jacobian:
-            jac = spatial.grid_jacobian(grid, type='displacement')
+            jac = spatial.grid_jacobian(grid, type='displacement',
+                                        bound=self.bound)
             if add_identity:
                 grid = self.add_identity(grid)
             return grid, jac
@@ -1740,8 +1770,10 @@ class ShootModel(NonLinModel):
             self._cache = grid
             self._icache = igrid
         if jacobian:
-            jac = spatial.grid_jacobian(grid, type='displacement')
-            ijac = spatial.grid_jacobian(igrid, type='displacement')
+            jac = spatial.grid_jacobian(grid, type='displacement',
+                                        bound=self.bound)
+            ijac = spatial.grid_jacobian(igrid, type='displacement',
+                                         bound=self.bound)
             if add_identity:
                 grid = self.add_identity(grid)
                 igrid = self.add_identity(igrid)
@@ -1792,7 +1824,7 @@ class ShootModel(NonLinModel):
             mugrad = moving.pull_grad(phi_left, rotate=False)
             del phi_left
 
-            mugrad = _rotate_grad(mugrad, left, phi)
+            mugrad = _rotate_grad(mugrad, left, phi, bound=self.bound)
 
         else:
             # differentiate wrt δ in: Left o (Id - δ) o (Id + D) o Right
@@ -1828,9 +1860,11 @@ class SVFModel(NonLinModel):
     def _invert(self, grid, jacobian=False):
         """Inverse displacement (and its Jacobian) by numerical
         inversion of the forward displacement (`inversion` != 'default')"""
-        igrid = spatial.grid_inv(grid, type='disp', method=self.inversion)
+        igrid = spatial.grid_inv(grid, type='disp', method=self.inversion,
+                                 bound=self.bound)
         if jacobian:
-            return igrid, spatial.grid_jacobian(igrid, type='displacement')
+            return igrid, spatial.grid_jacobian(igrid, type='displacement',
+                                                bound=self.bound)
         return igrid
 
     def exp(self, v=None, jacobian=False, add_identity=False,
@@ -1841,7 +1875,7 @@ class SVFModel(NonLinModel):
         if jacobian:
             recompute = True
         if recompute or self._cache is None:
-            grid = spatial.exp_forward(v, steps=self.steps,
+            grid = spatial.exp_forward(v, steps=self.steps, bound=self.bound,
                                        jacobian=jacobian,
                                        displacement=True)
         else:
@@ -1864,12 +1898,12 @@ class SVFModel(NonLinModel):
             recompute = True
         if recompute or self._icache is None:
             if self.inversion == 'default':
-                igrid = spatial.exp_forward(v, steps=self.steps,
+                igrid = spatial.exp_forward(v, steps=self.steps, bound=self.bound,
                                             jacobian=jacobian, inverse=True,
                                             displacement=True)
             else:
                 if recompute or self._cache is None:
-                    grid = spatial.exp_forward(v, steps=self.steps,
+                    grid = spatial.exp_forward(v, steps=self.steps, bound=self.bound,
                                                displacement=True)
                 else:
                     grid = self._cache
@@ -1891,11 +1925,11 @@ class SVFModel(NonLinModel):
         if v is None:
             v = self.dat.dat
         if jacobian:
-            grid, jac = spatial.exp_forward(v, steps=self.steps,
+            grid, jac = spatial.exp_forward(v, steps=self.steps, bound=self.bound,
                                             jacobian=True,
                                             displacement=True)
             if self.inversion == 'default':
-                igrid, ijac = spatial.exp_forward(v, steps=self.steps,
+                igrid, ijac = spatial.exp_forward(v, steps=self.steps, bound=self.bound,
                                                   jacobian=True, inverse=True,
                                                   displacement=True)
             else:
@@ -1909,14 +1943,14 @@ class SVFModel(NonLinModel):
             return grid, igrid, jac, ijac
         else:
             if recompute or self._cache is None:
-                grid = spatial.exp_forward(v, steps=self.steps,
+                grid = spatial.exp_forward(v, steps=self.steps, bound=self.bound,
                                            jacobian=False,
                                            displacement=True)
             else:
                 grid = self._cache
             if recompute or self._icache is None:
                 if self.inversion == 'default':
-                    igrid = spatial.exp_forward(v, steps=self.steps,
+                    igrid = spatial.exp_forward(v, steps=self.steps, bound=self.bound,
                                                 jacobian=False, inverse=True,
                                                 displacement=True)
                 else:
@@ -1964,7 +1998,7 @@ class SVFModel(NonLinModel):
             # Phi o (Id + δ) ~ Phi + Jac(Phi) δ, hence the rotation.
             g, h = _push_grad_fixed(g, h, moving, phi, left, right, self.shape,
                                     psi=psi)
-            jac = spatial.grid_jacobian(phi, type='disp')
+            jac = spatial.grid_jacobian(phi, type='disp', bound=self.bound)
             return g, h, utils.fast_movedim(jac, -2, 0)
 
         if psi is not None:
@@ -1978,7 +2012,7 @@ class SVFModel(NonLinModel):
         mugrad = moving.pull_grad(phi_left, rotate=False)
         del phi_left, psi
 
-        mugrad = _rotate_grad(mugrad, left, phi)
+        mugrad = _rotate_grad(mugrad, left, phi, bound=self.bound)
 
         return g, h, mugrad
 
@@ -2000,7 +2034,8 @@ class SmallDefModel(NonLinModel):
             v = self.dat.dat
         grid = v
         if jacobian:
-            jac = spatial.grid_jacobian(grid, type='displacement')
+            jac = spatial.grid_jacobian(grid, type='displacement',
+                                        bound=self.bound)
         if add_identity:
             grid = self.add_identity(grid)
         return (grid, jac) if jacobian else grid
@@ -2012,13 +2047,15 @@ class SmallDefModel(NonLinModel):
             v = self.dat.dat
         if recompute or self._icache is None:
             grid = spatial.grid_inv(v, type='disp', **self._inv_options,
+                                    bound=self.bound,
                                     **self.penalty)
         else:
             grid = self._icache
         if cache_result:
             self._icache = grid
         if jacobian:
-            jac = spatial.grid_jacobian(grid, type='displacement')
+            jac = spatial.grid_jacobian(grid, type='displacement',
+                                        bound=self.bound)
         if add_identity:
             grid = self.add_identity(grid)
         return (grid, jac) if jacobian else grid
@@ -2031,14 +2068,17 @@ class SmallDefModel(NonLinModel):
         grid = v
         if recompute or self._icache is None:
             igrid = spatial.grid_inv(v, type='disp', **self._inv_options,
+                                     bound=self.bound,
                                      **self.penalty)
         else:
             igrid = self._icache
         if cache_result:
             self._icache = igrid
         if jacobian:
-            jac = spatial.grid_jacobian(grid, type='displacement')
-            ijac = spatial.grid_jacobian(igrid, type='displacement')
+            jac = spatial.grid_jacobian(grid, type='displacement',
+                                        bound=self.bound)
+            ijac = spatial.grid_jacobian(igrid, type='displacement',
+                                         bound=self.bound)
         if add_identity:
             grid = self.add_identity(grid)
             igrid = self.add_identity(igrid)
@@ -2119,6 +2159,7 @@ class Nonlin2dModel(NonLinModel):
     penalty = property(lambda self: self._model.penalty)
     steps = property(lambda self: self._model.steps)
     inversion = property(lambda self: self._model.inversion)
+    bound = property(lambda self: self._model.bound)
     fast = property(lambda self: getattr(self._model, 'fast', True))
     kernel = property(lambda self: self._model.kernel)
     dat = property(lambda self: self._model.dat)

@@ -223,10 +223,13 @@ shoot_keys = ('absolute', 'membrane', 'bending', 'lame', 'factor',
 # - shoot: the shooting parameters (`shoot_keys`) and `"model": "shoot"`
 #   (older sidecars have no `"model"`: a JSON without it is a shooting
 #   JSON);
-# - svf, smalldef: `{"model": "svf"|"smalldef", "inversion": ...}`.
+# - svf, smalldef: `{"model": "svf"|"smalldef", "inversion": ...,
+#   "bound": ...}`.
 # `"inversion"` (absent in older sidecars: 'default') is the method
 # used to compute, by numerical inversion, the side of the warp that is
 # not computed directly (see `NonLinModel`).
+# `"bound"` (absent in older sidecars, and for shoot: 'dft') is the
+# boundary condition of the field, used to exponentiate and invert it.
 
 
 def load_shoot_parameters(fname):
@@ -253,6 +256,16 @@ def load_sidecar_model(fname):
         return 'shoot', 'default'
     return (prm.get('model', 'shoot'),
             check_inversion(prm.get('inversion', 'default')))
+
+
+def load_sidecar_bound(fname):
+    """Boundary condition of the field described by a JSON sidecar
+    ('dft' if it does not say: older sidecars, and shooting)."""
+    with open(fname) as f:
+        prm = json.load(f)
+    if not isinstance(prm, dict):
+        return 'dft'
+    return prm.get('bound', 'dft')
 
 
 def _read_sidecar(fname):
@@ -297,14 +310,16 @@ def invert_displacement(disp, fname=None):
     """
     from nitorch import spatial
     method = 'push'
+    bound = 'dft'
     sidecar = find_displacement_json(fname) if fname else None
     if sidecar:
         _, inversion = load_sidecar_model(sidecar)
         if inversion == 'newton':
             method = 'newton'
+        bound = load_sidecar_bound(sidecar)
     if method == 'push':
-        return spatial.grid_inv(disp, type='disp')
-    return spatial.grid_inv(disp, type='disp', method=method)
+        return spatial.grid_inv(disp, type='disp', bound=bound)
+    return spatial.grid_inv(disp, type='disp', method=method, bound=bound)
 
 
 def velocity_time_bounds(t0=0, t1=1, square=False, inv=False):
@@ -497,10 +512,13 @@ def exponentiate_velocity(vel, affine, json=None, square=False, inv=False,
             disp.shape[:-1], dtype=disp.dtype, device=disp.device))
     else:
         # exp(-t0 v) o exp(t1 v) = exp((t1 - t0) v)
+        bound = load_sidecar_bound(json) if json else 'dft'
         t = t1 - t0
         if t < 0 and inversion != 'default':
-            disp = spatial.exp(scaled(-t)[None], displacement=True)
-            return spatial.grid_inv(disp[0], type='disp', method=inversion)
+            disp = spatial.exp(scaled(-t)[None], displacement=True,
+                               bound=bound)
+            return spatial.grid_inv(disp[0], type='disp', method=inversion,
+                                    bound=bound)
         disp = spatial.exp(scaled(abs(t))[None], displacement=True,
-                           inverse=t < 0)
+                           inverse=t < 0, bound=bound)
         return disp[0]  # drop batch dimension

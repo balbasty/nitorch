@@ -127,11 +127,12 @@ struct HessianCommon
      *out += inp[c];
   }
 
-  template <typename scalar_t, typename offset_t, typename reduce_t> 
+  template <typename scalar_t, typename offset_t, typename reduce_t,
+            typename diag_t>
   static NI_DEVICE 
   void invert(int32_t C, 
               scalar_t * x, offset_t sx, const scalar_t * h, offset_t sh,
-              reduce_t * v, const reduce_t * w)
+              reduce_t * v, diag_t w)
   {
     reduce_t m[Child::max_size];
     Child::get(C, h, sh, m);
@@ -139,11 +140,12 @@ struct HessianCommon
     set(C, x, sx, v);
   }
 
-  template <typename scalar_t, typename offset_t, typename reduce_t> 
+  template <typename scalar_t, typename offset_t, typename reduce_t,
+            typename diag_t>
   static NI_DEVICE 
   void addinvert(int32_t C, 
                  scalar_t * x, offset_t sx, const scalar_t * h, offset_t sh,
-                 reduce_t * v, const reduce_t * w)
+                 reduce_t * v, diag_t w)
   {
     reduce_t m[Child::max_size];
     Child::get(C, h, sh, m);
@@ -186,20 +188,21 @@ struct HessianUtils<HessianType::None, MaxC>: HessianCommonNone<MaxC>
   submatvec_(int32_t C, const scalar_t * inp, offset_t stride, const reduce_t * h, reduce_t * out)
   {}
 
-  template <typename reduce_t> 
+  template <typename reduce_t, typename diag_t>
   static NI_INLINE NI_DEVICE void 
-  invert_(int32_t C, reduce_t * h, reduce_t * v, const reduce_t * w) {
+  invert_(int32_t C, reduce_t * h, reduce_t * v, diag_t w) {
     for (int32_t c = 0; c < C; ++c)
       v[c] /= w[c];
   }
 
   // specialize parent functions to avoid defining zero-sized arrays
 
-  template <typename scalar_t, typename offset_t, typename reduce_t> 
+  template <typename scalar_t, typename offset_t, typename reduce_t,
+            typename diag_t>
   static NI_DEVICE 
   void invert(int32_t C, 
               scalar_t * x, offset_t sx, const scalar_t * h, offset_t sh,
-              reduce_t * v, const reduce_t * w)
+              reduce_t * v, diag_t w)
   {
     reduce_t * m = static_cast<reduce_t*>(0);
     get(C, h, sh, m);
@@ -207,11 +210,12 @@ struct HessianUtils<HessianType::None, MaxC>: HessianCommonNone<MaxC>
     HessianCommonNone<MaxC>::set(C, x, sx, v);
   }
 
-  template <typename scalar_t, typename offset_t, typename reduce_t> 
+  template <typename scalar_t, typename offset_t, typename reduce_t,
+            typename diag_t>
   static NI_DEVICE 
   void addinvert(int32_t C, 
                  scalar_t * x, offset_t sx, const scalar_t * h, offset_t sh,
-                 reduce_t * v, const reduce_t * w)
+                 reduce_t * v, diag_t w)
   {
     reduce_t * m = static_cast<reduce_t*>(0);
     get(C, h, sh, m);
@@ -242,9 +246,9 @@ struct HessianUtils<HessianType::Eye, MaxC>: HessianCommonEye<MaxC>
       out[c] -= hh * (*inp);
   }
 
-  template <typename reduce_t> 
+  template <typename reduce_t, typename diag_t>
   static NI_INLINE NI_DEVICE void 
-  invert_(int32_t C, reduce_t * h, reduce_t * v, const reduce_t * w) {
+  invert_(int32_t C, reduce_t * h, reduce_t * v, diag_t w) {
     reduce_t hh = *h;
     for (int32_t c = 0; c < C; ++c)
       v[c] /= hh + w[c];
@@ -273,9 +277,9 @@ struct HessianUtils<HessianType::Diag, MaxC>: HessianCommonDiag<MaxC>
       out[c] -= h[c] * (*inp);
   }
 
-  template <typename reduce_t> 
+  template <typename reduce_t, typename diag_t>
   static NI_INLINE NI_DEVICE void 
-  invert_(int32_t C, reduce_t * h, reduce_t * v, const reduce_t * w) {
+  invert_(int32_t C, reduce_t * h, reduce_t * v, diag_t w) {
     for (int32_t c = 0; c < C; ++c)
       v[c] /= h[c] + w[c];
   }
@@ -308,9 +312,9 @@ struct HessianUtils<HessianType::ESTATICS, MaxC>: HessianCommonEst<MaxC>
     out[C-1] -= r * h[C-1];
   }
 
-  template <typename reduce_t> 
+  template <typename reduce_t, typename diag_t>
   static NI_INLINE NI_DEVICE void 
-  invert_(int32_t C, reduce_t * h, reduce_t * v, const reduce_t * w) {
+  invert_(int32_t C, reduce_t * h, reduce_t * v, diag_t w) {
     reduce_t * o = h + C;  // pointer to off-diagonal elements
     reduce_t oh = h[C-1] + w[C-1], ov = 0., tmp;
     for (int32_t c = 0; c < C-1; ++c) {
@@ -360,9 +364,9 @@ struct HessianUtils<HessianType::Sym, MaxC>: HessianCommonSym<MaxC>
     }
   }
 
-  template <typename reduce_t> 
+  template <typename reduce_t, typename diag_t>
   static NI_INLINE NI_DEVICE void invert_(
-    int32_t C, reduce_t * h, reduce_t * v, const reduce_t * w) 
+    int32_t C, reduce_t * h, reduce_t * v, diag_t w) 
   {
     for (int32_t c = 0; c < C; ++c)
       h[c+C*c] += w[c];

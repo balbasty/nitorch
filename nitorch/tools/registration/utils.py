@@ -206,7 +206,7 @@ def smart_push_grid(vel, grid, *args, **kwargs):
 def make_optim_grid(optim, lr=None, sub_iter=None, kernel=None, **prm):
     """Prepare optimizer for displacement/velocity"""
     correct_keys = ('absolute', 'membrane', 'bending', 'lame',
-                    'factor', 'voxel_size')
+                    'factor', 'voxel_size', 'bound')
     prm = {k: prm[k] for k in prm if k in correct_keys}
 
     optim = (optm.GradientDescent() if optim == 'gd' else

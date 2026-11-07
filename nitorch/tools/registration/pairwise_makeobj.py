@@ -555,6 +555,8 @@ def make_nonlin_optim(optim=None, order=None, line_search='wolfe', lr=None,
         kwargs['max_iter'] = kwargs.pop('sub_iter', None) or (2 if fmg else 16)
         solver = kwargs.pop('solver', 'cg')
         kwargs['penalty'] = penalty
+        if nonlin:
+            kwargs.setdefault('bound', nonlin.bound)
         nonlin_optim = opt.GridCG if solver == 'cg' else opt.GridRelax
     elif optim == 'lbfgs':
         nonlin_optim = opt.LBFGS

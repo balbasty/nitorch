@@ -59,6 +59,9 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     .value("dft",         BoundType::DFT,       " b  c  d | a b c d |  a  b  c")
     .value("wrap",        BoundType::DFT,       " b  c  d | a b c d |  a  b  c")
     .value("zero",        BoundType::Zero,      " 0  0  0 | a b c d |  0  0  0")
+    .value("sliding",     BoundType::Sliding,
+           "displacement fields: along axis d, component d is dst2 and "
+           "the other components dct2")
     .export_values();
 
   py::enum_<InterpolationType>(m, "InterpolationType")

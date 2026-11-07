@@ -2,6 +2,7 @@
 #include "../defines.h"            // useful macros
 #include "bounds_common.h"         // boundary conditions + enum
 #include "allocator.h"             // base class handling offset sizes
+#include "border_common.h"         // border correction (definition F)
 // #include "utils.h"                 // unrolled for loop.h"
 #include <ATen/ATen.h>             // tensors
 
@@ -18,6 +19,8 @@
     // This parameter specifies the minimum number of voxels that should be
     // processed on a single processor in the parallel for loop .
     int64_t GRAIN_SIZE = static_cast<int64_t>(at::internal::GRAIN_SIZE);
+    // (the border jobs are small planes)
+    int64_t BORDER_GRAIN_SIZE = GRAIN_SIZE / 32;
   }
 #endif
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -224,6 +227,7 @@ template <typename scalar_t, typename offset_t, typename reduce_t>
 class RegulariserImpl {
 
   typedef RegulariserImpl Self;
+  typedef border::PlaneJob<offset_t, 1> Job;
   typedef void (Self::*Vel2MomFn)(offset_t x, offset_t y, offset_t z, offset_t n) const;
   typedef void (Self::*MatVecFn)(scalar_t *, const scalar_t *, const scalar_t *) const;
 
@@ -233,6 +237,8 @@ public:
   RegulariserImpl(const RegulariserAllocator & info):
     dim(info.dim),
     bound0(info.bound0), bound1(info.bound1), bound2(info.bound2),
+    wbound0(bound::even(info.bound0)), wbound1(bound::even(info.bound1)),
+    wbound2(bound::even(info.bound2)),
     N(static_cast<offset_t>(info.N)),
     C(static_cast<offset_t>(info.C)),
     CC(static_cast<offset_t>(info.CC)),
@@ -255,6 +261,7 @@ public:
   {
     set_factors(info.absolute, info.membrane, info.bending);
     set_kernel(info.vx0, info.vx1, info.vx2);
+    set_border(info.vx0, info.vx1, info.vx2);
 #ifndef __CUDACC__
     set_vel2mom();
     set_matvec();
@@ -296,6 +303,42 @@ public:
     b110 = static_cast<reduce_t>(2.0*vx0*vx1);
     b101 = static_cast<reduce_t>(2.0*vx0*vx2);
     b011 = static_cast<reduce_t>(2.0*vx1*vx2);
+  }
+
+  // Border correction (see border_common.h): which terms are not zero,
+  // their coefficients, the tables of extended samples and the target
+  // planes. Decided once: the plain kernels run on all voxels, then one
+  // job per target plane adds B.
+  NI_HOST NI_INLINE void set_border(double vx0, double vx1, double vx2)
+  {
+    BoundType b[3] = {bound0, bound1, bound2};
+    double ivx[3] = {vx0, vx1, vx2};   // (1 / voxel_size**2)
+    offset_t nn[3] = {X, Y, Z};
+    bt.set(dim, b, nn, ivx, has_membrane, has_bending);
+    // target planes of each axis
+    njobs = 0;
+    for (int a = 0; a < 3; ++a) {
+      tgt[a].clear();
+      if (a < dim && bt.fany[a]) tgt[a].add(bt.tab[a], nn[a]);
+      njobs += tgt[a].n;
+    }
+    needs_border = njobs > 0;
+    region = 0;
+    job.a = 0;
+  }
+
+  // The job k of the border pass (the plane tgt[a].j[k'])
+  NI_HOST void make_job(int k, Job & J) const
+  {
+    offset_t nn[3] = {X, Y, Z};
+    offset_t si[3] = {inp_sX, inp_sY, inp_sZ};
+    offset_t sw[3] = {wgt_sX, wgt_sY, wgt_sZ};
+    int a = 0;
+    while (k >= tgt[a].n) k -= tgt[a].n, ++a;
+    J.a = a;
+    J.j = tgt[a].j[k];
+    J.P[0].set(bt.tab[a], nn[a], J.j, si[a]);
+    J.PW.set(bt.wtab[a], nn[a], J.j, sw[a]);
   }
 
 #ifdef __CUDACC__
@@ -391,6 +434,18 @@ public:
 #endif
 
   NI_HOST NI_INLINE int64_t voxcount() const { return N * X * Y * Z; }
+
+  // Voxels of each region (0: all voxels, 1: the plane of the current
+  // border job). The CUDA host code launches the plain kernel on all
+  // voxels, then one kernel per border job (`set_job`).
+  NI_HOST NI_INLINE int border_jobs() const { return njobs; }
+  NI_HOST NI_INLINE void set_job(int k) { region = 1; make_job(k, job); }
+  NI_HOST NI_DEVICE NI_INLINE int64_t voxcount(uint8_t r) const {
+    return r == 1 ? plane_count(job) : N * X * Y * Z;
+  }
+  NI_HOST NI_DEVICE NI_INLINE int64_t plane_count(const Job & J) const {
+    return N * (J.a == 0 ? Y * Z : J.a == 1 ? X * Z : X * Y);
+  }
  
 
 private:
@@ -428,11 +483,19 @@ private:
   NI_DEVICE void matvec_none(
     scalar_t *, const scalar_t *, const scalar_t *) const;
 
+  NI_DEVICE void finish(offset_t x, offset_t y, offset_t z,
+    scalar_t * out, const scalar_t * inp, const scalar_t * hes) const;
+  NI_DEVICE void plane(const Job & J, offset_t i) const;
+  NI_DEVICE NI_INLINE void voxel(offset_t i) const;
+
   /* ~~~ OPTIONS ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ */
   offset_t          dim;            // dimensionality (1 or 2 or 3)
   BoundType         bound0;         // boundary condition  // x|W
   BoundType         bound1;         // boundary condition  // y|H
   BoundType         bound2;         // boundary condition  // z|D
+  BoundType         wbound0;        // boundary of the weights (even) // x|W
+  BoundType         wbound1;        // boundary of the weights (even) // y|H
+  BoundType         wbound2;        // boundary of the weights (even) // z|D
   reduce_t          absolute[NI_MAX_NUM_CHANNELS]; // penalty on absolute values
   reduce_t          membrane[NI_MAX_NUM_CHANNELS]; // penalty on first derivatives
   reduce_t          bending[NI_MAX_NUM_CHANNELS];  // penalty on second derivatives
@@ -443,6 +506,12 @@ private:
 #endif
 
   uint8_t   mode;
+  uint8_t   region;         // 0: all voxels, 1: border job
+  bool      needs_border;
+  int       njobs;          // number of border jobs (target planes)
+  border::Targets<offset_t> tgt[3]; // target planes of each axis
+  Job       job;            // current border job (CUDA)
+  border::FieldTerms<reduce_t, offset_t> bt; // border terms
   bool      has_absolute;
   bool      has_membrane;
   bool      has_bending;
@@ -535,6 +604,18 @@ void RegulariserImpl<scalar_t,offset_t,reduce_t>::dispatch(
 }
 
 
+// Voxel `i` (linear index) of the plain pass
+template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
+void RegulariserImpl<scalar_t,offset_t,reduce_t>::voxel(offset_t i) const {
+  offset_t YZ  = Y * Z;
+  offset_t XYZ = X * YZ;
+  offset_t n  = (i/XYZ);
+  offset_t x  = (i/YZ) % X;
+  offset_t y  = (i/Z)  % Y;
+  offset_t z  =  i     % Z;
+  dispatch(x, y, z, n);
+}
+
 #ifdef __CUDACC__
 
 template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
@@ -542,44 +623,38 @@ void RegulariserImpl<scalar_t,offset_t,reduce_t>::loop(
   int threadIdx, int blockIdx, int blockDim, int gridDim) const {
 
   offset_t index = static_cast<offset_t>(blockIdx * blockDim + threadIdx);
-  offset_t YZ   = Y * Z;
-  offset_t XYZ  = X * YZ;
-  offset_t NXYZ = N * XYZ;
-  offset_t n, x, y, z;
-  for (offset_t i=index; index < NXYZ; index += blockDim*gridDim, i=index)
-  {
-      // Convert index: linear to sub
-      n  = (i/XYZ);
-      x  = (i/YZ) % X;
-      y  = (i/Z)  % Y;
-      z  =  i     % Z;
-      dispatch(x, y, z, n);
-  }
+  offset_t count = static_cast<offset_t>(voxcount(region));
+  if (region == 1)
+    for (offset_t i=index; index < count; index += blockDim*gridDim, i=index)
+      plane(job, i);
+  else
+    for (offset_t i=index; index < count; index += blockDim*gridDim, i=index)
+      voxel(i);
 }
 
 #else
 
 // This bit loops over all target voxels. We therefore need to
 // convert linear indices to multivariate indices. The way I do it
-// might not be optimal.
+// might not be optimal. The plain kernels run on all voxels, then the
+// border jobs add the border correction, one target plane at a time.
 template <typename scalar_t, typename offset_t, typename reduce_t> NI_HOST
 void RegulariserImpl<scalar_t,offset_t,reduce_t>::loop() const
 {
-  // Parallelize across voxels
-  offset_t YZ   = Y * Z;
-  offset_t XYZ  = X * YZ;
-  offset_t NXYZ = N * XYZ;
-  at::parallel_for(0, NXYZ, GRAIN_SIZE, [&](offset_t start, offset_t end) {
-    offset_t n, x, y, z;
-    for (offset_t i = start; i < end; ++i) {
-      // Convert index: linear to sub
-      n  = (i/XYZ);
-      x  = (i/YZ) % X;
-      y  = (i/Z)  % Y;
-      z  =  i     % Z;
-      dispatch(x, y, z, n);
-    }
+  at::parallel_for(0, voxcount(0), GRAIN_SIZE,
+                   [&](offset_t start, offset_t end) {
+    for (offset_t i = start; i < end; ++i)
+      voxel(i);
   });
+  for (int k = 0; k < njobs; ++k) {
+    Job J;
+    make_job(k, J);
+    at::parallel_for(0, plane_count(J), BORDER_GRAIN_SIZE,
+                     [&](offset_t start, offset_t end) {
+      for (offset_t i = start; i < end; ++i)
+        plane(J, i);
+    });
+  }
 }
 
 #endif
@@ -672,6 +747,40 @@ void RegulariserImpl<scalar_t,offset_t,reduce_t>::matvec_none(
 /* ========================================================================== */
 /*                               MACRO HELPERS                                */
 /* ========================================================================== */
+template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
+void RegulariserImpl<scalar_t,offset_t,reduce_t>::finish(
+    offset_t x, offset_t y, offset_t z,
+    scalar_t * out, const scalar_t * inp, const scalar_t * hes) const
+{
+  matvec(out, hes, inp);
+}
+
+// ~~~ Border correction (see border_common.h) ~~~
+// Voxel `i` of the plane of the job J: the terms of the axis J.a that
+// target this plane.
+template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
+void RegulariserImpl<scalar_t,offset_t,reduce_t>::plane(
+    const Job & J, offset_t i) const
+{
+  offset_t x, y, z, n;
+  border::plane_decode(i, J.a, J.j, X, Y, Z, x, y, z, n);
+  const int a = J.a;
+  const offset_t q[3]  = {x, y, z};
+  const offset_t si[3] = {inp_sX, inp_sY, inp_sZ};
+  const border::Plane<offset_t> & P = J.P[0];
+  scalar_t *out = out_ptr + (x*out_sX + y*out_sY + z*out_sZ + n*out_sN);
+  const scalar_t *inp = inp_ptr + (x*inp_sX + y*inp_sY + z*inp_sZ + n*inp_sN);
+  const scalar_t *wgt = wgt_ptr
+    ? wgt_ptr + (x*wgt_sX + y*wgt_sY + z*wgt_sZ + n*wgt_sN)
+    : static_cast<const scalar_t *>(0);
+  for (offset_t c = 0; c < C; ++c, inp += inp_sC, out += out_sC)
+  {
+    *out += static_cast<scalar_t>(bt.template axis<false>(
+      a, q, si, inp, membrane[c], bending[c], wgt, J.PW, P));
+    if (wgt) wgt += wgt_sC;
+  }
+}
+
 #define GET_COORD1_(x) offset_t x##0  = x - 1, x##1 = x + 1;
 #define GET_COORD2_(x) offset_t x##00  = x - 2, x##11 = x + 2;
 #define GET_SIGN1_(x, X, i)  \
@@ -686,13 +795,12 @@ void RegulariserImpl<scalar_t,offset_t,reduce_t>::matvec_none(
 #define GET_WARP2_(x, X, i)  \
   x##00  = (bound::index(bound##i, x##00,  X) - x) * inp_s##X; \
   x##11  = (bound::index(bound##i, x##11,  X) - x) * inp_s##X;
+// Weights are sampled with their own (even) boundary condition
 #define GET_WARP1_RLS_(x, X, i) \
-  x##0  = (bound::index(bound##i, x##0,  X) - x); \
-  x##1  = (bound::index(bound##i, x##1,  X) - x); \
-  offset_t w##x##0 = x##0 * wgt_s##X; \
-  offset_t w##x##1 = x##1 * wgt_s##X; \
-  x##0 *= inp_s##X; \
-  x##1 *= inp_s##X;
+  offset_t w##x##0 = (bound::index(wbound##i, x##0, X) - x) * wgt_s##X; \
+  offset_t w##x##1 = (bound::index(wbound##i, x##1, X) - x) * wgt_s##X; \
+  x##0  = (bound::index(bound##i, x##0,  X) - x) * inp_s##X; \
+  x##1  = (bound::index(bound##i, x##1,  X) - x) * inp_s##X;
 
 
 /* ========================================================================== */
@@ -744,7 +852,7 @@ void RegulariserImpl<scalar_t,offset_t,reduce_t>::zeros(offset_t x, offset_t y, 
     *out = static_cast<scalar_t>(0);
 
   out -= C*out_sC;
-  matvec(out, hes, inp);
+  finish(x, y, z, out, inp, hes);
 }
 
 
@@ -801,7 +909,7 @@ void RegulariserImpl<scalar_t,offset_t,reduce_t>::vel2mom3d_bending(
 
   inp -= C*inp_sC;
   out -= C*out_sC;
-  matvec(out, hes, inp);
+  finish(x, y, z, out, inp, hes);
 }
 
 template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
@@ -835,7 +943,7 @@ void RegulariserImpl<scalar_t,offset_t,reduce_t>::vel2mom3d_membrane(
 
   inp -= C*inp_sC;
   out -= C*out_sC;
-  matvec(out, hes, inp);
+  finish(x, y, z, out, inp, hes);
 }
 
 
@@ -851,7 +959,7 @@ void RegulariserImpl<scalar_t,offset_t,reduce_t>::vel2mom3d_absolute(
 
   inp -= C*inp_sC;
   out -= C*out_sC;
-  matvec(out, hes, inp);
+  finish(x, y, z, out, inp, hes);
 }
 
 
@@ -872,12 +980,12 @@ void RegulariserImpl<scalar_t,offset_t,reduce_t>::vel2mom3d_rls_membrane(
        ++c, inp += inp_sC, out += out_sC, wgt += wgt_sC)
   {
     scalar_t wcenter = *wgt;
-    reduce_t w1m00 = m100 * (wcenter + bound::get(wgt, wx0, sx0));
-    reduce_t w1p00 = m100 * (wcenter + bound::get(wgt, wx1, sx1));
-    reduce_t w01m0 = m010 * (wcenter + bound::get(wgt, wy0, sy0));
-    reduce_t w01p0 = m010 * (wcenter + bound::get(wgt, wy1, sy1));
-    reduce_t w001m = m001 * (wcenter + bound::get(wgt, wz0, sz0));
-    reduce_t w001p = m001 * (wcenter + bound::get(wgt, wz1, sz1));
+    reduce_t w1m00 = m100 * (wcenter + wgt[wx0]);
+    reduce_t w1p00 = m100 * (wcenter + wgt[wx1]);
+    reduce_t w01m0 = m010 * (wcenter + wgt[wy0]);
+    reduce_t w01p0 = m010 * (wcenter + wgt[wy1]);
+    reduce_t w001m = m001 * (wcenter + wgt[wz0]);
+    reduce_t w001p = m001 * (wcenter + wgt[wz1]);
 
     scalar_t center = *inp;  // no need to use `get` -> we know we are in the FOV
     auto get = [center](const scalar_t * x, offset_t o, int8_t s)
@@ -899,7 +1007,7 @@ void RegulariserImpl<scalar_t,offset_t,reduce_t>::vel2mom3d_rls_membrane(
 
   inp -= C*inp_sC;
   out -= C*out_sC;
-  matvec(out, hes, inp);
+  finish(x, y, z, out, inp, hes);
 }
 
 
@@ -917,7 +1025,7 @@ void RegulariserImpl<scalar_t,offset_t,reduce_t>::vel2mom3d_rls_absolute(
 
   inp -= C*inp_sC;
   out -= C*out_sC;
-  matvec(out, hes, inp);
+  finish(x, y, z, out, inp, hes);
 }
 
 
@@ -1007,7 +1115,7 @@ void RegulariserImpl<scalar_t,offset_t,reduce_t>::vel2mom2d_bending(
 
   inp -= C*inp_sC;
   out -= C*out_sC;
-  matvec(out, hes, inp);
+  finish(x, y, z, out, inp, hes);
 }
 
 template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
@@ -1040,7 +1148,7 @@ void RegulariserImpl<scalar_t,offset_t,reduce_t>::vel2mom2d_membrane(
 
   inp -= C*inp_sC;
   out -= C*out_sC;
-  matvec(out, hes, inp);
+  finish(x, y, z, out, inp, hes);
 }
 
 
@@ -1056,7 +1164,7 @@ void RegulariserImpl<scalar_t,offset_t,reduce_t>::vel2mom2d_absolute(
 
   inp -= C*inp_sC;
   out -= C*out_sC;
-  matvec(out, hes, inp);
+  finish(x, y, z, out, inp, hes);
 }
 
 
@@ -1077,10 +1185,10 @@ void RegulariserImpl<scalar_t,offset_t,reduce_t>::vel2mom2d_rls_membrane(
        ++c, inp += inp_sC, out += out_sC, wgt += wgt_sC)
   {
     scalar_t wcenter = *wgt;
-    reduce_t w1m00 = m100 * (wcenter + bound::get(wgt, wx0, sx0));
-    reduce_t w1p00 = m100 * (wcenter + bound::get(wgt, wx1, sx1));
-    reduce_t w01m0 = m010 * (wcenter + bound::get(wgt, wy0, sy0));
-    reduce_t w01p0 = m010 * (wcenter + bound::get(wgt, wy1, sy1));
+    reduce_t w1m00 = m100 * (wcenter + wgt[wx0]);
+    reduce_t w1p00 = m100 * (wcenter + wgt[wx1]);
+    reduce_t w01m0 = m010 * (wcenter + wgt[wy0]);
+    reduce_t w01p0 = m010 * (wcenter + wgt[wy1]);
 
     scalar_t center = *inp;  // no need to use `get` -> we know we are in the FOV
     auto get = [center](const scalar_t * x, offset_t o, int8_t s)
@@ -1100,7 +1208,7 @@ void RegulariserImpl<scalar_t,offset_t,reduce_t>::vel2mom2d_rls_membrane(
 
   inp -= C*inp_sC;
   out -= C*out_sC;
-  matvec(out, hes, inp);
+  finish(x, y, z, out, inp, hes);
 }
 
 
@@ -1118,7 +1226,7 @@ void RegulariserImpl<scalar_t,offset_t,reduce_t>::vel2mom2d_rls_absolute(
 
   inp -= C*inp_sC;
   out -= C*out_sC;
-  matvec(out, hes, inp);
+  finish(x, y, z, out, inp, hes);
 }
 
 /* ========================================================================== */
@@ -1187,7 +1295,7 @@ void RegulariserImpl<scalar_t,offset_t,reduce_t>::vel2mom1d_bending(
 
   inp -= C*inp_sC;
   out -= C*out_sC;
-  matvec(out, hes, inp);
+  finish(x, y, z, out, inp, hes);
 }
 
 template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
@@ -1219,7 +1327,7 @@ void RegulariserImpl<scalar_t,offset_t,reduce_t>::vel2mom1d_membrane(
 
   inp -= C*inp_sC;
   out -= C*out_sC;
-  matvec(out, hes, inp);
+  finish(x, y, z, out, inp, hes);
 }
 
 
@@ -1235,7 +1343,7 @@ void RegulariserImpl<scalar_t,offset_t,reduce_t>::vel2mom1d_absolute(
 
   inp -= C*inp_sC;
   out -= C*out_sC;
-  matvec(out, hes, inp);
+  finish(x, y, z, out, inp, hes);
 }
 
 
@@ -1256,8 +1364,8 @@ void RegulariserImpl<scalar_t,offset_t,reduce_t>::vel2mom1d_rls_membrane(
        ++c, inp += inp_sC, out += out_sC, wgt += wgt_sC)
   {
     scalar_t wcenter = *wgt;
-    reduce_t w1m00 = m100 * (wcenter + bound::get(wgt, wx0, sx0));
-    reduce_t w1p00 = m100 * (wcenter + bound::get(wgt, wx1, sx1));
+    reduce_t w1m00 = m100 * (wcenter + wgt[wx0]);
+    reduce_t w1p00 = m100 * (wcenter + wgt[wx1]);
 
     scalar_t center = *inp;  // no need to use `get` -> we know we are in the FOV
     auto get = [center](const scalar_t * x, offset_t o, int8_t s)
@@ -1275,7 +1383,7 @@ void RegulariserImpl<scalar_t,offset_t,reduce_t>::vel2mom1d_rls_membrane(
 
   inp -= C*inp_sC;
   out -= C*out_sC;
-  matvec(out, hes, inp);
+  finish(x, y, z, out, inp, hes);
 }
 
 
@@ -1293,7 +1401,7 @@ void RegulariserImpl<scalar_t,offset_t,reduce_t>::vel2mom1d_rls_absolute(
 
   inp -= C*inp_sC;
   out -= C*out_sC;
-  matvec(out, hes, inp);
+  finish(x, y, z, out, inp, hes);
 }
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -1375,20 +1483,34 @@ NI_HOST Tensor regulariser_impl(
     if (info.canUse32BitIndexMath())
     {
       RegulariserImpl<scalar_t, int32_t, double> algo(info);
-      auto palgo = alloc_and_copy_to_device(&algo, stream);
-      regulariser_kernel
-          <<<GET_BLOCKS(algo.voxcount()), CUDA_NUM_THREADS, 0, stream>>>
-          (palgo);
-      cudaFree(palgo);
+      // (all voxels, then one job per target plane of the border pass)
+      for (int k = -1; k < algo.border_jobs(); ++k)
+      {
+        if (k >= 0) algo.set_job(k);
+        uint8_t r = k >= 0 ? 1 : 0;
+        if (!algo.voxcount(r)) continue;
+        auto palgo = alloc_and_copy_to_device(&algo, stream);
+        regulariser_kernel
+            <<<GET_BLOCKS(algo.voxcount(r)), CUDA_NUM_THREADS, 0, stream>>>
+            (palgo);
+        cudaFree(palgo);
+      }
     }
     else
     {
       RegulariserImpl<scalar_t, int64_t, double> algo(info);
-      auto palgo = alloc_and_copy_to_device(&algo, stream);
-      regulariser_kernel
-          <<<GET_BLOCKS(algo.voxcount()), CUDA_NUM_THREADS, 0, stream>>>
-          (palgo);
-      cudaFree(palgo);
+      // (all voxels, then one job per target plane of the border pass)
+      for (int k = -1; k < algo.border_jobs(); ++k)
+      {
+        if (k >= 0) algo.set_job(k);
+        uint8_t r = k >= 0 ? 1 : 0;
+        if (!algo.voxcount(r)) continue;
+        auto palgo = alloc_and_copy_to_device(&algo, stream);
+        regulariser_kernel
+            <<<GET_BLOCKS(algo.voxcount(r)), CUDA_NUM_THREADS, 0, stream>>>
+            (palgo);
+        cudaFree(palgo);
+      }
     }
   });
   /*

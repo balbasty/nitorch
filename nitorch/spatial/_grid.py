@@ -11,7 +11,8 @@ from nitorch._C.grid import (
     SplineCoeff, SplineCoeffND
 )
 from ._affine import affine_resize, affine_lmdiv, _resize_shape_single
-from ._finite_differences import diff
+from ._finite_differences import diff, diff1d
+from nitorch.core import bounds as _bounds
 
 
 __all__ = ['grid_pull', 'grid_push', 'grid_count', 'grid_grad',
@@ -43,12 +44,17 @@ _doc_bound = \
         - 'dst2'       or BoundType.dst2
         - 'dft'        or BoundType.dft
         - 'zero'       or BoundType.zero
+        - 'sliding'    or BoundType.sliding
     A list of values can be provided, in the order [W, H, D],
     to specify dimension-specific boundary conditions.
     Note that
     - `dft` corresponds to circular padding
     - `dct2` corresponds to Neumann boundary conditions (symmetric)
     - `dst2` corresponds to Dirichlet boundary conditions (antisymmetric)
+    - `sliding` is for displacement fields (one channel per spatial
+      dimension): along a sliding axis `d`, the channel `d` (normal to
+      the border) is `dst2` and the others are `dct2`, which reflects the
+      field geometrically. Counts have no channels and use `dct2`.
     See https://en.wikipedia.org/wiki/Discrete_cosine_transform
         https://en.wikipedia.org/wiki/Discrete_sine_transform"""
 
@@ -70,8 +76,9 @@ r"""`bound` can be an int, a string or a BoundType.
     See https://en.wikipedia.org/wiki/Discrete_cosine_transform
         https://en.wikipedia.org/wiki/Discrete_sine_transform
 
-    /!\ Only 'dct1', 'dct2' and 'dft' are implemented for interpolation
-        orders >= 6."""
+    The coefficients are exact for all boundary conditions: sampling
+    them at the integer coordinates with the same order and boundary
+    gives back the input."""
 
 
 _ref_coeff = \
@@ -968,7 +975,8 @@ def grid_jacobian(grid, sample=None, bound='dft', voxel_size=1, type='grid',
     sample : (..., *spatial, dim) tensor, optional
         Coordinates to sample in the input grid.
     bound : str, default='dft'
-        Boundary condition
+        Boundary condition. With 'sliding', the component normal to
+        the border is antisymmetric (dst2) and the others symmetric (dct2).
     voxel_size : [sequence of] float, default=1
         Voxel size
     type : {'grid', 'disp'}, default='grid'
@@ -991,7 +999,18 @@ def grid_jacobian(grid, sample=None, bound='dft', voxel_size=1, type='grid',
     shape = grid.shape[-dim-1:-1]
     if type == 'grid':
         grid = grid - identity_grid(shape, **utils.backend(grid))
-    if sample is None:
+    if sample is None and _bounds.has_sliding(bound):
+        # each component with its own boundary conditions
+        bound = make_list(bound, dim)
+        voxel_size = make_list(voxel_size, dim)
+        jac = grid.new_empty([*grid.shape, dim])
+        for c in range(dim):
+            bound_c = _bounds.for_component(bound, c)
+            for d in range(dim):
+                jac[..., c, d] = diff1d(grid[..., c], dim=d - dim,
+                                        bound=bound_c[d], side='c',
+                                        voxel_size=voxel_size[d])
+    elif sample is None:
         dims = list(range(-dim-1, -1))
         jac = diff(grid, dim=dims, bound=bound, voxel_size=voxel_size, side='c')
     else:

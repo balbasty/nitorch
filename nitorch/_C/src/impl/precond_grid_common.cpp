@@ -2,6 +2,7 @@
 #include "../defines.h"            // useful macros
 #include "bounds_common.h"         // boundary conditions + enum
 #include "allocator.h"             // base class handling offset sizes
+#include "border_common.h"         // border pass (definition F)
 #include <ATen/ATen.h>             // tensors
 #include <cmath>                   // fma (fused multiply add)
 
@@ -18,6 +19,8 @@
     // This parameter specifies the minimum number of voxels that should be
     // processed on a single processor in the parallel for loop .
     int64_t GRAIN_SIZE = static_cast<int64_t>(at::internal::GRAIN_SIZE);
+    // (the border voxels are a thin set)
+    int64_t BORDER_GRAIN_SIZE = GRAIN_SIZE / 32;
   }
 #endif
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -233,6 +236,8 @@ public:
   PrecondGridImpl(const PrecondGridAllocator & info):
     dim(info.dim),
     bound0(info.bound0), bound1(info.bound1), bound2(info.bound2),
+    wbound0(bound::even(info.bound0)), wbound1(bound::even(info.bound1)),
+    wbound2(bound::even(info.bound2)),
     vx0(info.vx0), vx1(info.vx1), vx2(info.vx2),
     absolute(info.absolute), membrane(info.membrane), bending(info.bending), 
     lame_shear(info.lame_shear), lame_div(info.lame_div), 
@@ -257,6 +262,7 @@ public:
     INIT_ALLOC_INFO_5D(wgt)
   {
     set_kernel();
+    set_border();
   #ifndef __CUDACC__
     set_precond();
     set_invert();
@@ -298,6 +304,43 @@ public:
     wz000 *= OnePlusTiny;
   }
 
+  // Border pass (see border_common.h): the diagonal of the exact operator
+  // differs from that of the stencil near the borders (B, and the taps
+  // that fold back onto their own voxel). The voxels within
+  // `border::radius` of the borders are solved again with their exact
+  // diagonal (`precond<true>`, which overwrites them). Decided once.
+  NI_HOST NI_INLINE void set_border()
+  {
+    BoundType b[3] = {bound0, bound1, bound2};
+    double ivx[3] = {vx0, vx1, vx2};   // (1 / voxel_size**2)
+    offset_t nn[3] = {X, Y, Z};
+    bt.set(dim, b, nn, ivx, membrane, bending, lame_shear, lame_div);
+    // stencil taps of component c along a (as in `set_kernel`)
+    double lam1 = membrane, lam2 = bending, mu = lame_shear, lam = lame_div;
+    double sv = ivx[0] + ivx[1] + ivx[2];
+    for (int c = 0; c < 3; ++c)
+    for (int a = 0; a < 3; ++a) {
+      bool on = a < dim && c < dim;
+      double w1 = lam2 * (-4.0 * ivx[a] * sv) - lam1 * ivx[a];
+      t1[c][a] = static_cast<reduce_t>(!on ? 0. :
+        (a == c ? -2.0 * mu - lam : -mu * ivx[a] / ivx[c]) + w1 / ivx[c]);
+      t2[c][a] = static_cast<reduce_t>(on ? lam2 * ivx[a] * ivx[a] / ivx[c] : 0.);
+      trls[c][a] = static_cast<reduce_t>(on ? -lam1 * ivx[a] / ivx[c] : 0.);
+      for (int bb = 0; bb < 3; ++bb)
+        t11[c][a][bb] = static_cast<reduce_t>(on && bb < dim ?
+          lam2 * 2.0 * ivx[a] * ivx[bb] / ivx[c] : 0.);
+    }
+    bool taps = (membrane || bending || lame_shear || lame_div);
+    offset_t r[3];
+    needs_border = false;
+    for (int a = 0; a < 3; ++a) {
+      r[a] = (taps && a < dim) ? border::radius(b[a], nn[a]) : 0;
+      needs_border = needs_border || r[a] > 0;
+    }
+    box.set(X, Y, Z, r[0], r[1], r[2]);
+    region = 0;
+  }
+
 #ifndef __CUDACC__
   NI_HOST NI_INLINE void set_precond() 
   {
@@ -308,25 +351,25 @@ public:
 #   define RLS      32
     switch (mode) {
       case 1 + MEMBRANE + RLS:
-        precond_ = &Self::precond1d_rls_membrane; break;
+        precond_ = &Self::template precond1d_rls_membrane<false>; precondb_ = &Self::template precond1d_rls_membrane<true>; break;
       case 2 + MEMBRANE + RLS:
-        precond_ = &Self::precond2d_rls_membrane; break;
+        precond_ = &Self::template precond2d_rls_membrane<false>; precondb_ = &Self::template precond2d_rls_membrane<true>; break;
       case 3 + MEMBRANE + RLS:
-        precond_ = &Self::precond3d_rls_membrane; break;
+        precond_ = &Self::template precond3d_rls_membrane<false>; precondb_ = &Self::template precond3d_rls_membrane<true>; break;
       case 1 + ABSOLUTE + RLS:
-        precond_ = &Self::precond1d_rls_absolute; break;
+        precond_ = &Self::template precond1d_rls_absolute<false>; precondb_ = &Self::template precond1d_rls_absolute<true>; break;
       case 2 + ABSOLUTE + RLS:
-        precond_ = &Self::precond2d_rls_absolute; break;
+        precond_ = &Self::template precond2d_rls_absolute<false>; precondb_ = &Self::template precond2d_rls_absolute<true>; break;
       case 3 + ABSOLUTE + RLS:
-        precond_ = &Self::precond3d_rls_absolute; break;
+        precond_ = &Self::template precond3d_rls_absolute<false>; precondb_ = &Self::template precond3d_rls_absolute<true>; break;
       default:
         switch (dim) {
           case 1:
-            precond_ = &Self::precond1d; break;
+            precond_ = &Self::template precond1d<false>; precondb_ = &Self::template precond1d<true>; break;
           case 2: 
-            precond_ = &Self::precond2d; break;
+            precond_ = &Self::template precond2d<false>; precondb_ = &Self::template precond2d<true>; break;
           default:
-            precond_ = &Self::precond3d; break;
+            precond_ = &Self::template precond3d<false>; precondb_ = &Self::template precond3d<true>; break;
         } break;
     }
   }
@@ -382,16 +425,25 @@ public:
   NI_HOST NI_DEVICE int64_t voxcount() const {
     return N * X * Y * Z;
   }
+
+  // Voxels of each region (0: all voxels, 2: border voxels, solved
+  // again). The CUDA host code mutates `region` and launches one kernel
+  // per region.
+  NI_HOST NI_INLINE bool split() const { return needs_border; }
+  NI_HOST NI_INLINE void set_region(uint8_t r) { region = r; }
+  NI_HOST NI_DEVICE int64_t voxcount(uint8_t r) const {
+    return r == 2 ? N * box.border_count() : voxcount();
+  }
  
 
 private:
 
   /* ~~~ COMPONENTS ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ */
-  NI_DEVICE NI_INLINE void precond(
+  template <bool BORDER> NI_DEVICE NI_INLINE void precond(
     offset_t x, offset_t y, offset_t z, offset_t n) const;
 
 #define DEFINE_PRECOND(SUFFIX) \
-  NI_DEVICE void precond##SUFFIX( \
+  template <bool BORDER> NI_DEVICE void precond##SUFFIX( \
     offset_t x, offset_t y, offset_t z, offset_t n) const;
 #define DEFINE_PRECOND_DIM(DIM)        \
   DEFINE_PRECOND(DIM##d)               \
@@ -418,12 +470,32 @@ private:
   DEFINE_INVERT_DIM(2)
   DEFINE_INVERT_DIM(3)
 
+  template <bool BORDER>
+  NI_DEVICE void finish(offset_t x, offset_t y, offset_t z, offset_t n,
+    const scalar_t * hes, scalar_t * sol, const scalar_t * grd,
+    reduce_t d0, reduce_t d1, reduce_t d2) const;
+  NI_DEVICE void border(offset_t x, offset_t y, offset_t z, offset_t n,
+    const scalar_t * sol, reduce_t & d0, reduce_t & d1, reduce_t & d2) const;
+
+  /* ~~~ BORDER PASS ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ */
+  uint8_t           region;         // 0: all voxels, 2: border
+  bool              needs_border;
+  border::BorderBox<offset_t> box;  // interior box (voxels)
+  border::GridTerms<reduce_t, offset_t> bt; // terms of B
+  reduce_t          t1[3][3];       // stencil taps +/-1 [comp][axis]
+  reduce_t          t2[3][3];       // stencil taps +/-2
+  reduce_t          t11[3][3][3];   // stencil taps (+/-1, +/-1)
+  reduce_t          trls[3][3];     // weighted membrane taps (RLS)
+
   /* ~~~ OPTIONS ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ */
   offset_t          dim;
   uint8_t           mode;
   BoundType         bound0;         // boundary condition  // x|W
   BoundType         bound1;         // boundary condition  // y|H
   BoundType         bound2;         // boundary condition  // z|D
+  BoundType         wbound0;        // boundary of the weights (even) // x|W
+  BoundType         wbound1;        // boundary of the weights (even) // y|H
+  BoundType         wbound2;        // boundary of the weights (even) // z|D
   reduce_t          vx0;            // voxel size // x|W
   reduce_t          vx1;            // voxel size // y|H
   reduce_t          vx2;            // voxel size // z|D
@@ -435,6 +507,7 @@ private:
 
 #ifndef __CUDACC__
   PrecondFn         precond_;       // Pointer to Precond function
+  PrecondFn         precondb_;      // Pointer to Precond function (border voxels)
   InvertFn          invert_;        // Pointer to inversion function
 #endif
 
@@ -483,7 +556,8 @@ private:
 //                             LOOP
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
+template <typename scalar_t, typename offset_t, typename reduce_t>
+template <bool BORDER> NI_DEVICE
 void PrecondGridImpl<scalar_t,offset_t,reduce_t>::precond(
     offset_t x, offset_t y, offset_t z, offset_t n) const 
 {
@@ -495,29 +569,29 @@ void PrecondGridImpl<scalar_t,offset_t,reduce_t>::precond(
 #   define RLS      32
   switch (mode) {
     case 1 + MEMBRANE + RLS:
-      return precond1d_rls_membrane(x, y, z, n);
+      return precond1d_rls_membrane<BORDER>(x, y, z, n);
     case 2 + MEMBRANE + RLS:
-      return precond2d_rls_membrane(x, y, z, n);
+      return precond2d_rls_membrane<BORDER>(x, y, z, n);
     case 3 + MEMBRANE + RLS:
-      return precond3d_rls_membrane(x, y, z, n);
+      return precond3d_rls_membrane<BORDER>(x, y, z, n);
     case 1 + ABSOLUTE + RLS:
-      return precond1d_rls_absolute(x, y, z, n);
+      return precond1d_rls_absolute<BORDER>(x, y, z, n);
     case 2 + ABSOLUTE + RLS:
-      return precond2d_rls_absolute(x, y, z, n);
+      return precond2d_rls_absolute<BORDER>(x, y, z, n);
     case 3 + ABSOLUTE + RLS:
-      return precond3d_rls_absolute(x, y, z, n);
+      return precond3d_rls_absolute<BORDER>(x, y, z, n);
     default:
       switch (dim) {
         case 1:
-          return precond1d(x, y, z, n);
+          return precond1d<BORDER>(x, y, z, n);
         case 2: 
-          return precond2d(x, y, z, n);
+          return precond2d<BORDER>(x, y, z, n);
         default:
-          return precond3d(x, y, z, n);
+          return precond3d<BORDER>(x, y, z, n);
       }
   }
 #else
-  CALL_MEMBER_FN(*this, precond_)(x, y, z, n);
+  CALL_MEMBER_FN(*this, BORDER ? precondb_ : precond_)(x, y, z, n);
 #endif 
 }
 
@@ -528,10 +602,21 @@ void PrecondGridImpl<scalar_t,offset_t,reduce_t>::loop(
   int threadIdx, int blockIdx, int blockDim, int gridDim) const {
 
   offset_t index = static_cast<offset_t>(blockIdx * blockDim + threadIdx);
+  offset_t n, x, y, z;
+  if (region == 2) {
+    offset_t M  = box.border_count();
+    offset_t NM = N * M;
+    for (offset_t i=index; index < NM; index += blockDim*gridDim, i=index)
+    {
+      n = i / M;
+      box.decode(i % M, x, y, z);
+      precond<true>(x, y, z, n);
+    }
+    return;
+  }
   offset_t YZ   = Y * Z;
   offset_t XYZ  = X * YZ;
   offset_t NXYZ = N * XYZ;
-  offset_t n, x, y, z;
   for (offset_t i=index; index < NXYZ; index += blockDim*gridDim, i=index)
   {
       // Convert index: linear to sub
@@ -539,7 +624,7 @@ void PrecondGridImpl<scalar_t,offset_t,reduce_t>::loop(
       x  = (i/YZ) % X;
       y  = (i/Z)  % Y;
       z  =  i     % Z;
-      precond(x, y, z, n);
+      precond<false>(x, y, z, n);
   }
 }
 
@@ -547,7 +632,8 @@ void PrecondGridImpl<scalar_t,offset_t,reduce_t>::loop(
 
 // This bit loops over all target voxels. We therefore need to
 // convert linear indices to multivariate indices. The way I do it
-// might not be optimal.
+// might not be optimal. With a border pass, the border voxels are then
+// solved again, with their exact diagonal.
 template <typename scalar_t, typename offset_t, typename reduce_t> NI_HOST
 void PrecondGridImpl<scalar_t,offset_t,reduce_t>::loop() const
 {
@@ -563,7 +649,17 @@ void PrecondGridImpl<scalar_t,offset_t,reduce_t>::loop() const
       x  = (i/YZ) % X;
       y  = (i/Z)  % Y;
       z  =  i     % Z;
-      precond(x, y, z, n);
+      precond<false>(x, y, z, n);
+    }
+  });
+  if (!needs_border) return;
+  // the border voxels again, with their exact diagonal
+  offset_t M = box.border_count();
+  at::parallel_for(0, N * M, BORDER_GRAIN_SIZE, [&](offset_t start, offset_t end) {
+    offset_t x, y, z;
+    for (offset_t i = start; i < end; ++i) {
+      box.decode(i % M, x, y, z);
+      precond<true>(x, y, z, i / M);
     }
   });
 }
@@ -730,6 +826,66 @@ void PrecondGridImpl<scalar_t,offset_t,reduce_t>::invert1d_none(
 /* ========================================================================== */
 /*                               MACRO HELPERS                                */
 /* ========================================================================== */
+// ~~~ Border voxels (see border_common.h) ~~~
+// `d` is the diagonal of the stencil, as if all its taps were other
+// voxels. At the border voxels, it becomes the exact diagonal (that of
+// S, with the taps that fold back onto the voxel, plus that of B).
+template <typename scalar_t, typename offset_t, typename reduce_t>
+template <bool BORDER> NI_DEVICE
+void PrecondGridImpl<scalar_t,offset_t,reduce_t>::finish(
+    offset_t x, offset_t y, offset_t z, offset_t n,
+    const scalar_t * hes, scalar_t * sol, const scalar_t * grd,
+    reduce_t d0, reduce_t d1, reduce_t d2) const
+{
+  if (BORDER)
+    border(x, y, z, n, sol, d0, d1, d2);
+  invert(hes, sol, grd, d0, d1, d2);
+}
+
+template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
+void PrecondGridImpl<scalar_t,offset_t,reduce_t>::border(
+    offset_t x, offset_t y, offset_t z, offset_t n, const scalar_t * sol0,
+    reduce_t & d0, reduce_t & d1, reduce_t & d2) const
+{
+  const offset_t q[3]  = {x, y, z};
+  const offset_t s[3]  = {sol_sX, sol_sY, sol_sZ};
+  const offset_t sw[3] = {wgt_sX, wgt_sY, wgt_sZ};
+  const scalar_t * wgt = wgt_ptr
+    ? wgt_ptr + (x*wgt_sX + y*wgt_sY + z*wgt_sZ + n*wgt_sN)
+    : static_cast<const scalar_t *>(0);
+  reduce_t D[3] = {0, 0, 0}, T1[3][3];
+  for (int a = 0; a < dim; ++a) {
+    border::Plane<offset_t> P[3], PW;
+    bool any = false;
+    for (int c = 0; c < dim; ++c) {
+      P[c].set(bt.tab[c][a], bt.n[a], q[a], s[a]);
+      any = any || (bt.fany[c][a] && P[c].targeted());
+    }
+    if (wgt) PW.set(bt.wtab[a], bt.n[a], q[a], sw[a]);
+    // self image of the stencil taps along a (and of the pairs (b, a))
+    for (int c = 0; c < dim; ++c) {
+      T1[c][a] = border::tapself(P[c], q[a], bt.n[a], -1)
+               + border::tapself(P[c], q[a], bt.n[a],  1);
+      if (wgt) {
+        D[c] += 0.5 * trls[c][a] *
+                border::rls_self<reduce_t>(P[c], PW, wgt, q[a], bt.n[a]);
+        continue;
+      }
+      D[c] += t1[c][a] * T1[c][a]
+            + t2[c][a] * (border::tapself(P[c], q[a], bt.n[a], -2)
+                        + border::tapself(P[c], q[a], bt.n[a],  2));
+      for (int bb = 0; bb < a; ++bb)
+        D[c] += t11[c][bb][a] * T1[c][bb] * T1[c][a];
+    }
+    if (!any) continue;
+    // diagonal of B along a
+    for (int c = 0; c < dim; ++c)
+      if (bt.fany[c][a])
+        D[c] += bt.template axis<true>(a, c, q, s, sol0, sol_sC, wgt, PW, P);
+  }
+  d0 += D[0]; d1 += D[1]; d2 += D[2];
+}
+
 #define GET_COORD1_(x) offset_t x##0  = x - 1, x##1  = x + 1;
 #define GET_COORD2_(x) offset_t x##00 = x - 2, x##11 = x + 2;
 #define GET_SIGN1_(x, X, i)  \
@@ -744,13 +900,12 @@ void PrecondGridImpl<scalar_t,offset_t,reduce_t>::invert1d_none(
 #define GET_WARP2_(x, X, i)  \
   x##00  = (bound::index(bound##i, x##00,  X) - x) * sol_s##X; \
   x##11  = (bound::index(bound##i, x##11,  X) - x) * sol_s##X;
+// Weights are sampled with their own (even) boundary condition
 #define GET_WARP1_RLS_(x, X, i) \
-  x##0  = (bound::index(bound##i, x##0,  X) - x); \
-  x##1  = (bound::index(bound##i, x##1,  X) - x); \
-  offset_t w##x##0 = x##0 * wgt_s##X; \
-  offset_t w##x##1 = x##1 * wgt_s##X; \
-  x##0 *= sol_s##X; \
-  x##1 *= sol_s##X;
+  offset_t w##x##0 = (bound::index(wbound##i, x##0, X) - x) * wgt_s##X; \
+  offset_t w##x##1 = (bound::index(wbound##i, x##1, X) - x) * wgt_s##X; \
+  x##0  = (bound::index(bound##i, x##0,  X) - x) * sol_s##X; \
+  x##1  = (bound::index(bound##i, x##1,  X) - x) * sol_s##X;
 
 
 /* ========================================================================== */
@@ -792,41 +947,43 @@ void PrecondGridImpl<scalar_t,offset_t,reduce_t>::invert1d_none(
   const scalar_t *hes = hes_ptr + (x*hes_sX + y*hes_sY + z*hes_sZ + n*hes_sN);
 
 
-template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
+template <typename scalar_t, typename offset_t, typename reduce_t>
+template <bool BORDER> NI_DEVICE
 void PrecondGridImpl<scalar_t,offset_t,reduce_t>::precond3d(
   offset_t x, offset_t y, offset_t z, offset_t n) const
 {
   GET_POINTERS
 
-  invert(hes, sol, grd, wx000, wy000, wz000);
+  finish<BORDER>(x, y, z, n, hes, sol, grd, wx000, wy000, wz000);
 }
 
 
-template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
+template <typename scalar_t, typename offset_t, typename reduce_t>
+template <bool BORDER> NI_DEVICE
 void PrecondGridImpl<scalar_t,offset_t,reduce_t>::precond3d_rls_membrane(
   offset_t x, offset_t y, offset_t z, offset_t n) const
 {
   GET_COORD1
-  GET_SIGN1
   GET_WARP1_RLS
   GET_POINTERS
   scalar_t * wgt = wgt_ptr + (x*wgt_sX + y*wgt_sY + z*wgt_sZ);
 
   scalar_t wcenter = *wgt;
-  reduce_t w1m00 = m100 * (wcenter + bound::get(wgt, wx0, sx0));
-  reduce_t w1p00 = m100 * (wcenter + bound::get(wgt, wx1, sx1));
-  reduce_t w01m0 = m010 * (wcenter + bound::get(wgt, wy0, sy0));
-  reduce_t w01p0 = m010 * (wcenter + bound::get(wgt, wy1, sy1));
-  reduce_t w001m = m001 * (wcenter + bound::get(wgt, wz0, sz0));
-  reduce_t w001p = m001 * (wcenter + bound::get(wgt, wz1, sz1));
+  reduce_t w1m00 = m100 * (wcenter + wgt[wx0]);
+  reduce_t w1p00 = m100 * (wcenter + wgt[wx1]);
+  reduce_t w01m0 = m010 * (wcenter + wgt[wy0]);
+  reduce_t w01p0 = m010 * (wcenter + wgt[wy1]);
+  reduce_t w001m = m001 * (wcenter + wgt[wz0]);
+  reduce_t w001p = m001 * (wcenter + wgt[wz1]);
 
   reduce_t w = absolute * wcenter 
              - 0.5 * membrane * (w1m00 + w1p00 + w01m0 + w01p0 + w001m + w001p);
-  invert(hes, sol, grd, w/vx0, w/vx1, w/vx2);
+  finish<BORDER>(x, y, z, n, hes, sol, grd, w/vx0, w/vx1, w/vx2);
 }
 
 
-template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
+template <typename scalar_t, typename offset_t, typename reduce_t>
+template <bool BORDER> NI_DEVICE
 void PrecondGridImpl<scalar_t,offset_t,reduce_t>::precond3d_rls_absolute(
   offset_t x, offset_t y, offset_t z, offset_t n) const
 {
@@ -834,7 +991,7 @@ void PrecondGridImpl<scalar_t,offset_t,reduce_t>::precond3d_rls_absolute(
   scalar_t * wgt = wgt_ptr + (x*wgt_sX + y*wgt_sY + z*wgt_sZ);
 
   reduce_t w = absolute * (*wgt);
-  invert(hes, sol, grd, w/vx0, w/vx1, w/vx2);
+  finish<BORDER>(x, y, z, n, hes, sol, grd, w/vx0, w/vx1, w/vx2);
 }
 
 
@@ -880,39 +1037,41 @@ void PrecondGridImpl<scalar_t,offset_t,reduce_t>::precond3d_rls_absolute(
   const scalar_t *hes = hes_ptr + (x*hes_sX + y*hes_sY + n*hes_sN);
 
 
-template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
+template <typename scalar_t, typename offset_t, typename reduce_t>
+template <bool BORDER> NI_DEVICE
 void PrecondGridImpl<scalar_t,offset_t,reduce_t>::precond2d(
   offset_t x, offset_t y, offset_t z, offset_t n) const
 {
   GET_POINTERS
 
-  invert(hes, sol, grd, wx000, wy000, 0);
+  finish<BORDER>(x, y, z, n, hes, sol, grd, wx000, wy000, 0);
 }
 
 
-template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
+template <typename scalar_t, typename offset_t, typename reduce_t>
+template <bool BORDER> NI_DEVICE
 void PrecondGridImpl<scalar_t,offset_t,reduce_t>::precond2d_rls_membrane(
   offset_t x, offset_t y, offset_t z, offset_t n) const
 {
   GET_COORD1
-  GET_SIGN1
   GET_WARP1_RLS
   GET_POINTERS
   scalar_t * wgt = wgt_ptr + (x*wgt_sX + y*wgt_sY);
 
   scalar_t wcenter = *wgt;
-  reduce_t w1m00 = m100 * (wcenter + bound::get(wgt, wx0, sx0));
-  reduce_t w1p00 = m100 * (wcenter + bound::get(wgt, wx1, sx1));
-  reduce_t w01m0 = m010 * (wcenter + bound::get(wgt, wy0, sy0));
-  reduce_t w01p0 = m010 * (wcenter + bound::get(wgt, wy1, sy1));
+  reduce_t w1m00 = m100 * (wcenter + wgt[wx0]);
+  reduce_t w1p00 = m100 * (wcenter + wgt[wx1]);
+  reduce_t w01m0 = m010 * (wcenter + wgt[wy0]);
+  reduce_t w01p0 = m010 * (wcenter + wgt[wy1]);
 
   reduce_t w = absolute * wcenter 
              - 0.5 * membrane * (w1m00 + w1p00 + w01m0 + w01p0);
-  invert(hes, sol, grd, w/vx0, w/vx1, 0);
+  finish<BORDER>(x, y, z, n, hes, sol, grd, w/vx0, w/vx1, 0);
 }
 
 
-template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
+template <typename scalar_t, typename offset_t, typename reduce_t>
+template <bool BORDER> NI_DEVICE
 void PrecondGridImpl<scalar_t,offset_t,reduce_t>::precond2d_rls_absolute(
   offset_t x, offset_t y, offset_t z, offset_t n) const
 {
@@ -920,7 +1079,7 @@ void PrecondGridImpl<scalar_t,offset_t,reduce_t>::precond2d_rls_absolute(
   scalar_t * wgt = wgt_ptr + (x*wgt_sX + y*wgt_sY);
 
   reduce_t w = absolute * (*wgt);
-  invert(hes, sol, grd, w/vx0, w/vx1, 0);
+  finish<BORDER>(x, y, z, n, hes, sol, grd, w/vx0, w/vx1, 0);
 }
 
 /* ========================================================================== */
@@ -956,37 +1115,39 @@ void PrecondGridImpl<scalar_t,offset_t,reduce_t>::precond2d_rls_absolute(
   const scalar_t *hes = hes_ptr + (x*hes_sX + n*hes_sN);
 
 
-template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
+template <typename scalar_t, typename offset_t, typename reduce_t>
+template <bool BORDER> NI_DEVICE
 void PrecondGridImpl<scalar_t,offset_t,reduce_t>::precond1d(
   offset_t x, offset_t y, offset_t z, offset_t n) const
 {
   GET_POINTERS
 
-  invert(hes, sol, grd, wx000, 0, 0);
+  finish<BORDER>(x, y, z, n, hes, sol, grd, wx000, 0, 0);
 }
 
 
-template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
+template <typename scalar_t, typename offset_t, typename reduce_t>
+template <bool BORDER> NI_DEVICE
 void PrecondGridImpl<scalar_t,offset_t,reduce_t>::precond1d_rls_membrane(
   offset_t x, offset_t y, offset_t z, offset_t n) const
 {
   GET_COORD1
-  GET_SIGN1
   GET_WARP1_RLS
   GET_POINTERS
   scalar_t * wgt = wgt_ptr + (x*wgt_sX + y*wgt_sY);
 
   scalar_t wcenter = *wgt;
-  reduce_t w1m00 = m100 * (wcenter + bound::get(wgt, wx0, sx0));
-  reduce_t w1p00 = m100 * (wcenter + bound::get(wgt, wx1, sx1));
+  reduce_t w1m00 = m100 * (wcenter + wgt[wx0]);
+  reduce_t w1p00 = m100 * (wcenter + wgt[wx1]);
 
   reduce_t w = absolute * wcenter 
              - 0.5 * membrane * (w1m00 + w1p00);
-  invert(hes, sol, grd, w/vx0, 0, 0);
+  finish<BORDER>(x, y, z, n, hes, sol, grd, w/vx0, 0, 0);
 }
 
 
-template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
+template <typename scalar_t, typename offset_t, typename reduce_t>
+template <bool BORDER> NI_DEVICE
 void PrecondGridImpl<scalar_t,offset_t,reduce_t>::precond1d_rls_absolute(
   offset_t x, offset_t y, offset_t z, offset_t n) const
 {
@@ -994,7 +1155,7 @@ void PrecondGridImpl<scalar_t,offset_t,reduce_t>::precond1d_rls_absolute(
   scalar_t * wgt = wgt_ptr + (x*wgt_sX);
 
   reduce_t w = absolute * (*wgt);
-  invert(hes, sol, grd, w/vx0, 0, 0);
+  finish<BORDER>(x, y, z, n, hes, sol, grd, w/vx0, 0, 0);
 }
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -1072,20 +1233,30 @@ NI_HOST Tensor precond_grid_impl(
     if (info.canUse32BitIndexMath())
     {
       PrecondGridImpl<scalar_t, int32_t, double> algo(info);
-      auto palgo = alloc_and_copy_to_device(&algo, stream);
-      precond_kernel
-          <<<GET_BLOCKS(algo.voxcount()), CUDA_NUM_THREADS, 0, stream>>>
-          (palgo);
-      cudaFree(palgo);
+      // (all voxels, then the border voxels again, if they need it)
+      for (uint8_t r = 0; r < (algo.split() ? 3 : 1); r += 2) {
+        algo.set_region(r);
+        if (!algo.voxcount(r)) continue;
+        auto palgo = alloc_and_copy_to_device(&algo, stream);
+        precond_kernel
+            <<<GET_BLOCKS(algo.voxcount(r)), CUDA_NUM_THREADS, 0, stream>>>
+            (palgo);
+        cudaFree(palgo);
+      }
     }
     else
     {
       PrecondGridImpl<scalar_t, int64_t, double> algo(info);
-      auto palgo = alloc_and_copy_to_device(&algo, stream);
-      precond_kernel
-          <<<GET_BLOCKS(algo.voxcount()), CUDA_NUM_THREADS, 0, stream>>>
-          (palgo);
-      cudaFree(palgo);
+      // (all voxels, then the border voxels again, if they need it)
+      for (uint8_t r = 0; r < (algo.split() ? 3 : 1); r += 2) {
+        algo.set_region(r);
+        if (!algo.voxcount(r)) continue;
+        auto palgo = alloc_and_copy_to_device(&algo, stream);
+        precond_kernel
+            <<<GET_BLOCKS(algo.voxcount(r)), CUDA_NUM_THREADS, 0, stream>>>
+            (palgo);
+        cudaFree(palgo);
+      }
     }
   });
 

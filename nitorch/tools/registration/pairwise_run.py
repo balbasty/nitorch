@@ -372,8 +372,8 @@ def _voxel_size_ratio(vx, vx0, shape0):
 
 
 def _sync_nonlin_optim(nonlin_optim, nonlin):
-    """Copy the current voxel size and regularisation of `nonlin` into
-    its (Gauss-Newton) optimizer.
+    """Copy the current voxel size, regularisation and boundary
+    conditions of `nonlin` into its (Gauss-Newton) optimizer.
 
     The objective (see `objects.py`) divides the regularisation factor
     by the number of voxels of the transform, so the optimizer receives
@@ -381,6 +381,8 @@ def _sync_nonlin_optim(nonlin_optim, nonlin):
     level, since the shape changes."""
     if hasattr(nonlin_optim, 'voxel_size'):
         nonlin_optim.voxel_size = nonlin.voxel_size
+    if hasattr(nonlin_optim, 'bound'):
+        nonlin_optim.bound = nonlin.bound
     if hasattr(nonlin_optim, 'penalty'):
         penalty = dict(nonlin.penalty)
         if 'factor' in penalty:

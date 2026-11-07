@@ -8,7 +8,7 @@ class Vexp(Structure):
     files: list = []
     type: str = 'd'
     unit: str = 'v'
-    bound: str = 'dft'
+    bound: str = None
     inv: bool = False
     nb_steps: int = 8
     inversion: str = None
@@ -28,7 +28,9 @@ usage:
                             (default: from <vel>.json, as written by
                             `register @nonlin svf --inversion`, else default)
     -n,   --nb-steps STEPS  Number of scaling and squaring steps (default: 8)
-    -b,   --bound BND       {dft, dct1, dct2, dst1, dst2, zero}, default=dft
+    -b,   --bound BND       {dft, dct1, dct2, dst1, dst2, zero, sliding}
+                            (default: from <vel>.json, as written by
+                            `register @nonlin svf --bound`, else dft)
     -o,   --output *FILES   Output filenames (default: {dir}/{base}.vexp{ext})
     -cpu, -gpu              Backend device (default: cpu)
     

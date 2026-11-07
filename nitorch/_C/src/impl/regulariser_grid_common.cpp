@@ -2,6 +2,7 @@
 #include "../defines.h"            // useful macros
 #include "bounds_common.h"         // boundary conditions + enum
 #include "allocator.h"             // base class handling offset sizes
+#include "border_common.h"         // border correction (definition F)
 #include <ATen/ATen.h>             // tensors
 #include <cmath>                   // fma (fused multiply add)
 
@@ -18,6 +19,8 @@
     // This parameter specifies the minimum number of voxels that should be
     // processed on a single processor in the parallel for loop .
     int64_t GRAIN_SIZE = static_cast<int64_t>(at::internal::GRAIN_SIZE);
+    // (the border jobs are small planes)
+    int64_t BORDER_GRAIN_SIZE = GRAIN_SIZE / 32;
   }
 #endif
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -223,6 +226,7 @@ template <typename scalar_t, typename offset_t, typename reduce_t>
 class RegulariserGridImpl {
 
   typedef RegulariserGridImpl Self;
+  typedef border::PlaneJob<offset_t, 3> Job;
   typedef void (Self::*Vel2MomFn)(offset_t x, offset_t y, offset_t z, offset_t n) const;
   typedef void (Self::*MatVecFn)(const scalar_t *, const scalar_t *, scalar_t *) const;
 
@@ -232,6 +236,8 @@ public:
   RegulariserGridImpl(const RegulariserGridAllocator & info):
     dim(info.dim),
     bound0(info.bound0), bound1(info.bound1), bound2(info.bound2),
+    wbound0(bound::even(info.bound0)), wbound1(bound::even(info.bound1)),
+    wbound2(bound::even(info.bound2)),
     vx0(info.vx0), vx1(info.vx1), vx2(info.vx2),
     absolute(info.absolute), membrane(info.membrane), bending(info.bending),
     lame_shear(info.lame_shear), lame_div(info.lame_div),
@@ -295,6 +301,47 @@ public:
     wz010 = -mu*vx1/vx2 + w010/vx2;
     wz001 = -2.0*mu-lam + w001/vx2;
     w2    = 0.25*mu+0.25*lam;
+    set_border();
+  }
+
+  // Border correction (see border_common.h): which terms are not zero,
+  // their coefficients, the tables of extended samples and the target
+  // planes. Decided once: the plain kernels run on all voxels, then one
+  // job per target plane adds B.
+  // Component c has its own boundary conditions (sliding axes), and its
+  // energy is scaled by its squared voxel size.
+  NI_HOST NI_INLINE void set_border()
+  {
+    BoundType b[3] = {bound0, bound1, bound2};
+    double ivx[3] = {vx0, vx1, vx2};   // (1 / voxel_size**2)
+    offset_t nn[3] = {X, Y, Z};
+    bt.set(dim, b, nn, ivx, membrane, bending, lame_shear, lame_div);
+    // target planes of each axis
+    njobs = 0;
+    for (int a = 0; a < 3; ++a) {
+      tgt[a].clear();
+      for (int c = 0; c < dim; ++c)
+        if (a < dim && bt.fany[c][a]) tgt[a].add(bt.tab[c][a], nn[a]);
+      njobs += tgt[a].n;
+    }
+    needs_border = njobs > 0;
+    region = 0;
+    job.a = 0;
+  }
+
+  // The job k of the border pass (the plane tgt[a].j[k'])
+  NI_HOST void make_job(int k, Job & J) const
+  {
+    offset_t nn[3] = {X, Y, Z};
+    offset_t si[3] = {inp_sX, inp_sY, inp_sZ};
+    offset_t sw[3] = {wgt_sX, wgt_sY, wgt_sZ};
+    int a = 0;
+    while (k >= tgt[a].n) k -= tgt[a].n, ++a;
+    J.a = a;
+    J.j = tgt[a].j[k];
+    for (int c = 0; c < 3; ++c)
+      J.P[c].set(bt.tab[c][a], nn[a], J.j, si[a]);
+    J.PW.set(bt.wtab[a], nn[a], J.j, sw[a]);
   }
 
 #ifndef __CUDACC__
@@ -414,6 +461,18 @@ public:
 #endif
 
   NI_HOST NI_INLINE int64_t voxcount() const { return N * X * Y * Z; }
+
+  // Voxels of each region (0: all voxels, 1: the plane of the current
+  // border job). The CUDA host code launches the plain kernel on all
+  // voxels, then one kernel per border job (`set_job`).
+  NI_HOST NI_INLINE int border_jobs() const { return njobs; }
+  NI_HOST NI_INLINE void set_job(int k) { region = 1; make_job(k, job); }
+  NI_HOST NI_DEVICE NI_INLINE int64_t voxcount(uint8_t r) const {
+    return r == 1 ? plane_count(job) : N * X * Y * Z;
+  }
+  NI_HOST NI_DEVICE NI_INLINE int64_t plane_count(const Job & J) const {
+    return N * (J.a == 0 ? Y * Z : J.a == 1 ? X * Z : X * Y);
+  }
  
 
 private:
@@ -455,12 +514,28 @@ NI_DEVICE void matvec(const scalar_t *, const scalar_t *, scalar_t *) const;
   DEFINE_MATVEC_DIM(2)
   DEFINE_MATVEC_DIM(3)
 
+  NI_DEVICE NI_INLINE reduce_t voxel_size(offset_t c) const
+  { return c == 0 ? vx0 : c == 1 ? vx1 : vx2; }
+  NI_DEVICE void finish(offset_t x, offset_t y, offset_t z,
+    scalar_t * out0, const scalar_t * inp0, const scalar_t * hes0) const;
+  NI_DEVICE void plane(const Job & J, offset_t i) const;
+  NI_DEVICE NI_INLINE void voxel(offset_t i) const;
+
   /* ~~~ OPTIONS ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ */
   offset_t          dim;            // dimensionality (2 or 3)
   uint8_t           mode;
+  uint8_t           region;         // 0: all voxels, 1: border job
+  bool              needs_border;
+  int               njobs;          // number of border jobs (target planes)
+  border::Targets<offset_t> tgt[3]; // target planes of each axis
+  Job               job;            // current border job (CUDA)
+  border::GridTerms<reduce_t, offset_t> bt; // border terms
   BoundType         bound0;         // boundary condition  // x|W
   BoundType         bound1;         // boundary condition  // y|H
   BoundType         bound2;         // boundary condition  // z|D
+  BoundType         wbound0;        // boundary of the weights (even) // x|W
+  BoundType         wbound1;        // boundary of the weights (even) // y|H
+  BoundType         wbound2;        // boundary of the weights (even) // z|D
   reduce_t          vx0;            // voxel size // x|W
   reduce_t          vx1;            // voxel size // y|H
   reduce_t          vx2;            // voxel size // z|D
@@ -586,6 +661,18 @@ void RegulariserGridImpl<scalar_t,offset_t,reduce_t>::dispatch(
 }
 
 
+// Voxel `i` (linear index) of the plain pass
+template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
+void RegulariserGridImpl<scalar_t,offset_t,reduce_t>::voxel(offset_t i) const {
+  offset_t YZ  = Y * Z;
+  offset_t XYZ = X * YZ;
+  offset_t n  = (i/XYZ);
+  offset_t x  = (i/YZ) % X;
+  offset_t y  = (i/Z)  % Y;
+  offset_t z  =  i     % Z;
+  dispatch(x, y, z, n);
+}
+
 #if __CUDACC__
 
 template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
@@ -593,44 +680,38 @@ void RegulariserGridImpl<scalar_t,offset_t,reduce_t>::loop(
   int threadIdx, int blockIdx, int blockDim, int gridDim) const {
 
   offset_t index = static_cast<offset_t>(blockIdx * blockDim + threadIdx);
-  offset_t YZ   = Y * Z;
-  offset_t XYZ  = X * YZ;
-  offset_t NXYZ = N * XYZ;
-  offset_t n, x, y, z;
-  for (offset_t i=index; index < NXYZ; index += blockDim*gridDim, i=index)
-  {
-      // Convert index: linear to sub
-      n  = (i/XYZ);
-      x  = (i/YZ) % X;
-      y  = (i/Z)  % Y;
-      z  =  i     % Z;
-      dispatch(x, y, z, n);
-  }
+  offset_t count = static_cast<offset_t>(voxcount(region));
+  if (region == 1)
+    for (offset_t i=index; index < count; index += blockDim*gridDim, i=index)
+      plane(job, i);
+  else
+    for (offset_t i=index; index < count; index += blockDim*gridDim, i=index)
+      voxel(i);
 }
 
 #else
 
 // This bit loops over all target voxels. We therefore need to
 // convert linear indices to multivariate indices. The way I do it
-// might not be optimal.
+// might not be optimal. The plain kernels run on all voxels, then the
+// border jobs add the border correction, one target plane at a time.
 template <typename scalar_t, typename offset_t, typename reduce_t> NI_HOST
 void RegulariserGridImpl<scalar_t,offset_t,reduce_t>::loop() const
 {
-  // Parallelize across voxels
-  offset_t YZ   = Y * Z;
-  offset_t XYZ  = X * YZ;
-  offset_t NXYZ = N * XYZ;
-  at::parallel_for(0, NXYZ, GRAIN_SIZE, [&](offset_t start, offset_t end) {
-    offset_t n, x, y, z;
-    for (offset_t i = start; i < end; ++i) {
-      // Convert index: linear to sub
-      n  = (i/XYZ);
-      x  = (i/YZ) % X;
-      y  = (i/Z)  % Y;
-      z  =  i     % Z;
-      dispatch(x, y, z, n);
-    }
+  at::parallel_for(0, voxcount(0), GRAIN_SIZE,
+                   [&](offset_t start, offset_t end) {
+    for (offset_t i = start; i < end; ++i)
+      voxel(i);
   });
+  for (int k = 0; k < njobs; ++k) {
+    Job J;
+    make_job(k, J);
+    at::parallel_for(0, plane_count(J), BORDER_GRAIN_SIZE,
+                     [&](offset_t start, offset_t end) {
+      for (offset_t i = start; i < end; ++i)
+        plane(J, i);
+    });
+  }
 }
 
 #endif
@@ -755,27 +836,66 @@ void RegulariserGridImpl<scalar_t,offset_t,reduce_t>::matvec_none(
 /* ========================================================================== */
 /*                               MACRO HELPERS                                */
 /* ========================================================================== */
+template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
+void RegulariserGridImpl<scalar_t,offset_t,reduce_t>::finish(
+    offset_t x, offset_t y, offset_t z,
+    scalar_t * out0, const scalar_t * inp0, const scalar_t * hes0) const
+{
+  matvec(hes0, inp0, out0);
+}
+
+// ~~~ Border correction (see border_common.h) ~~~
+// Voxel `i` of the plane of the job J: the terms of the axis J.a that
+// target this plane.
+template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
+void RegulariserGridImpl<scalar_t,offset_t,reduce_t>::plane(
+    const Job & J, offset_t i) const
+{
+  offset_t x, y, z, n;
+  border::plane_decode(i, J.a, J.j, X, Y, Z, x, y, z, n);
+  const int a = J.a;
+  const offset_t q[3]  = {x, y, z};
+  const offset_t si[3] = {inp_sX, inp_sY, inp_sZ};
+  scalar_t *out = out_ptr + (x*out_sX + y*out_sY + z*out_sZ + n*out_sN);
+  const scalar_t *inp = inp_ptr + (x*inp_sX + y*inp_sY + z*inp_sZ + n*inp_sN);
+  const scalar_t *wgt = wgt_ptr
+    ? wgt_ptr + (x*wgt_sX + y*wgt_sY + z*wgt_sZ + n*wgt_sN)
+    : static_cast<const scalar_t *>(0);
+  for (int c = 0; c < dim; ++c, out += out_sC)
+    *out += static_cast<scalar_t>(bt.template axis<false>(
+      a, c, q, si, inp, inp_sC, wgt, J.PW, J.P));
+}
+
 #define GET_COORD1_(x) offset_t x##0  = x - 1, x##1 = x + 1;
 #define GET_COORD2_(x) offset_t x##00  = x - 2, x##11 = x + 2;
+// Signs of the samples of each component `c` (`s<x><offset>_<c>`):
+// they only differ along 'sliding' axes (see `bound::slide`).
+#define SLIDE_SIGN_(s, i) \
+  [[maybe_unused]] const int8_t s##_0 = bound::slide(bound##i, s, i, 0); \
+  [[maybe_unused]] const int8_t s##_1 = bound::slide(bound##i, s, i, 1); \
+  [[maybe_unused]] const int8_t s##_2 = bound::slide(bound##i, s, i, 2);
 #define GET_SIGN1_(x, X, i)  \
   int8_t   s##x##0 = bound::sign(bound##i, x##0,  X); \
-  int8_t   s##x##1 = bound::sign(bound##i, x##1,  X);
+  int8_t   s##x##1 = bound::sign(bound##i, x##1,  X); \
+  SLIDE_SIGN_(s##x##0, i) \
+  SLIDE_SIGN_(s##x##1, i)
 #define GET_SIGN2_(x, X, i)  \
   int8_t   s##x##00 = bound::sign(bound##i, x##00,  X); \
-  int8_t   s##x##11 = bound::sign(bound##i, x##11,  X);
+  int8_t   s##x##11 = bound::sign(bound##i, x##11,  X); \
+  SLIDE_SIGN_(s##x##00, i) \
+  SLIDE_SIGN_(s##x##11, i)
 #define GET_WARP1_(x, X, i)  \
   x##0  = (bound::index(bound##i, x##0,  X) - x) * inp_s##X; \
   x##1  = (bound::index(bound##i, x##1,  X) - x) * inp_s##X;
 #define GET_WARP2_(x, X, i)  \
   x##00  = (bound::index(bound##i, x##00,  X) - x) * inp_s##X; \
   x##11  = (bound::index(bound##i, x##11,  X) - x) * inp_s##X;
+// Weights are sampled with their own (even) boundary condition
 #define GET_WARP1_RLS_(x, X, i) \
-  x##0  = (bound::index(bound##i, x##0,  X) - x); \
-  x##1  = (bound::index(bound##i, x##1,  X) - x); \
-  offset_t w##x##0 = x##0 * wgt_s##X; \
-  offset_t w##x##1 = x##1 * wgt_s##X; \
-  x##0 *= inp_s##X; \
-  x##1 *= inp_s##X;
+  offset_t w##x##0 = (bound::index(wbound##i, x##0, X) - x) * wgt_s##X; \
+  offset_t w##x##1 = (bound::index(wbound##i, x##1, X) - x) * wgt_s##X; \
+  x##0  = (bound::index(bound##i, x##0,  X) - x) * inp_s##X; \
+  x##1  = (bound::index(bound##i, x##1,  X) - x) * inp_s##X;
 
 
 /* ========================================================================== */
@@ -843,23 +963,23 @@ void RegulariserGridImpl<scalar_t,offset_t,reduce_t>::vel2mom3d_all(
     };
 
     *out0 = static_cast<scalar_t>(
-        (wx100*(get(inp0, x0, sx0) + get(inp0, x1, sx1))
-      +  wx010*(get(inp0, y0, sy0) + get(inp0, y1, sy1))
-      +  wx001*(get(inp0, z0, sz0) + get(inp0, z1, sz1)))
-      + (w2   *( bound::get(inp1, x1+y0, sx1*sy0) - bound::get(inp1, x1+y1, sx1*sy1)
-               + bound::get(inp1, x0+y1, sx0*sy1) - bound::get(inp1, x0+y0, sx0*sy0)
-               + bound::get(inp2, x1+z0, sx1*sz0) - bound::get(inp2, x1+z1, sx1*sz1)
-               + bound::get(inp2, x0+z1, sx0*sz1) - bound::get(inp2, x0+z0, sx0*sz0) ))
+        (wx100*(get(inp0, x0, sx0_0) + get(inp0, x1, sx1_0))
+      +  wx010*(get(inp0, y0, sy0_0) + get(inp0, y1, sy1_0))
+      +  wx001*(get(inp0, z0, sz0_0) + get(inp0, z1, sz1_0)))
+      + (w2   *( bound::get(inp1, x1+y0, sx1_1*sy0_1) - bound::get(inp1, x1+y1, sx1_1*sy1_1)
+               + bound::get(inp1, x0+y1, sx0_1*sy1_1) - bound::get(inp1, x0+y0, sx0_1*sy0_1)
+               + bound::get(inp2, x1+z0, sx1_2*sz0_2) - bound::get(inp2, x1+z1, sx1_2*sz1_2)
+               + bound::get(inp2, x0+z1, sx0_2*sz1_2) - bound::get(inp2, x0+z0, sx0_2*sz0_2) ))
       + ( absolute*c
-        + (w110*(get(inp0, x0+y0, sx0*sy0) + get(inp0, x1+y0, sx1*sy0) +
-                 get(inp0, x0+y1, sx0*sy1) + get(inp0, x1+y1, sx1*sy1))
-        +  w101*(get(inp0, x0+z0, sx0*sz0) + get(inp0, x1+z0, sx1*sz0) +
-                 get(inp0, x0+z1, sx0*sz1) + get(inp0, x1+z1, sx1*sz1))
-        +  w011*(get(inp0, y0+z0, sy0*sz0) + get(inp0, y1+z0, sy1*sz0) +
-                 get(inp0, y0+z1, sy0*sz1) + get(inp0, y1+z1, sy1*sz1)))
-        + (w200*(get(inp0, x00, sx00) + get(inp0, x11, sx11))
-        +  w020*(get(inp0, y00, sy00) + get(inp0, y11, sy11))
-        +  w002*(get(inp0, z00, sz00) + get(inp0, z11, sz11))) ) / vx0
+        + (w110*(get(inp0, x0+y0, sx0_0*sy0_0) + get(inp0, x1+y0, sx1_0*sy0_0) +
+                 get(inp0, x0+y1, sx0_0*sy1_0) + get(inp0, x1+y1, sx1_0*sy1_0))
+        +  w101*(get(inp0, x0+z0, sx0_0*sz0_0) + get(inp0, x1+z0, sx1_0*sz0_0) +
+                 get(inp0, x0+z1, sx0_0*sz1_0) + get(inp0, x1+z1, sx1_0*sz1_0))
+        +  w011*(get(inp0, y0+z0, sy0_0*sz0_0) + get(inp0, y1+z0, sy1_0*sz0_0) +
+                 get(inp0, y0+z1, sy0_0*sz1_0) + get(inp0, y1+z1, sy1_0*sz1_0)))
+        + (w200*(get(inp0, x00, sx00_0) + get(inp0, x11, sx11_0))
+        +  w020*(get(inp0, y00, sy00_0) + get(inp0, y11, sy11_0))
+        +  w002*(get(inp0, z00, sz00_0) + get(inp0, z11, sz11_0))) ) / vx0
     );
   }
 
@@ -871,23 +991,23 @@ void RegulariserGridImpl<scalar_t,offset_t,reduce_t>::vel2mom3d_all(
     };
 
     *out1 = static_cast<scalar_t>(
-        (wy100*(get(inp1, x0, sx0) + get(inp1, x1, sx1))
-      +  wy010*(get(inp1, y0, sy0) + get(inp1, y1, sy1))
-      +  wy001*(get(inp1, z0, sz0) + get(inp1, z1, sz1)))
-      + (w2   *( bound::get(inp0, y1+x0, sy1*sx0) - bound::get(inp0, y1+x1, sy1*sx1)
-               + bound::get(inp0, y0+x1, sy0*sx1) - bound::get(inp0, y0+x0, sy0*sx0)
-               + bound::get(inp2, y1+z0, sy1*sz0) - bound::get(inp2, y1+z1, sy1*sz1)
-               + bound::get(inp2, y0+z1, sy0*sz1) - bound::get(inp2, y0+z0, sy0*sz0) ))
+        (wy100*(get(inp1, x0, sx0_1) + get(inp1, x1, sx1_1))
+      +  wy010*(get(inp1, y0, sy0_1) + get(inp1, y1, sy1_1))
+      +  wy001*(get(inp1, z0, sz0_1) + get(inp1, z1, sz1_1)))
+      + (w2   *( bound::get(inp0, y1+x0, sy1_0*sx0_0) - bound::get(inp0, y1+x1, sy1_0*sx1_0)
+               + bound::get(inp0, y0+x1, sy0_0*sx1_0) - bound::get(inp0, y0+x0, sy0_0*sx0_0)
+               + bound::get(inp2, y1+z0, sy1_2*sz0_2) - bound::get(inp2, y1+z1, sy1_2*sz1_2)
+               + bound::get(inp2, y0+z1, sy0_2*sz1_2) - bound::get(inp2, y0+z0, sy0_2*sz0_2) ))
       + ( absolute*c
-        + (w110*(get(inp1, x0+y0, sx0*sy0) + get(inp1, x1+y0, sx1*sy0) +
-                 get(inp1, x0+y1, sx0*sy1) + get(inp1, x1+y1, sx1*sy1))
-        +  w101*(get(inp1, x0+z0, sx0*sz0) + get(inp1, x1+z0, sx1*sz0) +
-                 get(inp1, x0+z1, sx0*sz1) + get(inp1, x1+z1, sx1*sz1))
-        +  w011*(get(inp1, y0+z0, sy0*sz0) + get(inp1, y1+z0, sy1*sz0) +
-                 get(inp1, y0+z1, sy0*sz1) + get(inp1, y1+z1, sy1*sz1)))
-        + (w200*(get(inp1, x00,   sx00)    + get(inp1, x11,   sx11))
-        +  w020*(get(inp1, y00,   sy00)    + get(inp1, y11,   sy11))
-        +  w002*(get(inp1, z00,   sz00)    + get(inp1, z11,   sz11))) ) / vx1
+        + (w110*(get(inp1, x0+y0, sx0_1*sy0_1) + get(inp1, x1+y0, sx1_1*sy0_1) +
+                 get(inp1, x0+y1, sx0_1*sy1_1) + get(inp1, x1+y1, sx1_1*sy1_1))
+        +  w101*(get(inp1, x0+z0, sx0_1*sz0_1) + get(inp1, x1+z0, sx1_1*sz0_1) +
+                 get(inp1, x0+z1, sx0_1*sz1_1) + get(inp1, x1+z1, sx1_1*sz1_1))
+        +  w011*(get(inp1, y0+z0, sy0_1*sz0_1) + get(inp1, y1+z0, sy1_1*sz0_1) +
+                 get(inp1, y0+z1, sy0_1*sz1_1) + get(inp1, y1+z1, sy1_1*sz1_1)))
+        + (w200*(get(inp1, x00,   sx00_1)    + get(inp1, x11,   sx11_1))
+        +  w020*(get(inp1, y00,   sy00_1)    + get(inp1, y11,   sy11_1))
+        +  w002*(get(inp1, z00,   sz00_1)    + get(inp1, z11,   sz11_1))) ) / vx1
     );
   }
 
@@ -899,27 +1019,27 @@ void RegulariserGridImpl<scalar_t,offset_t,reduce_t>::vel2mom3d_all(
     };
 
     *out2 = static_cast<scalar_t>(
-        (wz100*(get(inp2, x0, sx0) + get(inp2, x1, sx1))
-      +  wz010*(get(inp2, y0, sy0) + get(inp2, y1, sy1))
-      +  wz001*(get(inp2, z0, sz0) + get(inp2, z1, sz1)))
-      + (w2   *( bound::get(inp0, z1+x0, sz1*sx0) - bound::get(inp0, z1+x1, sz1*sx1)
-               + bound::get(inp0, z0+x1, sz0*sx1) - bound::get(inp0, z0+x0, sz0*sx0)
-               + bound::get(inp1, z1+y0, sz1*sy0) - bound::get(inp1, z1+y1, sz1*sy1)
-               + bound::get(inp1, z0+y1, sz0*sy1) - bound::get(inp1, z0+y0, sz0*sy0) ))
+        (wz100*(get(inp2, x0, sx0_2) + get(inp2, x1, sx1_2))
+      +  wz010*(get(inp2, y0, sy0_2) + get(inp2, y1, sy1_2))
+      +  wz001*(get(inp2, z0, sz0_2) + get(inp2, z1, sz1_2)))
+      + (w2   *( bound::get(inp0, z1+x0, sz1_0*sx0_0) - bound::get(inp0, z1+x1, sz1_0*sx1_0)
+               + bound::get(inp0, z0+x1, sz0_0*sx1_0) - bound::get(inp0, z0+x0, sz0_0*sx0_0)
+               + bound::get(inp1, z1+y0, sz1_1*sy0_1) - bound::get(inp1, z1+y1, sz1_1*sy1_1)
+               + bound::get(inp1, z0+y1, sz0_1*sy1_1) - bound::get(inp1, z0+y0, sz0_1*sy0_1) ))
       + ( absolute*c
-        + (w110*(get(inp2, x0+y0, sx0*sy0) + get(inp2, x1+y0, sx1*sy0) +
-                 get(inp2, x0+y1, sx0*sy1) + get(inp2, x1+y1, sx1*sy1))
-        +  w101*(get(inp2, x0+z0, sx0*sz0) + get(inp2, x1+z0, sx1*sz0) +
-                 get(inp2, x0+z1, sx0*sz1) + get(inp2, x1+z1, sx1*sz1))
-        +  w011*(get(inp2, y0+z0, sy0*sz0) + get(inp2, y1+z0, sy1*sz0) +
-                 get(inp2, y0+z1, sy0*sz1) + get(inp2, y1+z1, sy1*sz1)))
-        + (w200*(get(inp2, x00,   sx00)    + get(inp2, x11,   sx11))
-        +  w020*(get(inp2, y00,   sy00)    + get(inp2, y11,   sy11))
-        +  w002*(get(inp2, z00,   sz00)    + get(inp2, z11,   sz11))) ) / vx2 
+        + (w110*(get(inp2, x0+y0, sx0_2*sy0_2) + get(inp2, x1+y0, sx1_2*sy0_2) +
+                 get(inp2, x0+y1, sx0_2*sy1_2) + get(inp2, x1+y1, sx1_2*sy1_2))
+        +  w101*(get(inp2, x0+z0, sx0_2*sz0_2) + get(inp2, x1+z0, sx1_2*sz0_2) +
+                 get(inp2, x0+z1, sx0_2*sz1_2) + get(inp2, x1+z1, sx1_2*sz1_2))
+        +  w011*(get(inp2, y0+z0, sy0_2*sz0_2) + get(inp2, y1+z0, sy1_2*sz0_2) +
+                 get(inp2, y0+z1, sy0_2*sz1_2) + get(inp2, y1+z1, sy1_2*sz1_2)))
+        + (w200*(get(inp2, x00,   sx00_2)    + get(inp2, x11,   sx11_2))
+        +  w020*(get(inp2, y00,   sy00_2)    + get(inp2, y11,   sy11_2))
+        +  w002*(get(inp2, z00,   sz00_2)    + get(inp2, z11,   sz11_2))) ) / vx2 
       );
   }
 
-  matvec(hes0, inp0, out0);
+  finish(x, y, z, out0, inp0, hes0);
 }
 
  
@@ -941,13 +1061,13 @@ void RegulariserGridImpl<scalar_t,offset_t,reduce_t>::vel2mom3d_lame(
     };
 
     *out0 = static_cast<scalar_t>(
-       (wx100*(get(inp0, x0, sx0) + get(inp0, x1, sx1))
-      + wx010*(get(inp0, y0, sy0) + get(inp0, y1, sy1))
-      + wx001*(get(inp0, z0, sz0) + get(inp0, z1, sz1)))
-      + w2   *( bound::get(inp1, x1+y0, sx1*sy0) - bound::get(inp1, x1+y1, sx1*sy1)
-              + bound::get(inp1, x0+y1, sx0*sy1) - bound::get(inp1, x0+y0, sx0*sy0)
-              + bound::get(inp2, x1+z0, sx1*sz0) - bound::get(inp2, x1+z1, sx1*sz1)
-              + bound::get(inp2, x0+z1, sx0*sz1) - bound::get(inp2, x0+z0, sx0*sz0) )
+       (wx100*(get(inp0, x0, sx0_0) + get(inp0, x1, sx1_0))
+      + wx010*(get(inp0, y0, sy0_0) + get(inp0, y1, sy1_0))
+      + wx001*(get(inp0, z0, sz0_0) + get(inp0, z1, sz1_0)))
+      + w2   *( bound::get(inp1, x1+y0, sx1_1*sy0_1) - bound::get(inp1, x1+y1, sx1_1*sy1_1)
+              + bound::get(inp1, x0+y1, sx0_1*sy1_1) - bound::get(inp1, x0+y0, sx0_1*sy0_1)
+              + bound::get(inp2, x1+z0, sx1_2*sz0_2) - bound::get(inp2, x1+z1, sx1_2*sz1_2)
+              + bound::get(inp2, x0+z1, sx0_2*sz1_2) - bound::get(inp2, x0+z0, sx0_2*sz0_2) )
       + absolute*c/vx0
     );
   }
@@ -960,13 +1080,13 @@ void RegulariserGridImpl<scalar_t,offset_t,reduce_t>::vel2mom3d_lame(
     };
 
     *out1 = static_cast<scalar_t>(
-       (wy100*(get(inp1, x0, sx0) + get(inp1, x1, sx1))
-      + wy010*(get(inp1, y0, sy0) + get(inp1, y1, sy1))
-      + wy001*(get(inp1, z0, sz0) + get(inp1, z1, sz1)))
-      + w2   *( bound::get(inp0, y1+x0, sy1*sx0) - bound::get(inp0, y1+x1, sy1*sx1)
-              + bound::get(inp0, y0+x1, sy0*sx1) - bound::get(inp0, y0+x0, sy0*sx0)
-              + bound::get(inp2, y1+z0, sy1*sz0) - bound::get(inp2, y1+z1, sy1*sz1)
-              + bound::get(inp2, y0+z1, sy0*sz1) - bound::get(inp2, y0+z0, sy0*sz0) )
+       (wy100*(get(inp1, x0, sx0_1) + get(inp1, x1, sx1_1))
+      + wy010*(get(inp1, y0, sy0_1) + get(inp1, y1, sy1_1))
+      + wy001*(get(inp1, z0, sz0_1) + get(inp1, z1, sz1_1)))
+      + w2   *( bound::get(inp0, y1+x0, sy1_0*sx0_0) - bound::get(inp0, y1+x1, sy1_0*sx1_0)
+              + bound::get(inp0, y0+x1, sy0_0*sx1_0) - bound::get(inp0, y0+x0, sy0_0*sx0_0)
+              + bound::get(inp2, y1+z0, sy1_2*sz0_2) - bound::get(inp2, y1+z1, sy1_2*sz1_2)
+              + bound::get(inp2, y0+z1, sy0_2*sz1_2) - bound::get(inp2, y0+z0, sy0_2*sz0_2) )
       + absolute*c/vx1
     );
   }
@@ -979,18 +1099,18 @@ void RegulariserGridImpl<scalar_t,offset_t,reduce_t>::vel2mom3d_lame(
     };
 
     *out2 = static_cast<scalar_t>(
-       (wz100*(get(inp2, x0, sx0) + get(inp2, x1, sx1))
-      + wz010*(get(inp2, y0, sy0) + get(inp2, y1, sy1))
-      + wz001*(get(inp2, z0, sz0) + get(inp2, z1, sz1)))
-      + w2   *( bound::get(inp0, z1+x0, sz1*sx0) - bound::get(inp0, z1+x1, sz1*sx1)
-              + bound::get(inp0, z0+x1, sz0*sx1) - bound::get(inp0, z0+x0, sz0*sx0)
-              + bound::get(inp1, z1+y0, sz1*sy0) - bound::get(inp1, z1+y1, sz1*sy1)
-              + bound::get(inp1, z0+y1, sz0*sy1) - bound::get(inp1, z0+y0, sz0*sy0) )
+       (wz100*(get(inp2, x0, sx0_2) + get(inp2, x1, sx1_2))
+      + wz010*(get(inp2, y0, sy0_2) + get(inp2, y1, sy1_2))
+      + wz001*(get(inp2, z0, sz0_2) + get(inp2, z1, sz1_2)))
+      + w2   *( bound::get(inp0, z1+x0, sz1_0*sx0_0) - bound::get(inp0, z1+x1, sz1_0*sx1_0)
+              + bound::get(inp0, z0+x1, sz0_0*sx1_0) - bound::get(inp0, z0+x0, sz0_0*sx0_0)
+              + bound::get(inp1, z1+y0, sz1_1*sy0_1) - bound::get(inp1, z1+y1, sz1_1*sy1_1)
+              + bound::get(inp1, z0+y1, sz0_1*sy1_1) - bound::get(inp1, z0+y0, sz0_1*sy0_1) )
       + absolute*c/vx2 
       );
   }
 
-  matvec(hes0, inp0, out0);
+  finish(x, y, z, out0, inp0, hes0);
 }
 
 
@@ -1017,18 +1137,18 @@ void RegulariserGridImpl<scalar_t,offset_t,reduce_t>::vel2mom3d_bending(
 
     *out0 = static_cast<scalar_t>(
         ( absolute*c
-        + (w100*(get(inp0, x0,    sx0)     + get(inp0, x1,    sx1))
-        +  w010*(get(inp0, y0,    sy0)     + get(inp0, y1,    sy1))
-        +  w001*(get(inp0, z0,    sz0)     + get(inp0, z1,    sz1)))
-        + (w200*(get(inp0, x00,   sx00)    + get(inp0, x11,   sx11))
-        +  w020*(get(inp0, y00,   sy00)    + get(inp0, y11,   sy11))
-        +  w002*(get(inp0, z00,   sz00)    + get(inp0, z11,   sz11)))
-        + (w110*(get(inp0, x0+y0, sx0*sy0) + get(inp0, x1+y0, sx1*sy0) +
-                 get(inp0, x0+y1, sx0*sy1) + get(inp0, x1+y1, sx1*sy1))
-        +  w101*(get(inp0, x0+z0, sx0*sz0) + get(inp0, x1+z0, sx1*sz0) +
-                 get(inp0, x0+z1, sx0*sz1) + get(inp0, x1+z1, sx1*sz1))
-        +  w011*(get(inp0, y0+z0, sy0*sz0) + get(inp0, y1+z0, sy1*sz0) +
-                 get(inp0, y0+z1, sy0*sz1) + get(inp0, y1+z1, sy1*sz1))) ) / vx0
+        + (w100*(get(inp0, x0,    sx0_0)     + get(inp0, x1,    sx1_0))
+        +  w010*(get(inp0, y0,    sy0_0)     + get(inp0, y1,    sy1_0))
+        +  w001*(get(inp0, z0,    sz0_0)     + get(inp0, z1,    sz1_0)))
+        + (w200*(get(inp0, x00,   sx00_0)    + get(inp0, x11,   sx11_0))
+        +  w020*(get(inp0, y00,   sy00_0)    + get(inp0, y11,   sy11_0))
+        +  w002*(get(inp0, z00,   sz00_0)    + get(inp0, z11,   sz11_0)))
+        + (w110*(get(inp0, x0+y0, sx0_0*sy0_0) + get(inp0, x1+y0, sx1_0*sy0_0) +
+                 get(inp0, x0+y1, sx0_0*sy1_0) + get(inp0, x1+y1, sx1_0*sy1_0))
+        +  w101*(get(inp0, x0+z0, sx0_0*sz0_0) + get(inp0, x1+z0, sx1_0*sz0_0) +
+                 get(inp0, x0+z1, sx0_0*sz1_0) + get(inp0, x1+z1, sx1_0*sz1_0))
+        +  w011*(get(inp0, y0+z0, sy0_0*sz0_0) + get(inp0, y1+z0, sy1_0*sz0_0) +
+                 get(inp0, y0+z1, sy0_0*sz1_0) + get(inp0, y1+z1, sy1_0*sz1_0))) ) / vx0
     );
   }
 
@@ -1041,18 +1161,18 @@ void RegulariserGridImpl<scalar_t,offset_t,reduce_t>::vel2mom3d_bending(
 
     *out1 = static_cast<scalar_t>(
         ( absolute*c
-        + (w100*(get(inp1, x0,    sx0)     + get(inp1, x1,    sx1))
-        +  w010*(get(inp1, y0,    sy0)     + get(inp1, y1,    sy1))
-        +  w001*(get(inp1, z0,    sz0)     + get(inp1, z1,    sz1)))
-        + (w200*(get(inp1, x00,   sx00)    + get(inp1, x11,   sx11))
-        +  w020*(get(inp1, y00,   sy00)    + get(inp1, y11,   sy11))
-        +  w002*(get(inp1, z00,   sz00)    + get(inp1, z11,   sz11)))
-        + (w110*(get(inp1, x0+y0, sx0*sy0) + get(inp1, x1+y0, sx1*sy0) +
-                 get(inp1, x0+y1, sx0*sy1) + get(inp1, x1+y1, sx1*sy1))
-        +  w101*(get(inp1, x0+z0, sx0*sz0) + get(inp1, x1+z0, sx1*sz0) +
-                 get(inp1, x0+z1, sx0*sz1) + get(inp1, x1+z1, sx1*sz1))
-        +  w011*(get(inp1, y0+z0, sy0*sz0) + get(inp1, y1+z0, sy1*sz0) +
-                 get(inp1, y0+z1, sy0*sz1) + get(inp1, y1+z1, sy1*sz1))) ) / vx1
+        + (w100*(get(inp1, x0,    sx0_1)     + get(inp1, x1,    sx1_1))
+        +  w010*(get(inp1, y0,    sy0_1)     + get(inp1, y1,    sy1_1))
+        +  w001*(get(inp1, z0,    sz0_1)     + get(inp1, z1,    sz1_1)))
+        + (w200*(get(inp1, x00,   sx00_1)    + get(inp1, x11,   sx11_1))
+        +  w020*(get(inp1, y00,   sy00_1)    + get(inp1, y11,   sy11_1))
+        +  w002*(get(inp1, z00,   sz00_1)    + get(inp1, z11,   sz11_1)))
+        + (w110*(get(inp1, x0+y0, sx0_1*sy0_1) + get(inp1, x1+y0, sx1_1*sy0_1) +
+                 get(inp1, x0+y1, sx0_1*sy1_1) + get(inp1, x1+y1, sx1_1*sy1_1))
+        +  w101*(get(inp1, x0+z0, sx0_1*sz0_1) + get(inp1, x1+z0, sx1_1*sz0_1) +
+                 get(inp1, x0+z1, sx0_1*sz1_1) + get(inp1, x1+z1, sx1_1*sz1_1))
+        +  w011*(get(inp1, y0+z0, sy0_1*sz0_1) + get(inp1, y1+z0, sy1_1*sz0_1) +
+                 get(inp1, y0+z1, sy0_1*sz1_1) + get(inp1, y1+z1, sy1_1*sz1_1))) ) / vx1
     );
   }
 
@@ -1065,22 +1185,22 @@ void RegulariserGridImpl<scalar_t,offset_t,reduce_t>::vel2mom3d_bending(
 
     *out2 = static_cast<scalar_t>(
         ( absolute*c
-        + (w100*(get(inp2, x0,    sx0)     + get(inp2, x1,    sx1))
-        +  w010*(get(inp2, y0,    sy0)     + get(inp2, y1,    sy1))
-        +  w001*(get(inp2, z0,    sz0)     + get(inp2, z1,    sz1)))
-        + (w200*(get(inp2, x00,   sx00)    + get(inp2, x11,   sx11))
-        +  w020*(get(inp2, y00,   sy00)    + get(inp2, y11,   sy11))
-        +  w002*(get(inp2, z00,   sz00)    + get(inp2, z11,   sz11)))
-        + (w110*(get(inp2, x0+y0, sx0*sy0) + get(inp2, x1+y0, sx1*sy0) +
-                 get(inp2, x0+y1, sx0*sy1) + get(inp2, x1+y1, sx1*sy1))
-        +  w101*(get(inp2, x0+z0, sx0*sz0) + get(inp2, x1+z0, sx1*sz0) +
-                 get(inp2, x0+z1, sx0*sz1) + get(inp2, x1+z1, sx1*sz1))
-        +  w011*(get(inp2, y0+z0, sy0*sz0) + get(inp2, y1+z0, sy1*sz0) +
-                 get(inp2, y0+z1, sy0*sz1) + get(inp2, y1+z1, sy1*sz1))) ) / vx2 
+        + (w100*(get(inp2, x0,    sx0_2)     + get(inp2, x1,    sx1_2))
+        +  w010*(get(inp2, y0,    sy0_2)     + get(inp2, y1,    sy1_2))
+        +  w001*(get(inp2, z0,    sz0_2)     + get(inp2, z1,    sz1_2)))
+        + (w200*(get(inp2, x00,   sx00_2)    + get(inp2, x11,   sx11_2))
+        +  w020*(get(inp2, y00,   sy00_2)    + get(inp2, y11,   sy11_2))
+        +  w002*(get(inp2, z00,   sz00_2)    + get(inp2, z11,   sz11_2)))
+        + (w110*(get(inp2, x0+y0, sx0_2*sy0_2) + get(inp2, x1+y0, sx1_2*sy0_2) +
+                 get(inp2, x0+y1, sx0_2*sy1_2) + get(inp2, x1+y1, sx1_2*sy1_2))
+        +  w101*(get(inp2, x0+z0, sx0_2*sz0_2) + get(inp2, x1+z0, sx1_2*sz0_2) +
+                 get(inp2, x0+z1, sx0_2*sz1_2) + get(inp2, x1+z1, sx1_2*sz1_2))
+        +  w011*(get(inp2, y0+z0, sy0_2*sz0_2) + get(inp2, y1+z0, sy1_2*sz0_2) +
+                 get(inp2, y0+z1, sy0_2*sz1_2) + get(inp2, y1+z1, sy1_2*sz1_2))) ) / vx2 
       );
   }
 
-  matvec(hes0, inp0, out0);
+  finish(x, y, z, out0, inp0, hes0);
 }
 
 
@@ -1103,9 +1223,9 @@ void RegulariserGridImpl<scalar_t,offset_t,reduce_t>::vel2mom3d_membrane(
 
     *out0 = static_cast<scalar_t>(
         ( absolute*c
-        +(w100*(get(inp0, x0, sx0) + get(inp0, x1, sx1))
-        + w010*(get(inp0, y0, sy0) + get(inp0, y1, sy1))
-        + w001*(get(inp0, z0, sz0) + get(inp0, z1, sz1))) ) / vx0
+        +(w100*(get(inp0, x0, sx0_0) + get(inp0, x1, sx1_0))
+        + w010*(get(inp0, y0, sy0_0) + get(inp0, y1, sy1_0))
+        + w001*(get(inp0, z0, sz0_0) + get(inp0, z1, sz1_0))) ) / vx0
     );
   }
 
@@ -1118,9 +1238,9 @@ void RegulariserGridImpl<scalar_t,offset_t,reduce_t>::vel2mom3d_membrane(
 
     *out1 = static_cast<scalar_t>(
         ( absolute*c
-        +(w100*(get(inp1, x0, sx0) + get(inp1, x1, sx1))
-        + w010*(get(inp1, y0, sy0) + get(inp1, y1, sy1))
-        + w001*(get(inp1, z0, sz0) + get(inp1, z1, sz1))) ) / vx1
+        +(w100*(get(inp1, x0, sx0_1) + get(inp1, x1, sx1_1))
+        + w010*(get(inp1, y0, sy0_1) + get(inp1, y1, sy1_1))
+        + w001*(get(inp1, z0, sz0_1) + get(inp1, z1, sz1_1))) ) / vx1
     );
   }
 
@@ -1133,13 +1253,13 @@ void RegulariserGridImpl<scalar_t,offset_t,reduce_t>::vel2mom3d_membrane(
 
     *out2 = static_cast<scalar_t>(
         ( absolute*c
-        +(w100*(get(inp2, x0, sx0) + get(inp2, x1, sx1))
-        + w010*(get(inp2, y0, sy0) + get(inp2, y1, sy1))
-        + w001*(get(inp2, z0, sz0) + get(inp2, z1, sz1))) ) / vx2 
+        +(w100*(get(inp2, x0, sx0_2) + get(inp2, x1, sx1_2))
+        + w010*(get(inp2, y0, sy0_2) + get(inp2, y1, sy1_2))
+        + w001*(get(inp2, z0, sz0_2) + get(inp2, z1, sz1_2))) ) / vx2 
       );
   }
 
-  matvec(hes0, inp0, out0);
+  finish(x, y, z, out0, inp0, hes0);
 }
 
 
@@ -1162,7 +1282,7 @@ void RegulariserGridImpl<scalar_t,offset_t,reduce_t>::vel2mom3d_absolute(
     *out2 = static_cast<scalar_t>(  absolute * c / vx2 );
   }
 
-  matvec(hes0, inp0, out0);
+  finish(x, y, z, out0, inp0, hes0);
 }
 
 
@@ -1181,12 +1301,12 @@ void RegulariserGridImpl<scalar_t,offset_t,reduce_t>::vel2mom3d_rls_membrane(
 
   // In `grid` mode, the weight map is single channel
   scalar_t wcenter = *wgt;
-  reduce_t w1m00 = w100 * (wcenter + bound::get(wgt, wx0, sx0));
-  reduce_t w1p00 = w100 * (wcenter + bound::get(wgt, wx1, sx1));
-  reduce_t w01m0 = w010 * (wcenter + bound::get(wgt, wy0, sy0));
-  reduce_t w01p0 = w010 * (wcenter + bound::get(wgt, wy1, sy1));
-  reduce_t w001m = w001 * (wcenter + bound::get(wgt, wz0, sz0));
-  reduce_t w001p = w001 * (wcenter + bound::get(wgt, wz1, sz1));
+  reduce_t w1m00 = w100 * (wcenter + wgt[wx0]);
+  reduce_t w1p00 = w100 * (wcenter + wgt[wx1]);
+  reduce_t w01m0 = w010 * (wcenter + wgt[wy0]);
+  reduce_t w01p0 = w010 * (wcenter + wgt[wy1]);
+  reduce_t w001m = w001 * (wcenter + wgt[wz0]);
+  reduce_t w001p = w001 * (wcenter + wgt[wz1]);
 
   {
     scalar_t c = *inp0;  // no need to use `get` -> we know we are in the FOV
@@ -1198,12 +1318,12 @@ void RegulariserGridImpl<scalar_t,offset_t,reduce_t>::vel2mom3d_rls_membrane(
 
     *out0 = static_cast<scalar_t>(
       ( absolute * wcenter * c
-      +(w1m00 * get(inp0, x0, sx0)
-      + w1p00 * get(inp0, x1, sx1)
-      + w01m0 * get(inp0, y0, sy0)
-      + w01p0 * get(inp0, y1, sy1)
-      + w001m * get(inp0, z0, sz0)
-      + w001p * get(inp0, z1, sz1)) * 0.5 ) / vx0
+      +(w1m00 * get(inp0, x0, sx0_0)
+      + w1p00 * get(inp0, x1, sx1_0)
+      + w01m0 * get(inp0, y0, sy0_0)
+      + w01p0 * get(inp0, y1, sy1_0)
+      + w001m * get(inp0, z0, sz0_0)
+      + w001p * get(inp0, z1, sz1_0)) * 0.5 ) / vx0
     );
   }
 
@@ -1216,12 +1336,12 @@ void RegulariserGridImpl<scalar_t,offset_t,reduce_t>::vel2mom3d_rls_membrane(
 
     *out1 = static_cast<scalar_t>(
       ( absolute * wcenter * c
-      +(w1m00 * get(inp1, x0, sx0)
-      + w1p00 * get(inp1, x1, sx1)
-      + w01m0 * get(inp1, y0, sy0)
-      + w01p0 * get(inp1, y1, sy1)
-      + w001m * get(inp1, z0, sz0)
-      + w001p * get(inp1, z1, sz1)) * 0.5 ) / vx1
+      +(w1m00 * get(inp1, x0, sx0_1)
+      + w1p00 * get(inp1, x1, sx1_1)
+      + w01m0 * get(inp1, y0, sy0_1)
+      + w01p0 * get(inp1, y1, sy1_1)
+      + w001m * get(inp1, z0, sz0_1)
+      + w001p * get(inp1, z1, sz1_1)) * 0.5 ) / vx1
     );
   }
 
@@ -1234,16 +1354,16 @@ void RegulariserGridImpl<scalar_t,offset_t,reduce_t>::vel2mom3d_rls_membrane(
 
     *out2 = static_cast<scalar_t>(
       ( absolute * wcenter * c
-      +(w1m00 * get(inp2, x0, sx0)
-      + w1p00 * get(inp2, x1, sx1)
-      + w01m0 * get(inp2, y0, sy0)
-      + w01p0 * get(inp2, y1, sy1)
-      + w001m * get(inp2, z0, sz0)
-      + w001p * get(inp2, z1, sz1)) * 0.5 ) / vx2
+      +(w1m00 * get(inp2, x0, sx0_2)
+      + w1p00 * get(inp2, x1, sx1_2)
+      + w01m0 * get(inp2, y0, sy0_2)
+      + w01p0 * get(inp2, y1, sy1_2)
+      + w001m * get(inp2, z0, sz0_2)
+      + w001p * get(inp2, z1, sz1_2)) * 0.5 ) / vx2
     );
   }
 
-  matvec(hes0, inp0, out0);
+  finish(x, y, z, out0, inp0, hes0);
 }
 
 
@@ -1267,7 +1387,7 @@ void RegulariserGridImpl<scalar_t,offset_t,reduce_t>::vel2mom3d_rls_absolute(
     *out2 = static_cast<scalar_t>( c * w  / vx2 );
   }
 
-  matvec(hes0, inp0, out0);
+  finish(x, y, z, out0, inp0, hes0);
 }
 
 
@@ -1338,15 +1458,15 @@ void RegulariserGridImpl<scalar_t,offset_t,reduce_t>::vel2mom2d_all(
     };
 
     *out0 = static_cast<scalar_t>(
-        (wx100*(get(inp0, x0, sx0) + get(inp0, x1, sx1))
-      +  wx010*(get(inp0, y0, sy0) + get(inp0, y1, sy1)))
-      + (w2   *( bound::get(inp1, x1+y0, sx1*sy0) - bound::get(inp1, x1+y1, sx1*sy1)
-               + bound::get(inp1, x0+y1, sx0*sy1) - bound::get(inp1, x0+y0, sx0*sy0) ))
+        (wx100*(get(inp0, x0, sx0_0) + get(inp0, x1, sx1_0))
+      +  wx010*(get(inp0, y0, sy0_0) + get(inp0, y1, sy1_0)))
+      + (w2   *( bound::get(inp1, x1+y0, sx1_1*sy0_1) - bound::get(inp1, x1+y1, sx1_1*sy1_1)
+               + bound::get(inp1, x0+y1, sx0_1*sy1_1) - bound::get(inp1, x0+y0, sx0_1*sy0_1) ))
       + ( absolute*c
-        + (w110*(get(inp0, x0+y0, sx0*sy0) + get(inp0, x1+y0, sx1*sy0) +
-                 get(inp0, x0+y1, sx0*sy1) + get(inp0, x1+y1, sx1*sy1)))
-        + (w200*(get(inp0, x00, sx00) + get(inp0, x11, sx11))
-        +  w020*(get(inp0, y00, sy00) + get(inp0, y11, sy11))) ) / vx0
+        + (w110*(get(inp0, x0+y0, sx0_0*sy0_0) + get(inp0, x1+y0, sx1_0*sy0_0) +
+                 get(inp0, x0+y1, sx0_0*sy1_0) + get(inp0, x1+y1, sx1_0*sy1_0)))
+        + (w200*(get(inp0, x00, sx00_0) + get(inp0, x11, sx11_0))
+        +  w020*(get(inp0, y00, sy00_0) + get(inp0, y11, sy11_0))) ) / vx0
     );
   }
 
@@ -1358,19 +1478,19 @@ void RegulariserGridImpl<scalar_t,offset_t,reduce_t>::vel2mom2d_all(
     };
 
     *out1 = static_cast<scalar_t>(
-        (wy100*(get(inp1, x0, sx0) + get(inp1, x1, sx1))
-      +  wy010*(get(inp1, y0, sy0) + get(inp1, y1, sy1)))
-      + (w2   *( bound::get(inp0, y1+x0, sy1*sx0) - bound::get(inp0, y1+x1, sy1*sx1)
-               + bound::get(inp0, y0+x1, sy0*sx1) - bound::get(inp0, y0+x0, sy0*sx0) ))
+        (wy100*(get(inp1, x0, sx0_1) + get(inp1, x1, sx1_1))
+      +  wy010*(get(inp1, y0, sy0_1) + get(inp1, y1, sy1_1)))
+      + (w2   *( bound::get(inp0, y1+x0, sy1_0*sx0_0) - bound::get(inp0, y1+x1, sy1_0*sx1_0)
+               + bound::get(inp0, y0+x1, sy0_0*sx1_0) - bound::get(inp0, y0+x0, sy0_0*sx0_0) ))
       + ( absolute*c
-        + (w110*(get(inp1, x0+y0, sx0*sy0) + get(inp1, x1+y0, sx1*sy0) +
-                 get(inp1, x0+y1, sx0*sy1) + get(inp1, x1+y1, sx1*sy1)))
-        + (w200*(get(inp1, x00,   sx00)    + get(inp1, x11,   sx11))
-        +  w020*(get(inp1, y00,   sy00)    + get(inp1, y11,   sy11))) ) / vx1
+        + (w110*(get(inp1, x0+y0, sx0_1*sy0_1) + get(inp1, x1+y0, sx1_1*sy0_1) +
+                 get(inp1, x0+y1, sx0_1*sy1_1) + get(inp1, x1+y1, sx1_1*sy1_1)))
+        + (w200*(get(inp1, x00,   sx00_1)    + get(inp1, x11,   sx11_1))
+        +  w020*(get(inp1, y00,   sy00_1)    + get(inp1, y11,   sy11_1))) ) / vx1
     );
   }
 
-  matvec(hes0, inp0, out0);
+  finish(x, y, z, out0, inp0, hes0);
 }
 
  
@@ -1392,10 +1512,10 @@ void RegulariserGridImpl<scalar_t,offset_t,reduce_t>::vel2mom2d_lame(
     };
 
     *out0 = static_cast<scalar_t>(
-       (wx100*(get(inp0, x0, sx0) + get(inp0, x1, sx1))
-      + wx010*(get(inp0, y0, sy0) + get(inp0, y1, sy1)))
-      + w2   *( bound::get(inp1, x1+y0, sx1*sy0) - bound::get(inp1, x1+y1, sx1*sy1)
-              + bound::get(inp1, x0+y1, sx0*sy1) - bound::get(inp1, x0+y0, sx0*sy0) )
+       (wx100*(get(inp0, x0, sx0_0) + get(inp0, x1, sx1_0))
+      + wx010*(get(inp0, y0, sy0_0) + get(inp0, y1, sy1_0)))
+      + w2   *( bound::get(inp1, x1+y0, sx1_1*sy0_1) - bound::get(inp1, x1+y1, sx1_1*sy1_1)
+              + bound::get(inp1, x0+y1, sx0_1*sy1_1) - bound::get(inp1, x0+y0, sx0_1*sy0_1) )
       + absolute*c/vx0
     );
   }
@@ -1408,15 +1528,15 @@ void RegulariserGridImpl<scalar_t,offset_t,reduce_t>::vel2mom2d_lame(
     };
 
     *out1 = static_cast<scalar_t>(
-       (wy100*(get(inp1, x0, sx0) + get(inp1, x1, sx1))
-      + wy010*(get(inp1, y0, sy0) + get(inp1, y1, sy1)))
-      + w2   *( bound::get(inp0, y1+x0, sy1*sx0) - bound::get(inp0, y1+x1, sy1*sx1)
-              + bound::get(inp0, y0+x1, sy0*sx1) - bound::get(inp0, y0+x0, sy0*sx0) )
+       (wy100*(get(inp1, x0, sx0_1) + get(inp1, x1, sx1_1))
+      + wy010*(get(inp1, y0, sy0_1) + get(inp1, y1, sy1_1)))
+      + w2   *( bound::get(inp0, y1+x0, sy1_0*sx0_0) - bound::get(inp0, y1+x1, sy1_0*sx1_0)
+              + bound::get(inp0, y0+x1, sy0_0*sx1_0) - bound::get(inp0, y0+x0, sy0_0*sx0_0) )
       + absolute*c/vx1
     );
   }
 
-  matvec(hes0, inp0, out0);
+  finish(x, y, z, out0, inp0, hes0);
 }
 
 
@@ -1443,12 +1563,12 @@ void RegulariserGridImpl<scalar_t,offset_t,reduce_t>::vel2mom2d_bending(
 
     *out0 = static_cast<scalar_t>(
         ( absolute*c
-        + (w100*(get(inp0, x0,    sx0)     + get(inp0, x1,    sx1))
-        +  w010*(get(inp0, y0,    sy0)     + get(inp0, y1,    sy1)))
-        + (w200*(get(inp0, x00,   sx00)    + get(inp0, x11,   sx11))
-        +  w020*(get(inp0, y00,   sy00)    + get(inp0, y11,   sy11)))
-        + (w110*(get(inp0, x0+y0, sx0*sy0) + get(inp0, x1+y0, sx1*sy0) +
-                 get(inp0, x0+y1, sx0*sy1) + get(inp0, x1+y1, sx1*sy1))) ) / vx0
+        + (w100*(get(inp0, x0,    sx0_0)     + get(inp0, x1,    sx1_0))
+        +  w010*(get(inp0, y0,    sy0_0)     + get(inp0, y1,    sy1_0)))
+        + (w200*(get(inp0, x00,   sx00_0)    + get(inp0, x11,   sx11_0))
+        +  w020*(get(inp0, y00,   sy00_0)    + get(inp0, y11,   sy11_0)))
+        + (w110*(get(inp0, x0+y0, sx0_0*sy0_0) + get(inp0, x1+y0, sx1_0*sy0_0) +
+                 get(inp0, x0+y1, sx0_0*sy1_0) + get(inp0, x1+y1, sx1_0*sy1_0))) ) / vx0
     );
   }
 
@@ -1461,16 +1581,16 @@ void RegulariserGridImpl<scalar_t,offset_t,reduce_t>::vel2mom2d_bending(
 
     *out1 = static_cast<scalar_t>(
         ( absolute*c
-        + (w100*(get(inp1, x0,    sx0)     + get(inp1, x1,    sx1))
-        +  w010*(get(inp1, y0,    sy0)     + get(inp1, y1,    sy1)))
-        + (w200*(get(inp1, x00,   sx00)    + get(inp1, x11,   sx11))
-        +  w020*(get(inp1, y00,   sy00)    + get(inp1, y11,   sy11)))
-        + (w110*(get(inp1, x0+y0, sx0*sy0) + get(inp1, x1+y0, sx1*sy0) +
-                 get(inp1, x0+y1, sx0*sy1) + get(inp1, x1+y1, sx1*sy1))) ) / vx1
+        + (w100*(get(inp1, x0,    sx0_1)     + get(inp1, x1,    sx1_1))
+        +  w010*(get(inp1, y0,    sy0_1)     + get(inp1, y1,    sy1_1)))
+        + (w200*(get(inp1, x00,   sx00_1)    + get(inp1, x11,   sx11_1))
+        +  w020*(get(inp1, y00,   sy00_1)    + get(inp1, y11,   sy11_1)))
+        + (w110*(get(inp1, x0+y0, sx0_1*sy0_1) + get(inp1, x1+y0, sx1_1*sy0_1) +
+                 get(inp1, x0+y1, sx0_1*sy1_1) + get(inp1, x1+y1, sx1_1*sy1_1))) ) / vx1
     );
   }
 
-  matvec(hes0, inp0, out0);
+  finish(x, y, z, out0, inp0, hes0);
 }
 
 
@@ -1493,8 +1613,8 @@ void RegulariserGridImpl<scalar_t,offset_t,reduce_t>::vel2mom2d_membrane(
 
     *out0 = static_cast<scalar_t>(
         ( absolute*c
-        +(w100*(get(inp0, x0, sx0) + get(inp0, x1, sx1))
-        + w010*(get(inp0, y0, sy0) + get(inp0, y1, sy1))) ) / vx0
+        +(w100*(get(inp0, x0, sx0_0) + get(inp0, x1, sx1_0))
+        + w010*(get(inp0, y0, sy0_0) + get(inp0, y1, sy1_0))) ) / vx0
     );
   }
 
@@ -1507,12 +1627,12 @@ void RegulariserGridImpl<scalar_t,offset_t,reduce_t>::vel2mom2d_membrane(
 
     *out1 = static_cast<scalar_t>(
         ( absolute*c
-        +(w100*(get(inp1, x0, sx0) + get(inp1, x1, sx1))
-        + w010*(get(inp1, y0, sy0) + get(inp1, y1, sy1))) ) / vx1
+        +(w100*(get(inp1, x0, sx0_1) + get(inp1, x1, sx1_1))
+        + w010*(get(inp1, y0, sy0_1) + get(inp1, y1, sy1_1))) ) / vx1
     );
   }
 
-  matvec(hes0, inp0, out0);
+  finish(x, y, z, out0, inp0, hes0);
 }
 
 
@@ -1531,7 +1651,7 @@ void RegulariserGridImpl<scalar_t,offset_t,reduce_t>::vel2mom2d_absolute(
     *out1 = static_cast<scalar_t>(  absolute * c / vx1 );
   }
 
-  matvec(hes0, inp0, out0);
+  finish(x, y, z, out0, inp0, hes0);
 }
 
 
@@ -1550,10 +1670,10 @@ void RegulariserGridImpl<scalar_t,offset_t,reduce_t>::vel2mom2d_rls_membrane(
 
   // In `grid` mode, the weight map is single channel
   scalar_t wcenter = *wgt;
-  reduce_t w1m00 = w100 * (wcenter + bound::get(wgt, wx0, sx0));
-  reduce_t w1p00 = w100 * (wcenter + bound::get(wgt, wx1, sx1));
-  reduce_t w01m0 = w010 * (wcenter + bound::get(wgt, wy0, sy0));
-  reduce_t w01p0 = w010 * (wcenter + bound::get(wgt, wy1, sy1));
+  reduce_t w1m00 = w100 * (wcenter + wgt[wx0]);
+  reduce_t w1p00 = w100 * (wcenter + wgt[wx1]);
+  reduce_t w01m0 = w010 * (wcenter + wgt[wy0]);
+  reduce_t w01p0 = w010 * (wcenter + wgt[wy1]);
 
   {
     scalar_t c = *inp0;  // no need to use `get` -> we know we are in the FOV
@@ -1565,10 +1685,10 @@ void RegulariserGridImpl<scalar_t,offset_t,reduce_t>::vel2mom2d_rls_membrane(
 
     *out0 = static_cast<scalar_t>(
       ( absolute * wcenter * c
-      +(w1m00 * get(inp0, x0, sx0)
-      + w1p00 * get(inp0, x1, sx1)
-      + w01m0 * get(inp0, y0, sy0)
-      + w01p0 * get(inp0, y1, sy1)) * 0.5 ) / vx0
+      +(w1m00 * get(inp0, x0, sx0_0)
+      + w1p00 * get(inp0, x1, sx1_0)
+      + w01m0 * get(inp0, y0, sy0_0)
+      + w01p0 * get(inp0, y1, sy1_0)) * 0.5 ) / vx0
     );
   }
 
@@ -1581,14 +1701,14 @@ void RegulariserGridImpl<scalar_t,offset_t,reduce_t>::vel2mom2d_rls_membrane(
 
     *out1 = static_cast<scalar_t>(
       ( absolute * wcenter * c
-      +(w1m00 * get(inp1, x0, sx0)
-      + w1p00 * get(inp1, x1, sx1)
-      + w01m0 * get(inp1, y0, sy0)
-      + w01p0 * get(inp1, y1, sy1)) * 0.5 ) / vx1
+      +(w1m00 * get(inp1, x0, sx0_1)
+      + w1p00 * get(inp1, x1, sx1_1)
+      + w01m0 * get(inp1, y0, sy0_1)
+      + w01p0 * get(inp1, y1, sy1_1)) * 0.5 ) / vx1
     );
   }
 
-  matvec(hes0, inp0, out0);
+  finish(x, y, z, out0, inp0, hes0);
 }
 
 
@@ -1608,7 +1728,7 @@ void RegulariserGridImpl<scalar_t,offset_t,reduce_t>::vel2mom2d_rls_absolute(
     *out1 = static_cast<scalar_t>( c * w  / vx1 );
   }
 
-  matvec(hes0, inp0, out0);
+  finish(x, y, z, out0, inp0, hes0);
 }
 
 
@@ -1662,13 +1782,13 @@ void RegulariserGridImpl<scalar_t,offset_t,reduce_t>::vel2mom1d_all(
     };
 
     *out0 = static_cast<scalar_t>(
-        (wx100*(get(inp0, x0, sx0) + get(inp0, x1, sx1)))
+        (wx100*(get(inp0, x0, sx0_0) + get(inp0, x1, sx1_0)))
       + ( absolute*c
-        + (w200*(get(inp0, x00, sx00) + get(inp0, x11, sx11))) ) / vx0
+        + (w200*(get(inp0, x00, sx00_0) + get(inp0, x11, sx11_0))) ) / vx0
     );
   }
 
-  matvec(hes0, inp0, out0);
+  finish(x, y, z, out0, inp0, hes0);
 }
 
  
@@ -1690,12 +1810,12 @@ void RegulariserGridImpl<scalar_t,offset_t,reduce_t>::vel2mom1d_lame(
     };
 
     *out0 = static_cast<scalar_t>(
-       (wx100*(get(inp0, x0, sx0) + get(inp0, x1, sx1)))
+       (wx100*(get(inp0, x0, sx0_0) + get(inp0, x1, sx1_0)))
       + absolute*c/vx0
     );
   }
 
-  matvec(hes0, inp0, out0);
+  finish(x, y, z, out0, inp0, hes0);
 }
 
 
@@ -1722,12 +1842,12 @@ void RegulariserGridImpl<scalar_t,offset_t,reduce_t>::vel2mom1d_bending(
 
     *out0 = static_cast<scalar_t>(
         ( absolute*c
-        + (w100*(get(inp0, x0,    sx0)     + get(inp0, x1,    sx1)))
-        + (w200*(get(inp0, x00,   sx00)    + get(inp0, x11,   sx11))) ) / vx0
+        + (w100*(get(inp0, x0,    sx0_0)     + get(inp0, x1,    sx1_0)))
+        + (w200*(get(inp0, x00,   sx00_0)    + get(inp0, x11,   sx11_0))) ) / vx0
     );
   }
 
-  matvec(hes0, inp0, out0);
+  finish(x, y, z, out0, inp0, hes0);
 }
 
 
@@ -1750,11 +1870,11 @@ void RegulariserGridImpl<scalar_t,offset_t,reduce_t>::vel2mom1d_membrane(
 
     *out0 = static_cast<scalar_t>(
         ( absolute*c
-        +(w100*(get(inp0, x0, sx0) + get(inp0, x1, sx1))) ) / vx0
+        +(w100*(get(inp0, x0, sx0_0) + get(inp0, x1, sx1_0))) ) / vx0
     );
   }
 
-  matvec(hes0, inp0, out0);
+  finish(x, y, z, out0, inp0, hes0);
 }
 
 
@@ -1769,7 +1889,7 @@ void RegulariserGridImpl<scalar_t,offset_t,reduce_t>::vel2mom1d_absolute(
     *out0 = static_cast<scalar_t>(  absolute * c / vx0 );
   }
 
-  matvec(hes0, inp0, out0);
+  finish(x, y, z, out0, inp0, hes0);
 }
 
 
@@ -1788,8 +1908,8 @@ void RegulariserGridImpl<scalar_t,offset_t,reduce_t>::vel2mom1d_rls_membrane(
 
   // In `grid` mode, the weight map is single channel
   scalar_t wcenter = *wgt;
-  reduce_t w1m00 = w100 * (wcenter + bound::get(wgt, wx0, sx0));
-  reduce_t w1p00 = w100 * (wcenter + bound::get(wgt, wx1, sx1));
+  reduce_t w1m00 = w100 * (wcenter + wgt[wx0]);
+  reduce_t w1p00 = w100 * (wcenter + wgt[wx1]);
 
   {
     scalar_t c = *inp0;  // no need to use `get` -> we know we are in the FOV
@@ -1801,12 +1921,12 @@ void RegulariserGridImpl<scalar_t,offset_t,reduce_t>::vel2mom1d_rls_membrane(
 
     *out0 = static_cast<scalar_t>(
       ( absolute * wcenter * c
-      +(w1m00 * get(inp0, x0, sx0)
-      + w1p00 * get(inp0, x1, sx1)) * 0.5 ) / vx0
+      +(w1m00 * get(inp0, x0, sx0_0)
+      + w1p00 * get(inp0, x1, sx1_0)) * 0.5 ) / vx0
     );
   }
 
-  matvec(hes0, inp0, out0);
+  finish(x, y, z, out0, inp0, hes0);
 }
 
 
@@ -1822,7 +1942,7 @@ void RegulariserGridImpl<scalar_t,offset_t,reduce_t>::vel2mom1d_rls_absolute(
     *out0 = static_cast<scalar_t>( c * w / vx0 );
   }
 
-  matvec(hes0, inp0, out0);
+  finish(x, y, z, out0, inp0, hes0);
 }
 
 /* ========================================================================== */
@@ -1842,7 +1962,7 @@ void RegulariserGridImpl<scalar_t,offset_t,reduce_t>::zeros(offset_t x, offset_t
 {
   GET_POINTERS
   *out0 = *out1 = *out2 = static_cast<scalar_t>(0);
-  matvec(hes0, inp0, out0);
+  finish(x, y, z, out0, inp0, hes0);
 }
 
 
@@ -1923,14 +2043,30 @@ NI_HOST Tensor regulariser_grid_impl(
     if (info.canUse32BitIndexMath())
     {
       RegulariserGridImpl<scalar_t, int32_t, double> algo(info);
-      regulariser_kernel<<<GET_BLOCKS(algo.voxcount()), CUDA_NUM_THREADS, 0,
+      // (all voxels, then one job per target plane of the border pass)
+      regulariser_kernel<<<GET_BLOCKS(algo.voxcount(0)), CUDA_NUM_THREADS, 0,
                            at::cuda::getCurrentCUDAStream()>>>(algo);
+      for (int k = 0; k < algo.border_jobs(); ++k)
+      {
+        algo.set_job(k);
+        if (!algo.voxcount(1)) continue;
+        regulariser_kernel<<<GET_BLOCKS(algo.voxcount(1)), CUDA_NUM_THREADS, 0,
+                             at::cuda::getCurrentCUDAStream()>>>(algo);
+      }
     }
     else
     {
       RegulariserGridImpl<scalar_t, int64_t, double> algo(info);
-      regulariser_kernel<<<GET_BLOCKS(algo.voxcount()), CUDA_NUM_THREADS, 0,
+      // (all voxels, then one job per target plane of the border pass)
+      regulariser_kernel<<<GET_BLOCKS(algo.voxcount(0)), CUDA_NUM_THREADS, 0,
                            at::cuda::getCurrentCUDAStream()>>>(algo);
+      for (int k = 0; k < algo.border_jobs(); ++k)
+      {
+        algo.set_job(k);
+        if (!algo.voxcount(1)) continue;
+        regulariser_kernel<<<GET_BLOCKS(algo.voxcount(1)), CUDA_NUM_THREADS, 0,
+                             at::cuda::getCurrentCUDAStream()>>>(algo);
+      }
     }
   });
 
