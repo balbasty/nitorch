@@ -16,8 +16,8 @@ The commands fall into four families. [`info`](info.md) and
 [`extract_patches`](extract_patches.md) change the field of view or split a
 volume into pieces, and update the orientation matrix of every result so that
 it stays aligned with the input in world space. [`pool`](pool.md),
-[`smooth`](smooth.md) and [`inpaint`](inpaint.md) compute new voxel values
-from the old ones. [`metrics`](metrics.md) scores a prediction against a
+[`smooth`](smooth.md), [`inpaint`](inpaint.md) and [`distmap`](distmap.md)
+compute new voxel values from the old ones. [`metrics`](metrics.md) scores a prediction against a
 reference and writes the result to a JSON file.
 
 Unless a page says otherwise, a command that writes a modified copy of a volume
@@ -40,4 +40,5 @@ the input, so that it replaces the file.
 | [`pool`](pool.md)                          | Downsample a volume by reducing each window of voxels to one value (mean, sum, minimum, maximum, ...). |
 | [`smooth`](smooth.md)                      | Blur a volume with a Gaussian, box or triangular filter.                                             |
 | [`inpaint`](inpaint.md)                    | Fill in missing voxels of a volume from the values that surround them.                               |
+| [`distmap`](distmap.md)                    | Compute the distance, or signed distance, from each voxel to the edge of a mask or set of labels.    |
 | [`metrics`](metrics.md)                    | Compare a predicted image with a reference and write overlap and similarity scores to a JSON file.   |
