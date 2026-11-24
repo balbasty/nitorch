@@ -195,3 +195,55 @@ def l1_distance_transform(x, dim=None, vx=1):
     for d, w in enumerate(vx):
         x = _l1dt_1d_(x, d-dim, w)
     return x
+
+
+def euclidean_signed_transform(x, dim=None, vx=1):
+    """Compute the signed Euclidean distance transform of a binary image
+
+    Parameters
+    ----------
+    x : (..., *spatial) tensor
+        Input tensor. Nonzero (or positive) voxels are inside the object.
+    dim : int, default=`x.dim()`
+        Number of spatial dimensions
+    vx : [sequence of] float, default=1
+        Voxel size
+
+    Returns
+    -------
+    d : (..., *spatial) tensor
+        Signed distance map: positive inside the object (distance to the
+        closest voxel outside it) and negative outside the object
+        (minus the distance to the closest voxel inside it).
+    """
+    if x.dtype is not torch.bool:
+        x = x > 0
+    d = euclidean_distance_transform(x, dim, vx)
+    d -= euclidean_distance_transform(~x, dim, vx)
+    return d
+
+
+def l1_signed_transform(x, dim=None, vx=1):
+    """Compute the signed L1 distance transform of a binary image
+
+    Parameters
+    ----------
+    x : (..., *spatial) tensor
+        Input tensor. Nonzero (or positive) voxels are inside the object.
+    dim : int, default=`x.dim()`
+        Number of spatial dimensions
+    vx : [sequence of] float, default=1
+        Voxel size
+
+    Returns
+    -------
+    d : (..., *spatial) tensor
+        Signed distance map: positive inside the object (distance to the
+        closest voxel outside it) and negative outside the object
+        (minus the distance to the closest voxel inside it).
+    """
+    if x.dtype is not torch.bool:
+        x = x > 0
+    d = l1_distance_transform(x, dim, vx)
+    d -= l1_distance_transform(~x, dim, vx)
+    return d

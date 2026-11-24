@@ -45,6 +45,7 @@ usage:
         dot, prod                       Dot product
         ndot                            Normalized dot product
         sqz, squeezed                   Squeezed product (can be weighted)
+        edt                             Distance-map loss between sparse labels (e.g., vessels)
 
 @affine options:
     NAME can take values:
@@ -139,6 +140,14 @@ usage:
         ndot                            Normalized dot product
         sqz, squeezed                   Squeezed product (can be weighted)
             -w, --weight VAL                Weight [1]
+        edt                             Distance-map loss between sparse labels (e.g., vessels)
+                                        Inputs are label maps (binarized at 0.5, or one
+                                        channel per label with -l); their distance maps
+                                        (in mm) are computed internally, unless the input
+                                        is already a distance map (@@fix/@@mov -e). Mean squared
+                                        distance of the static labels to the warped
+                                        structures; use -s for the symmetric version.
+            -r, --robust SIGMA              Robust (Cauchy) scale, in distance units [quadratic]
     FACTOR must be a scalar value [1]
     Common options:
         -s, --symmetric                 Make loss symmetric [False]
@@ -161,6 +170,9 @@ usage:
     -d, --discretize [auto]:[N]      Discretize the image into N [default: 256] bins. [False]
     -l, --label *VAL                Specifies that the file is a label map [False]
                                     If no argument given, labels are [all but zero]
+    -e, --edt                       The file is a (precomputed) distance map, in mm, that is
+                                    zero on the structures (`@loss edt` only) [False]:
+                                    labels are derived from its zeros instead of computing it
     -m, --mask FILE                 Path to a mask of voxels to *include* [all]
         --name NAME                 A name to use with `@nonlin --fov`
     -x, --missing *VAL              Values that should be considered missing [0]
@@ -424,7 +436,7 @@ loss_aliases = {'nmi': 'mi', 'l1': 'mad', 'l2': 'mse', 'tukey': 'tuk',
                 'ncc': 'cc', 'lncc': 'lcc', 'cce': 'cat', 'f1': 'dice',
                 'squeezed': 'sqz', 'prod': 'dot',
                 'gmm': 'gmmi', 'lgmm': 'lgmmi'}
-loss_choices = list(loss_aliases.values()) + ['emmi', 'ndot', 'extra']
+loss_choices = list(loss_aliases.values()) + ['emmi', 'ndot', 'edt', 'extra']
 loss_choices = cli.Positional('name', nargs='?', default='mi',
                               validation=cli.Validations.choice(loss_choices),
                               convert=lambda x: loss_aliases.get(x, x),
@@ -530,6 +542,9 @@ loss.add_suboption('sqz', 'weight', ('-w', '--weight'), nargs='1',
                    default=None,
                    convert=lambda x: 'auto' if x.lower() == 'auto' else float(x),
                    help='Weight of the loss (no automatic weighting)')
+loss.add_suboption('edt', 'sigma', ('-r', '--robust'), nargs='1',
+                   default=None, convert=float,
+                   help='Scale of the robust (Cauchy) penalty [quadratic]')
 loss.add_suboption('mad', joint_option)
 loss.add_suboption('tuk', joint_option)
 loss.add_suboption('dice', 'weight', ('-w', '--weight'), nargs='*', default=False,
@@ -590,6 +605,9 @@ def _convert_discretize(x):
 file.add_option('discretize', ('-d', '--discretize'), nargs='?', convert=_convert_discretize,
                 action=cli.Actions.store_value(256),
                 default=0, help='Discretize the image into N discrete bins')
+file.add_option('edt', ('-e', '--edt'), nargs=0, default=False,
+                action=cli.Actions.store_true,
+                help='The file is a distance map (`@loss edt` only)')
 file.add_option('mask', ('-m', '--mask'), nargs=1, default=None,
                 help='Path to a mask of voxels to include')
 file.add_option('missing', ('-x', '--missing'), nargs='+', convert=float,

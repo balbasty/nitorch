@@ -265,7 +265,7 @@ def header_to_metadata(header, metadata):
         metadata = {key: None for key in metadata}
 
     if 'voxel_size' in metadata:
-        metadata['voxel_size'] = header.get_zooms()[:3]
+        metadata['voxel_size'] = tuple(map(float, header.get_zooms()[:3]))
         if hasattr(header, 'get_xyzt_units'):
             metadata['voxel_size_unit'], _ = header.get_xyzt_units()
         else:
@@ -294,7 +294,7 @@ def header_to_metadata(header, metadata):
 
     if 'time_step' in metadata or 'tr' in metadata:
         zooms = header.get_zooms()
-        time_step = zooms[3] if len(zooms) > 3 else None
+        time_step = float(zooms[3]) if len(zooms) > 3 else None
         time_step = time_step or None
         if isinstance(header, MGHHeader):
             time_step = float(header['tr']) or None

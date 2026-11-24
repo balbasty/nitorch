@@ -1,11 +1,18 @@
 /*
-WARNING
+ADJOINT ("restrict") PATH
 
-The "restrict" functions are not very robust.
-I'd like to reimplement restrict similarly to what I did in "multires",
-i.e., without relying on atomic adds (and looping across output voxels  
-rather than "target" voxels). It should be more stable, but it needs
-some thinking to work with arbitrary scaling factors. 
+The adjoint of the resize pull is computed as a *gather*:
+we loop over output (coarse, "source") voxels and each output voxel is
+written exactly once (no atomic adds). The 1D adjoint operator of each
+spatial dimension is tabulated on the host by running the exact same
+forward formula as the pull (`x = scale*w + shift`, interpolation
+bounds/weights, `bound::index`, `bound::sign`) over every fine
+("target") voxel `w` and filing each contribution under its folded
+coarse index (see `ResizeAllocator::build_adjoint_tables`). Boundary
+images (dct1/dct2/dft/dst/zero...) are therefore exact by construction.
+The N-D operator is the separable (Kronecker) product of the 1D tables.
+Rows are padded to a common length K; the kernel is templated on K
+(1..8, fully unrollable) with a runtime-K fallback.
 */
 #include "common.h"                // write C++/CUDA compatible code
 #include "../defines.h"            // useful macros
@@ -13,8 +20,11 @@ some thinking to work with arbitrary scaling factors.
 #include "bounds_common.h"         // boundary conditions + enum
 #include "interpolation_common.h"  // interpolation weights + enum
 #include "allocator.h"             // base class handling offset sizes
+#include "gather_common.h"         // separable sparse gather (adjoint)
 #include <ATen/ATen.h>             // tensors
 #include <tuple>                   // needed by prepare_tensors
+#include <vector>                  // adjoint tables (host side)
+#include <algorithm>               // std::max
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 // CPU/GPU -specific parameters
@@ -33,12 +43,6 @@ some thinking to work with arbitrary scaling factors.
 #endif
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-// maximum number of channels
-// > not used in mode isotropic nearest/linear
-// We override the (small) default
-#undef  NI_MAX_NUM_CHANNELS
-#define NI_MAX_NUM_CHANNELS 1024
-
 #define VEC_UNFOLD(ONAME, INAME, DEFAULT)             \
   ONAME##0(INAME.size() > 0 ? INAME[0] : DEFAULT),  \
   ONAME##1(INAME.size() > 1 ? INAME[1] :            \
@@ -56,6 +60,70 @@ namespace ni {
 NI_NAMESPACE_DEVICE { // cpu / cuda / ...
 
 namespace { // anonymous namespace > everything inside has internal linkage
+
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+//                    ADJOINT TABLES (HOST SIDE)
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+// Which 1D formula the forward (pull) path uses along a dimension.
+// This mirrors the dispatch in `ResizeImpl::set_resize` / `resize`.
+enum class PullKind { Generic, NearestIso, LinearIso, QuadraticIso };
+
+// Maximum number of taps of the forward 1D kernel (order 7 -> 8 taps)
+constexpr int resize_max_taps = 8;
+
+// Forward taps of fine voxel `w`: unfolded coarse indices `b` and weights
+// `wt`. Each branch replicates *exactly* the arithmetic of the
+// corresponding pull implementation, so that the gather is the
+// transpose of the pull. All intermediate values are computed in the
+// type of the pull (`scalar_t`, e.g. at::Half on CUDA) -- so that the
+// sparsity pattern and weights match the pull exactly, even at knots --
+// and the weights are then stored as `weight_t` (float for half).
+template <typename scalar_t, typename weight_t>
+NI_HOST int pull_taps1d(PullKind kind, InterpolationType itp,
+                        double scale, double shift, int64_t w,
+                        int64_t * b, weight_t * wt)
+{
+  switch (kind) {
+    case PullKind::NearestIso: {      // resize*d_nearest
+      b[0]  = static_cast<int64_t>(std::round(scale * w + shift));
+      wt[0] = static_cast<weight_t>(1);
+      return 1;
+    }
+    case PullKind::LinearIso: {       // resize*d_linear
+      scalar_t x   = scale * w + shift;
+      int64_t  ix0 = static_cast<int64_t>(std::floor(x));
+      scalar_t dx1 = x - ix0;
+      scalar_t dx0 = 1. - dx1;
+      b[0] = ix0;     wt[0] = static_cast<weight_t>(dx0);
+      b[1] = ix0 + 1; wt[1] = static_cast<weight_t>(dx1);
+      return 2;
+    }
+    case PullKind::QuadraticIso: {    // resize3d_quadratic
+      scalar_t x   = scale * w + shift;
+      int64_t  ix1 = static_cast<int64_t>(std::floor(x+0.5));
+      scalar_t dx1 = interpolation::weight(itp, x - ix1);
+      scalar_t dx0 = interpolation::fastweight(itp, x - (ix1 - 1));
+      scalar_t dx2 = interpolation::fastweight(itp, (ix1 + 1) - x);
+      b[0] = ix1 - 1; wt[0] = static_cast<weight_t>(dx0);
+      b[1] = ix1;     wt[1] = static_cast<weight_t>(dx1);
+      b[2] = ix1 + 1; wt[2] = static_cast<weight_t>(dx2);
+      return 3;
+    }
+    default: {                        // resize*d (generic)
+      scalar_t x = scale * w + shift;
+      int64_t b0, b1;
+      interpolation::bounds(itp, x, b0, b1);
+      int n = 0;
+      for (int64_t bb = b0; bb <= b1 && n < resize_max_taps; ++bb, ++n) {
+        scalar_t dx = x - bb;
+        b[n]  = bb;
+        wt[n] = static_cast<weight_t>(interpolation::fastweight(itp, dx));
+      }
+      return n;
+    }
+  }
+}
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 //                        INDEXING UTILS
@@ -99,6 +167,11 @@ public:
   {
     return src_32b_ok && tgt_32b_ok;
   }
+
+  // Tabulate the 1D adjoint operators (must be called after ioset)
+  // (scalar_t: type of the pull arithmetic, weight_t: type of the tables)
+  template <typename scalar_t, typename weight_t>
+  NI_HOST GatherTables<weight_t> build_adjoint_tables() const;
 
 private:
 
@@ -208,6 +281,9 @@ class ResizeImpl {
 public:
 
   // ~~~ CONSTRUCTOR ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  typedef typename gather_weight<scalar_t>::type weight_t;
+  typedef GatherTablePtrs<offset_t, weight_t> TablePtrs;
+
   ResizeImpl(const ResizeAllocator & info):
 
 #define COPY_FROM_INFO(name) name(info.name)
@@ -236,22 +312,40 @@ public:
     NAME##_ptr(static_cast<scalar_t*>(info.NAME##_ptr))
 
     INIT_ALLOC_INFO_5D(src),
-    INIT_ALLOC_INFO_5D(tgt)
+    INIT_ALLOC_INFO_5D(tgt),
+    tab(null_gather_ptrs<offset_t, weight_t>())
   {
 #ifndef __CUDACC__
       set_resize();
 #endif
   }
 
+  // Set the tables of the (gather) adjoint. Must be called before
+  // running the adjoint. Pointers must point to memory accessible by the
+  // device that runs the kernel (host memory on CPU, device memory on CUDA).
+  NI_HOST void set_gather(const TablePtrs & ptrs)
+  {
+    tab = ptrs;
+#ifndef __CUDACC__
+    set_resize();
+#endif
+  }
+
 #ifndef __CUDACC__
   NI_HOST NI_INLINE void set_resize() 
   {
-#   define ADJ 4
 #   define ISO 8
 #   define NN  InterpolationType::Nearest
 #   define LIN InterpolationType::Linear
 #   define QUD InterpolationType::Quadratic
-    uint8_t mode = dim + 4 * do_adjoint + 8 * iso;
+    if (do_adjoint) {
+#     define NI_SET_GATHER(k) \
+        resize_ = &Self::template restrict_gather<k>; break;
+      NI_GATHER_K_SWITCH(tab.K, NI_SET_GATHER)
+#     undef NI_SET_GATHER
+      return;
+    }
+    uint8_t mode = dim + ISO * iso;
     switch (mode) {
       case 1:
         resize_ = &Self::resize1d; break;
@@ -259,12 +353,6 @@ public:
         resize_ = &Self::resize2d; break;
       case 3:
         resize_ = &Self::resize3d; break;
-      case 1+ADJ:
-        resize_ = &Self::restrict1d; break; 
-      case 2+ADJ:
-        resize_ = &Self::restrict2d; break;
-      case 3+ADJ:
-        resize_ = &Self::restrict3d; break;
       case 1+ISO:
         switch (interpolation0) {
           case NN:
@@ -298,39 +386,6 @@ public:
           default:
             resize_ = &Self::resize3d; break;
         } break;
-      case 1+ADJ+ISO:
-        switch (interpolation0) {
-          case NN:
-            resize_ = &Self::restrict1d_nearest; break;
-          case LIN:
-            resize_ = &Self::restrict1d_linear; break;
-          // case QUD:
-          //   resize_ = &Self::restrict1d_quadratic; break;
-          default:
-            resize_ = &Self::restrict1d; break;
-        } break;
-      case 2+ADJ+ISO:
-        switch (interpolation0) {
-          case NN:
-            resize_ = &Self::restrict2d_nearest; break;
-          case LIN:
-            resize_ = &Self::restrict2d_linear; break;
-          // case QUD:
-          //   resize_ = &Self::restrict2d_quadratic; break;
-          default:
-            resize_ = &Self::restrict2d; break;
-        } break;
-      case 3+ADJ+ISO: 
-        switch (interpolation0) {
-          case NN:
-            resize_ = &Self::restrict3d_nearest; break;
-          case LIN:
-            resize_ = &Self::restrict3d_linear; break;
-          case QUD:
-            resize_ = &Self::restrict3d_quadratic; break;
-          default:
-            resize_ = &Self::restrict3d; break;
-        } break;
       default:
         resize_ = &Self::resize3d; break;
     }
@@ -344,13 +399,21 @@ public:
   // This function is called by the CUDA kernel
   NI_DEVICE void loop(int threadIdx, int blockIdx, 
                       int blockDim, int gridDim) const;
+  // Same, for the adjoint (called by its own kernel, gather_kernel)
+  template <int K>
+  NI_DEVICE void gather_loop(int threadIdx, int blockIdx,
+                             int blockDim, int gridDim) const;
+  NI_HOST int gather_K() const { return tab.K; }
 #else
   // Loop over all voxels
   void loop() const;
 #endif
 
+  // Number of voxels looped over: output (source) voxels for the
+  // adjoint, target voxels for the pull.
   NI_HOST NI_DEVICE int64_t voxcount() const { 
-    return N * tgt_X * tgt_Y * tgt_Z;
+    return do_adjoint ? N * src_X * src_Y * src_Z
+                      : N * tgt_X * tgt_Y * tgt_Z;
   }
 
 private:
@@ -379,20 +442,14 @@ private:
   DECLARE_RESIZE(resize3d_linear)
   DECLARE_RESIZE(resize3d_quadratic)
 
-  DECLARE_RESIZE(restrict1d)
-  DECLARE_RESIZE(restrict1d_nearest)
-  DECLARE_RESIZE(restrict1d_linear)
-  DECLARE_RESIZE(restrict1d_quadratic)
 
-  DECLARE_RESIZE(restrict2d)
-  DECLARE_RESIZE(restrict2d_nearest)
-  DECLARE_RESIZE(restrict2d_linear)
-  DECLARE_RESIZE(restrict2d_quadratic)
 
-  DECLARE_RESIZE(restrict3d)
-  DECLARE_RESIZE(restrict3d_nearest)
-  DECLARE_RESIZE(restrict3d_linear)
-  DECLARE_RESIZE(restrict3d_quadratic)
+
+  // Gather implementation of the adjoint. K > 0: compile-time row length
+  // (must equal tab.K). K == 0: runtime row length (tab.K).
+  template <int K>
+  NI_DEVICE void restrict_gather(
+    offset_t jx, offset_t jy, offset_t jz, offset_t n) const;
 
   // ~~~ OPTIONS ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
   int               dim;            // dimensionality (1 or 2 or 3)
@@ -430,6 +487,9 @@ private:
   offset_t C;
   DECLARE_STRIDE_INFO_5D(src)
   DECLARE_STRIDE_INFO_5D(tgt)
+
+  // ~~~ ADJOINT TABLES ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  TablePtrs         tab;            // 1D adjoint tables (see gather_common.h)
 };
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -441,12 +501,12 @@ void ResizeImpl<scalar_t,offset_t>::resize(
     offset_t x, offset_t y, offset_t z, offset_t n) const {
 #ifdef __CUDACC__
     // dispatch
-#   define ADJ 4
+    // (the adjoint has its own kernel: see gather_kernel)
 #   define ISO 8
 #   define NN  InterpolationType::Nearest
 #   define LIN InterpolationType::Linear
 #   define QUD InterpolationType::Quadratic
-    uint8_t mode = dim + 4 * do_adjoint + 8 * iso;
+    uint8_t mode = dim + ISO * iso;
     switch (mode) {
       case 1:
         return resize1d(x, y, z, n);
@@ -454,12 +514,6 @@ void ResizeImpl<scalar_t,offset_t>::resize(
         return resize2d(x, y, z, n);
       case 3:
         return resize3d(x, y, z, n);
-      case 1+ADJ:
-        return restrict1d(x, y, z, n); 
-      case 2+ADJ:
-        return restrict2d(x, y, z, n);
-      case 3+ADJ:
-        return restrict3d(x, y, z, n);
       case 1+ISO:
         switch (interpolation0) {
           case NN:
@@ -493,39 +547,6 @@ void ResizeImpl<scalar_t,offset_t>::resize(
           default:
             return resize3d(x, y, z, n);
         }
-      case 1+ADJ+ISO:
-        switch (interpolation0) {
-          case NN:
-            return restrict1d_nearest(x, y, z, n);
-          case LIN:
-            return restrict1d_linear(x, y, z, n);
-          // case QUD:
-          //   return restrict1d_quadratic(x, y, z, n);
-          default:
-            return restrict1d(x, y, z, n);
-        }
-      case 2+ADJ+ISO:
-        switch (interpolation0) {
-          case NN:
-            return restrict2d_nearest(x, y, z, n);
-          case LIN:
-            return restrict2d_linear(x, y, z, n);
-          // case QUD:
-          //   return restrict2d_quadratic(x, y, z, n);
-          default:
-            return restrict2d(x, y, z, n);
-        }
-      case 3+ADJ+ISO: 
-        switch (interpolation0) {
-          case NN:
-            return restrict3d_nearest(x, y, z, n);
-          case LIN:
-            return restrict3d_linear(x, y, z, n);
-          case QUD:
-            return restrict3d_quadratic(x, y, z, n);
-          default:
-            return restrict3d(x, y, z, n);
-        }
       default:
         return resize3d(x, y, z, n);
     }
@@ -557,6 +578,29 @@ void ResizeImpl<scalar_t,offset_t>::loop(
   }
 }
 
+// Gather adjoint: loop over output (source) voxels
+template <typename scalar_t, typename offset_t>
+template <int K>
+NI_DEVICE void ResizeImpl<scalar_t,offset_t>::gather_loop(
+  int threadIdx, int blockIdx, int blockDim, int gridDim) const {
+
+  const offset_t src_YZ   =   src_Z * src_Y;
+  const offset_t src_XYZ  =  src_YZ * src_X;
+  const offset_t src_NXYZ = src_XYZ * N;
+  const offset_t stride   = static_cast<offset_t>(blockDim) * gridDim;
+  for (offset_t i = static_cast<offset_t>(blockIdx) * blockDim + threadIdx;
+       i < src_NXYZ; i += stride)
+  {
+      // Convert index: linear to sub
+      offset_t n  = (i/src_XYZ);
+      offset_t w  = (i/src_YZ) % src_X;
+      offset_t h  = (i/src_Z)  % src_Y;
+      offset_t d  = i % src_Z;
+
+      this->template restrict_gather<K>(w, h, d, n);
+  }
+}
+
 #else
 
 // This bit loops over all target voxels. We therefore need to
@@ -570,43 +614,25 @@ void ResizeImpl<scalar_t,offset_t>::loop(
 template <typename scalar_t, typename offset_t> NI_HOST
 void ResizeImpl<scalar_t,offset_t>::loop() const
 {
-  if (!has_atomic_add<scalar_t>::value && (do_adjoint))
-  {
-    // I do not have access to atomic operations so I cannot
-    // parallelize across voxels.
-    at::parallel_for(0, N, 0, [&](offset_t start, offset_t end) {
-      for (offset_t n = start; n < end; ++n) {
-        if (dim == 1) {
-          for (offset_t w=0; w<tgt_X; ++w)
-            resize(w, 0, 0, n);
-        } else if (dim == 2) {
-          for (offset_t h=0; h<tgt_Y; ++h)
-          for (offset_t w=0; w<tgt_X; ++w)
-            resize(w, h, 0, n);
-        } else {
-          for (offset_t d=0; d<tgt_Z; ++d)
-          for (offset_t h=0; h<tgt_Y; ++h)
-          for (offset_t w=0; w<tgt_X; ++w)
-            resize(w, h, d, n);
-        }
-      }
-    });
-    return;
-  }
-
-  // Parallelize across voxels   
-  offset_t tgt_YZ   =   tgt_Z * tgt_Y;
-  offset_t tgt_XYZ  =  tgt_YZ * tgt_X;
-  offset_t tgt_NXYZ = tgt_XYZ * N;
-  at::parallel_for(0, tgt_NXYZ, GRAIN_SIZE,
+  // Parallelize across voxels
+  // (adjoint: output/source voxels -- each written by a single thread;
+  //  pull: target voxels)
+  offset_t loop_X   = do_adjoint ? src_X : tgt_X;
+  offset_t loop_Y   = do_adjoint ? src_Y : tgt_Y;
+  offset_t loop_Z   = do_adjoint ? src_Z : tgt_Z;
+  offset_t loop_YZ   =   loop_Z * loop_Y;
+  offset_t loop_XYZ  =  loop_YZ * loop_X;
+  offset_t loop_NXYZ = loop_XYZ * N;
+  int64_t grain = do_adjoint ? gather_grain(GRAIN_SIZE, tab.K, dim) : GRAIN_SIZE;
+  at::parallel_for(0, loop_NXYZ, grain,
                    [&](offset_t start, offset_t end) {
     offset_t n, w, h, d;
     for (offset_t i = start; i < end; ++i) {
       // Convert index: linear to sub
-      n  = (i/tgt_XYZ);
-      w  = (i/tgt_YZ) % tgt_X;
-      h  = (i/tgt_Z)  % tgt_Y;
-      d  = i % tgt_Z;
+      n  = (i/loop_XYZ);
+      w  = (i/loop_YZ) % loop_X;
+      h  = (i/loop_Z)  % loop_Y;
+      d  = i % loop_Z;
 
       resize(w, h, d, n);
     }
@@ -704,41 +730,6 @@ void ResizeImpl<scalar_t,offset_t>::resize3d(
   } // z
 }
 
-template <typename scalar_t, typename offset_t> NI_DEVICE
-void ResizeImpl<scalar_t,offset_t>::restrict3d(
-  offset_t w, offset_t h, offset_t d, offset_t n) const
-{
-  GET_INDEX
-
-  scalar_t target[NI_MAX_NUM_CHANNELS];
-  scalar_t * tgt_ptr_NCXYZ = tgt_ptr_NCXYZ0;
-  for (offset_t c = 0; c < C; ++c, tgt_ptr_NCXYZ += tgt_sC)
-    target[c] = *tgt_ptr_NCXYZ;
-
-  // Convolve coefficients with basis functions
-  for (offset_t k = 0; k <= dbz; ++k) {
-    offset_t osz = iz[k] * src_sZ;
-    uint8_t  szz = sz[k];
-    scalar_t wzz = wz[k];
-    for (offset_t j = 0; j <= dby; ++j) {
-      offset_t osyz = osz + iy[j] * src_sY;
-      uint8_t  syz  = szz * sy[j];
-      scalar_t wyz  = wzz * wy[j];
-      for (offset_t i = 0; i <= dbx; ++i) {
-        offset_t osxyz = osyz + ix[i] * src_sX;
-        uint8_t  sxyz  = syz  * sx[i];
-        scalar_t wxyz  = wyz  * wx[i];
-
-        scalar_t * src_ptr_NC = src_ptr_NC0;
-        for (offset_t c = 0; c < C; ++c, src_ptr_NC += src_sC)
-          bound::add(src_ptr_NC, osxyz, wxyz * target[c], sxyz);
-        
-      } // x
-    } // y
-  } // z
-}
-
-
 #undef  GET_INDEX
 #define GET_INDEX \
   scalar_t x = scale0 * w + shift0;                               \
@@ -803,35 +794,6 @@ void ResizeImpl<scalar_t,offset_t>::resize2d(offset_t w, offset_t h, offset_t d,
   } // y
 }
 
-template <typename scalar_t, typename offset_t> NI_DEVICE
-void ResizeImpl<scalar_t,offset_t>::restrict2d(offset_t w, offset_t h, offset_t d, offset_t n) const 
-{
-  GET_INDEX
-
-  scalar_t target[NI_MAX_NUM_CHANNELS];
-  scalar_t * tgt_ptr_NCXYZ = tgt_ptr_NCXYZ0;
-  for (offset_t c = 0; c < C; ++c, tgt_ptr_NCXYZ += tgt_sC)
-    target[c] = *tgt_ptr_NCXYZ;
-
-  // Convolve coefficients with basis functions
-  for (offset_t j = 0; j <= dby; ++j) {
-    offset_t osyz = iy[j] * src_sY;
-    uint8_t  syz  = sy[j];
-    scalar_t wyz  = wy[j];
-    for (offset_t i = 0; i <= dbx; ++i) {
-      offset_t osxyz = osyz + ix[i] * src_sX;
-      uint8_t  sxyz  = syz  * sx[i];
-      scalar_t wxyz  = wyz  * wx[i];
-
-      scalar_t * src_ptr_NC = src_ptr_NC0;
-      for (offset_t c = 0; c < C; ++c, src_ptr_NC += src_sC)
-        bound::add(src_ptr_NC, osxyz, wxyz * target[c], sxyz);
-      
-    } // x
-  } // y
-}
-
-
 #undef  GET_INDEX
 #define GET_INDEX \
   scalar_t x = scale0 * w + shift0;                               \
@@ -871,28 +833,6 @@ void ResizeImpl<scalar_t,offset_t>::resize1d(offset_t w, offset_t h, offset_t d,
     for (offset_t c = 0; c < C; ++c, tgt_ptr_NCXYZ += tgt_sC,
                                      src_ptr_NC    += src_sC)
       *tgt_ptr_NCXYZ += bound::get(src_ptr_NC, osxyz, sxyz) * wxyz;
-  } // x
-}
-
-template <typename scalar_t, typename offset_t> NI_DEVICE
-void ResizeImpl<scalar_t,offset_t>::restrict1d(offset_t w, offset_t h, offset_t d, offset_t n) const
-{
-  GET_INDEX
-
-  scalar_t target[NI_MAX_NUM_CHANNELS];
-  scalar_t * tgt_ptr_NCXYZ = tgt_ptr_NCXYZ0;
-  for (offset_t c = 0; c < C; ++c, tgt_ptr_NCXYZ += tgt_sC)
-    target[c] = *tgt_ptr_NCXYZ;
-
-  // Convolve coefficients with basis functions
-  for (offset_t i = 0; i <= dbx; ++i) {
-    offset_t osxyz = ix[i] * src_sX;
-    uint8_t  sxyz  = sx[i];
-    scalar_t wxyz  = wx[i];
-
-    scalar_t * src_ptr_NC = src_ptr_NC0;
-    for (offset_t c = 0; c < C; ++c, src_ptr_NC += src_sC)
-      bound::add(src_ptr_NC, osxyz, wxyz * target[c], sxyz);
   } // x
 }
 
@@ -1084,53 +1024,9 @@ void ResizeImpl<scalar_t,offset_t>::resize3d_quadratic(
 }
 
 template <typename scalar_t, typename offset_t> NI_DEVICE
-void ResizeImpl<scalar_t,offset_t>::restrict3d_quadratic(
-  offset_t w, offset_t h, offset_t d, offset_t n) const
-{
-  GET_INDEX
-
-  for (offset_t c = 0; c < C; ++c, tgt_ptr_NCXYZ += tgt_sC,
-                                   src_ptr_NC    += src_sC) {
-    scalar_t tgt = *tgt_ptr_NCXYZ;
-    bound::add(src_ptr_NC, o000, w000 * tgt, s000);
-    bound::add(src_ptr_NC, o001, w001 * tgt, s001);
-    bound::add(src_ptr_NC, o002, w002 * tgt, s002);
-    bound::add(src_ptr_NC, o010, w010 * tgt, s010);
-    bound::add(src_ptr_NC, o011, w011 * tgt, s011);
-    bound::add(src_ptr_NC, o012, w012 * tgt, s012);
-    bound::add(src_ptr_NC, o020, w020 * tgt, s020);
-    bound::add(src_ptr_NC, o021, w021 * tgt, s021);
-    bound::add(src_ptr_NC, o022, w022 * tgt, s022);
-    bound::add(src_ptr_NC, o100, w100 * tgt, s100);
-    bound::add(src_ptr_NC, o101, w101 * tgt, s101);
-    bound::add(src_ptr_NC, o102, w102 * tgt, s102);
-    bound::add(src_ptr_NC, o110, w110 * tgt, s110);
-    bound::add(src_ptr_NC, o111, w111 * tgt, s111);
-    bound::add(src_ptr_NC, o112, w112 * tgt, s112);
-    bound::add(src_ptr_NC, o120, w120 * tgt, s120);
-    bound::add(src_ptr_NC, o121, w121 * tgt, s121);
-    bound::add(src_ptr_NC, o122, w122 * tgt, s122);
-    bound::add(src_ptr_NC, o200, w200 * tgt, s200);
-    bound::add(src_ptr_NC, o201, w201 * tgt, s201);
-    bound::add(src_ptr_NC, o202, w202 * tgt, s202);
-    bound::add(src_ptr_NC, o210, w210 * tgt, s210);
-    bound::add(src_ptr_NC, o211, w211 * tgt, s211);
-    bound::add(src_ptr_NC, o212, w212 * tgt, s212);
-    bound::add(src_ptr_NC, o220, w220 * tgt, s220);
-    bound::add(src_ptr_NC, o221, w221 * tgt, s221);
-    bound::add(src_ptr_NC, o222, w222 * tgt, s222);
-  }
-}
-
-template <typename scalar_t, typename offset_t> NI_DEVICE
 void ResizeImpl<scalar_t,offset_t>::resize2d_quadratic(offset_t w, offset_t h, offset_t d, offset_t n) const {}
 template <typename scalar_t, typename offset_t> NI_DEVICE
-void ResizeImpl<scalar_t,offset_t>::restrict2d_quadratic(offset_t w, offset_t h, offset_t d, offset_t n) const {}
-template <typename scalar_t, typename offset_t> NI_DEVICE
 void ResizeImpl<scalar_t,offset_t>::resize1d_quadratic(offset_t w, offset_t h, offset_t d, offset_t n) const {}
-template <typename scalar_t, typename offset_t> NI_DEVICE
-void ResizeImpl<scalar_t,offset_t>::restrict1d_quadratic(offset_t w, offset_t h, offset_t d, offset_t n) const {}
-
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 //                     LINEAR INTERPOLATION 3D
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -1223,26 +1119,6 @@ void ResizeImpl<scalar_t,offset_t>::resize3d_linear(
   }
 }
 
-template <typename scalar_t, typename offset_t> NI_DEVICE
-void ResizeImpl<scalar_t,offset_t>::restrict3d_linear(
-  offset_t w, offset_t h, offset_t d, offset_t n) const
-{
-  GET_INDEX
-
-  for (offset_t c = 0; c < C; ++c, tgt_ptr_NCXYZ += tgt_sC,
-                                   src_ptr_NC    += src_sC) {
-    scalar_t tgt = *tgt_ptr_NCXYZ;
-    bound::add(src_ptr_NC, o000, w000 * tgt, s000);
-    bound::add(src_ptr_NC, o100, w100 * tgt, s100);
-    bound::add(src_ptr_NC, o010, w010 * tgt, s010);
-    bound::add(src_ptr_NC, o110, w110 * tgt, s110);
-    bound::add(src_ptr_NC, o001, w001 * tgt, s001);
-    bound::add(src_ptr_NC, o101, w101 * tgt, s101);
-    bound::add(src_ptr_NC, o011, w011 * tgt, s011);
-    bound::add(src_ptr_NC, o111, w111 * tgt, s111);
-  }
-}
-
 #undef  GET_INDEX
 #define GET_INDEX \
   scalar_t x = scale0 * w + shift0; \
@@ -1293,21 +1169,6 @@ void ResizeImpl<scalar_t,offset_t>::resize2d_linear(offset_t w, offset_t h, offs
   }
 }
 
-template <typename scalar_t, typename offset_t> NI_DEVICE
-void ResizeImpl<scalar_t,offset_t>::restrict2d_linear(offset_t w, offset_t h, offset_t d, offset_t n) const
-{
-  GET_INDEX
-
-  for (offset_t c = 0; c < C; ++c, tgt_ptr_NCXYZ += tgt_sC,
-                                   src_ptr_NC    += src_sC) {
-    scalar_t tgt = *tgt_ptr_NCXYZ;
-    bound::add(src_ptr_NC, o00, w00 * tgt, s00);
-    bound::add(src_ptr_NC, o01, w01 * tgt, s01);
-    bound::add(src_ptr_NC, o10, w10 * tgt, s10);
-    bound::add(src_ptr_NC, o11, w11 * tgt, s11);
-  }
-}
-
 #undef  GET_INDEX
 #define GET_INDEX \
   scalar_t x = scale0 * w + shift0; \
@@ -1334,20 +1195,6 @@ void ResizeImpl<scalar_t,offset_t>::resize1d_linear(offset_t w, offset_t h, offs
                    + bound::get(src_ptr_NC, ix1, sx1) * dx1;
   }
 }
-
-template <typename scalar_t, typename offset_t> NI_DEVICE
-void ResizeImpl<scalar_t,offset_t>::restrict1d_linear(offset_t w, offset_t h, offset_t d, offset_t n) const 
-{
-  GET_INDEX
-
-  for (offset_t c = 0; c < C; ++c, tgt_ptr_NCXYZ += tgt_sC,
-                                   src_ptr_NC    += src_sC) {
-    scalar_t tgt = *tgt_ptr_NCXYZ;
-    bound::add(src_ptr_NC, ix0, dx0 * tgt, sx0);
-    bound::add(src_ptr_NC, ix1, dx1 * tgt, sx1);
-  }
-}
-
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 //                  NEAREST NEIGHBOR INTERPOLATION 3D
@@ -1381,16 +1228,6 @@ void ResizeImpl<scalar_t,offset_t>::resize3d_nearest(
     *tgt_ptr_NCXYZ = bound::get(src_ptr_NC, o, s);
 }
 
-template <typename scalar_t, typename offset_t> NI_DEVICE
-void ResizeImpl<scalar_t,offset_t>::restrict3d_nearest(
-  offset_t w, offset_t h, offset_t d, offset_t n) const
-{
-  GET_INDEX
-  for (offset_t c = 0; c < C; ++c, tgt_ptr_NCXYZ += tgt_sC, 
-                                   src_ptr_NC    += src_sC)
-    bound::add(src_ptr_NC, o, *tgt_ptr_NCXYZ, s);
-}
-
 #undef  GET_INDEX
 #define GET_INDEX \
   offset_t ix = static_cast<offset_t>(std::round(scale0 * w + shift0)); \
@@ -1414,15 +1251,6 @@ void ResizeImpl<scalar_t,offset_t>::resize2d_nearest(offset_t w, offset_t h, off
     *tgt_ptr_NCXYZ = bound::get(src_ptr_NC, o, s);
 }
 
-template <typename scalar_t, typename offset_t> NI_DEVICE
-void ResizeImpl<scalar_t,offset_t>::restrict2d_nearest(offset_t w, offset_t h, offset_t d, offset_t n) const 
-{
-  GET_INDEX
-  for (offset_t c = 0; c < C; ++c, tgt_ptr_NCXYZ += tgt_sC, 
-                                   src_ptr_NC    += src_sC)
-    bound::add(src_ptr_NC, o, *tgt_ptr_NCXYZ, s);
-}
-
 #undef  GET_INDEX
 #define GET_INDEX \
   offset_t ix = static_cast<offset_t>(std::round(scale0 * w + shift0)); \
@@ -1440,13 +1268,67 @@ void ResizeImpl<scalar_t,offset_t>::resize1d_nearest(offset_t w, offset_t h, off
     *tgt_ptr_NCXYZ = bound::get(src_ptr_NC, ix, sx);
 }
 
-template <typename scalar_t, typename offset_t> NI_DEVICE
-void ResizeImpl<scalar_t,offset_t>::restrict1d_nearest(offset_t w, offset_t h, offset_t d, offset_t n) const 
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+//                     ADJOINT AS A GATHER
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+// out[n, c, jx, jy, jz] = sum_{kz, ky, kx} wz[kz] * wy[ky] * wx[kx]
+//                         * inp[n, c, ox[kx] + oy[ky] + oz[kz]]
+// where (o*, w*) are the entries of the rows jx/jy/jz of the 1D adjoint
+// tables. Each output voxel is written exactly once (no atomics).
+template <typename scalar_t, typename offset_t>
+template <int K>
+NI_DEVICE void ResizeImpl<scalar_t,offset_t>::restrict_gather(
+  offset_t jx, offset_t jy, offset_t jz, offset_t n) const
 {
-  GET_INDEX
-  for (offset_t c = 0; c < C; ++c, tgt_ptr_NCXYZ += tgt_sC, 
-                                   src_ptr_NC    += src_sC)
-    bound::add(src_ptr_NC, ix, *tgt_ptr_NCXYZ, sx);
+  gather_separable<K>(tab, jx, jy, jz, C,
+                      static_cast<const scalar_t *>(tgt_ptr + n * tgt_sN), tgt_sC,
+                      src_ptr + n  * src_sN + jx * src_sX
+                              + jy * src_sY + jz * src_sZ, src_sC);
+}
+
+// Transpose of the pull: run the forward 1D formula over every fine
+// voxel `w` and file each (folded, signed, merged) contribution under the
+// coarse voxel it reads from.
+template <typename scalar_t, typename weight_t>
+NI_HOST GatherTables<weight_t> ResizeAllocator::build_adjoint_tables() const
+{
+  const int64_t S_[3] = {src_X, src_Y, src_Z};
+  const int64_t T_[3] = {tgt_X, tgt_Y, tgt_Z};
+  const int64_t sT[3] = {tgt_sX, tgt_sY, tgt_sZ};
+  const BoundType         bnd[3] = {bound0, bound1, bound2};
+  const InterpolationType itp[3] = {interpolation0, interpolation1, interpolation2};
+  const double            shf[3] = {shift0, shift1, shift2};
+  const double            scl[3] = {scale0, scale1, scale2};
+
+  std::vector<GatherRow<weight_t> > rows[3];
+  for (int d = 0; d < dim && d < 3; ++d) {
+    const int64_t S = S_[d], T = T_[d];
+    rows[d].resize(S);
+
+    // Same 1D formula as the pull (see set_resize / resize)
+    PullKind kind = PullKind::Generic;
+    if (iso) {
+      if (itp[d] == InterpolationType::Nearest)
+        kind = PullKind::NearestIso;
+      else if (itp[d] == InterpolationType::Linear)
+        kind = PullKind::LinearIso;
+      else if (itp[d] == InterpolationType::Quadratic && dim == 3)
+        kind = PullKind::QuadraticIso;
+    }
+
+    int64_t  b[resize_max_taps];
+    weight_t wt[resize_max_taps];
+    int64_t  jj[resize_max_taps];
+    weight_t vv[resize_max_taps];
+    for (int64_t w = 0; w < T; ++w) {
+      int n = pull_taps1d<scalar_t, weight_t>(kind, itp[d], scl[d], shf[d], w, b, wt);
+      int m = fold_taps<weight_t>(bnd[d], S, n, b, wt, jj, vv);
+      for (int l = 0; l < m; ++l)
+        rows[d][jj[l]].push_back(std::make_pair(w, vv[l]));
+    }
+  }
+  return flatten_gather_rows<weight_t>(rows, dim, sT);
 }
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -1459,6 +1341,29 @@ template <typename scalar_t, typename offset_t>
 C10_LAUNCH_BOUNDS_1(1024)
 __global__ void resize_kernel(const ResizeImpl<scalar_t,offset_t> * f) {
   f->loop(threadIdx.x, blockIdx.x, blockDim.x, gridDim.x);
+}
+
+// Separate kernel for the adjoint, so that it neither inherits the
+// stack frame of the pull kernels nor adds its register pressure to them.
+#define NI_GATHER_NUM_THREADS 256
+
+template <int K, typename scalar_t, typename offset_t>
+C10_LAUNCH_BOUNDS_1(NI_GATHER_NUM_THREADS)
+__global__ void gather_kernel(const ResizeImpl<scalar_t,offset_t> * f) {
+  f->template gather_loop<K>(threadIdx.x, blockIdx.x, blockDim.x, gridDim.x);
+}
+
+template <typename scalar_t, typename offset_t>
+NI_HOST void launch_gather_kernel(const ResizeImpl<scalar_t,offset_t> & algo,
+                                  const ResizeImpl<scalar_t,offset_t> * palgo,
+                                  cudaStream_t stream)
+{
+  const int nblocks = GET_BLOCKS(algo.voxcount(), NI_GATHER_NUM_THREADS);
+# define NI_LAUNCH_GATHER(k) \
+    gather_kernel<k, scalar_t, offset_t> \
+      <<<nblocks, NI_GATHER_NUM_THREADS, 0, stream>>>(palgo); break;
+  NI_GATHER_K_SWITCH(algo.gather_K(), NI_LAUNCH_GATHER)
+# undef NI_LAUNCH_GATHER
 }
 #endif
 
@@ -1494,8 +1399,7 @@ prepare_tensors(Tensor source, Tensor target, ArrayRef<double> factor, bool do_a
 
   if (source_defined && target_defined) {
     check_same_nonspatial(source, target);
-    if (do_adjoint)
-      source.zero_();
+    // (the adjoint writes every output voxel: no need to zero)
     return std::tuple<Tensor, Tensor>(source, target);
   }
 
@@ -1605,7 +1509,8 @@ prepare_affines(Tensor source, Tensor target, ArrayRef<double> factor, GridAlign
 #ifdef __CUDACC__
 
 // ~~~ CUDA ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
- 
+
+
 NI_HOST
 Tensor resize_impl(
   Tensor source, Tensor target, ArrayRef<double> factor,
@@ -1624,18 +1529,34 @@ Tensor resize_impl(
   auto stream = at::cuda::getCurrentCUDAStream();
 
   AT_DISPATCH_FLOATING_TYPES_AND_HALF(source.scalar_type(), "resize_impl", [&] {
+    typedef typename gather_weight<scalar_t>::type weight_t;
+    GatherTables<weight_t> tab;
+    if (do_adjoint)
+      tab = info.build_adjoint_tables<scalar_t, weight_t>();
+    // device copies of the tables (kept alive until the kernel is done)
+    std::vector<Tensor> keep;
     if (info.canUse32BitIndexMath())
     {
       ResizeImpl<scalar_t, int32_t> algo(info);
+      if (do_adjoint)
+        algo.set_gather(upload_gather_tables<int32_t>(tab, source.device(), keep));
       auto palgo = alloc_and_copy_to_device(&algo, stream);
-      resize_kernel<<<GET_BLOCKS(algo.voxcount()), CUDA_NUM_THREADS, 0, stream>>>(palgo);
+      if (do_adjoint)
+        launch_gather_kernel(algo, palgo, stream);
+      else
+        resize_kernel<<<GET_BLOCKS(algo.voxcount()), CUDA_NUM_THREADS, 0, stream>>>(palgo);
       cudaFree(palgo);
     }
     else
     {
       ResizeImpl<scalar_t, int64_t> algo(info);
+      if (do_adjoint)
+        algo.set_gather(upload_gather_tables<int64_t>(tab, source.device(), keep));
       auto palgo = alloc_and_copy_to_device(&algo, stream);
-      resize_kernel<<<GET_BLOCKS(algo.voxcount()), CUDA_NUM_THREADS, 0, stream>>>(palgo);
+      if (do_adjoint)
+        launch_gather_kernel(algo, palgo, stream);
+      else
+        resize_kernel<<<GET_BLOCKS(algo.voxcount()), CUDA_NUM_THREADS, 0, stream>>>(palgo);
       cudaFree(palgo);
     }
   });
@@ -1643,9 +1564,9 @@ Tensor resize_impl(
   Tensor out = do_adjoint ? source : target;
   if (normalize)
     switch (out.dim() - 2) {
-      case 1:  out *= scales[0];
-      case 2:  out *= scales[0] * scales[1];
-      default: out *= scales[0] * scales[1] * scales[2];
+      case 1:  out *= scales[0]; break;
+      case 2:  out *= scales[0] * scales[1]; break;
+      default: out *= scales[0] * scales[1] * scales[2]; break;
     }
   /*
   Our implementation uses more stack per thread than the available local 
@@ -1680,16 +1601,22 @@ Tensor resize_impl(
   info.ioset(source, target);
 
   AT_DISPATCH_FLOATING_TYPES(source.scalar_type(), "resize_impl", [&] {
+    typedef typename gather_weight<scalar_t>::type weight_t;
     ResizeImpl<scalar_t, int64_t> algo(info);
+    GatherTables<weight_t> tab;  // must outlive algo.loop()
+    if (do_adjoint) {
+      tab = info.build_adjoint_tables<scalar_t, weight_t>();
+      algo.set_gather(host_gather_ptrs(tab));
+    }
     algo.loop();
   });
 
   Tensor out = do_adjoint ? source : target;
   if (normalize)
     switch (out.dim() - 2) {
-      case 1:  out *= scales[0];
-      case 2:  out *= scales[0] * scales[1];
-      default: out *= scales[0] * scales[1] * scales[2];
+      case 1:  out *= scales[0]; break;
+      case 2:  out *= scales[0] * scales[1]; break;
+      default: out *= scales[0] * scales[1] * scales[2]; break;
     }
   return out;
 }
