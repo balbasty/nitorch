@@ -612,6 +612,7 @@ def make_loss(loss, slicewise=False, **kwargs):
         - dot:           Dot product
         - ndot:          Normalized Dot product
         - sqz:           Squeezed Product
+        - chamfer:       Chamfer distance between sparse labels (stacked [labels, distances])
     slicewise : int, optional
         Make the loss slicewise
 
@@ -679,6 +680,8 @@ def make_loss(loss, slicewise=False, **kwargs):
         if weight is not None:  # None/auto: keep the loss' default (1)
             kwargs['lam'] = weight
         lossobj = losses.SqueezedProdLoss(**kwargs)
+    elif loss == 'chamfer':
+        lossobj = losses.ChamferLoss(sigma=kwargs.pop('sigma', None))
     elif loss == 'emmi':
         lossobj = losses.EMMI(**kwargs)
     elif loss == 'extra':
