@@ -143,7 +143,8 @@ usage:
         edt                             Distance-map loss between sparse labels (e.g., vessels)
                                         Inputs are label maps (binarized at 0.5, or one
                                         channel per label with -l); their distance maps
-                                        (in mm) are computed internally. Mean squared
+                                        (in mm) are computed internally, unless the input
+                                        is already a distance map (@@fix/@@mov -e). Mean squared
                                         distance of the static labels to the warped
                                         structures; use -s for the symmetric version.
             -r, --robust SIGMA              Robust (Cauchy) scale, in distance units [quadratic]
@@ -169,6 +170,9 @@ usage:
     -d, --discretize [auto]:[N]      Discretize the image into N [default: 256] bins. [False]
     -l, --label *VAL                Specifies that the file is a label map [False]
                                     If no argument given, labels are [all but zero]
+    -e, --edt                       The file is a (precomputed) distance map, in mm, that is
+                                    zero on the structures (`@loss edt` only) [False]:
+                                    labels are derived from its zeros instead of computing it
     -m, --mask FILE                 Path to a mask of voxels to *include* [all]
         --name NAME                 A name to use with `@nonlin --fov`
     -x, --missing *VAL              Values that should be considered missing [0]
@@ -601,6 +605,9 @@ def _convert_discretize(x):
 file.add_option('discretize', ('-d', '--discretize'), nargs='?', convert=_convert_discretize,
                 action=cli.Actions.store_value(256),
                 default=0, help='Discretize the image into N discrete bins')
+file.add_option('edt', ('-e', '--edt'), nargs=0, default=False,
+                action=cli.Actions.store_true,
+                help='The file is a distance map (`@loss edt` only)')
 file.add_option('mask', ('-m', '--mask'), nargs=1, default=None,
                 help='Path to a mask of voxels to include')
 file.add_option('missing', ('-x', '--missing'), nargs='+', convert=float,

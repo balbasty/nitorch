@@ -104,6 +104,12 @@ def check_options(options):
                              'automatic weighting); give a number.')
         for side in ('fix', 'mov'):
             opt = getattr(loss, side)
+            if opt.edt and loss.name != 'edt':
+                raise ParseError(f'@@{side} -e/--edt: only valid with '
+                                 f'`@loss edt` (got `@loss {loss.name}`)')
+            if opt.edt and opt.label is not False:
+                raise ParseError(f'@@{side}: -e/--edt (distance map) and '
+                                 f'-l/--label (label map) are exclusive')
             _check_template(opt.output, f'@@{side} -o/--output', **filekeys)
             _check_template(opt.resliced, f'@@{side} -r/--resliced', **filekeys)
     for group in ('affine', 'nonlin'):
@@ -404,14 +410,25 @@ def get_spaces(fnames):
     return vxs, shapes
 
 
-def _stack_distance(dat, mask, affine, files, label=False):
-    """Binarize label maps (unless loaded with `-l`) and stack them
-    with their distance maps, for the edt loss."""
+def _stack_distance(dat, mask, affine, files, label=False, edt=False):
+    """Stack label maps and distance maps, for the edt loss.
+
+    If `edt`, the input is a distance map and the labels are its zeros.
+    Otherwise, the input is a label map (binarized unless loaded
+    with `-l`) and its distance map is computed.
+    """
+    # integer files are loaded with dequantization noise in [x, x+1)
+    integer = not any(dtypes.dtype(io.map(f).dtype).is_floating_point
+                      for f in py.make_list(files))
+    if edt:
+        labels = (dat < 1) if integer else (dat <= 0)
+        if not labels.any():
+            raise ValueError(f'{files}: a distance map (-e/--edt) must be '
+                             f'zero on the structures, but it has no zero')
+        dat = torch.cat([labels.to(dat.dtype), dat], -dat.dim())
+        return dat, mask, affine
     if label is False:
-        integer = not any(dtypes.dtype(io.map(f).dtype).is_floating_point
-                          for f in py.make_list(files))
-        # integer files are loaded with dequantization noise in [x, x+1):
-        # thresholding at 1 recovers the nonzero labels.
+        # integer files: thresholding at 1 recovers the nonzero labels.
         # floating point files are (hard or soft) labels in [0, 1].
         dat = (dat >= 1 if integer else dat > 0.5).to(dat.dtype)
     vx = spatial.voxel_size(affine).tolist()
@@ -476,7 +493,8 @@ def build_losses(options, pyramids, device):
         mov = preproc_image(loss.mov.files, **include(loss.mov, loadkeys), dim=dim, device=device)
         if loss.name == 'edt':
             # stack the label maps with their distance maps (in mm)
-            fix, mov = [_stack_distance(*img, opt.files, label=opt.label)
+            fix, mov = [_stack_distance(*img, opt.files, label=opt.label,
+                                        edt=opt.edt)
                         for img, opt in ((fix, loss.fix), (mov, loss.mov))]
         fix = make_image(*fix, **include(loss.fix, imagekeys))
         mov = make_image(*mov, **include(loss.mov, imagekeys))

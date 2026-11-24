@@ -184,3 +184,76 @@ def test_cli_edt_recovers_translation(tmp_path):
     trl = aff[:3, -1]
     ref = torch.as_tensor([2., -1., 1.], dtype=trl.dtype)
     assert torch.allclose(trl, ref, atol=0.1), aff
+
+
+# ----------------------------------------------------------------------
+#   @@fix/@@mov -e/--edt: precomputed distance maps
+# ----------------------------------------------------------------------
+
+def scipy_edt(lab, dtype='float32'):
+    ndi = pytest.importorskip('scipy.ndimage')
+    return ndi.distance_transform_edt(lab == 0).astype(dtype)
+
+
+def built_edt_images(tmp_path, movfile, *movargs):
+    from nitorch.cli.registration.register.parser import parser
+    from nitorch.cli.registration.register.cli import build_losses
+    from nitorch.tools.registration.pairwise_pyramid import pyramid_levels
+    fix = write(tmp_path / 'fix.nii.gz', tubes([16] * 3))
+    options = parser.parse(['@loss', 'edt', '@@fix', fix,
+                            '@@mov', movfile, *movargs,
+                            '@affine', '@pyramid', '-l', '0'])
+    levels = list(pyramid_levels([[1.] * 3] * 2, [[16] * 3] * 2,
+                                 **options.pyramid))
+    sims, _ = build_losses(options, [{'fix': levels[0], 'mov': levels[1]}],
+                           torch.device('cpu'))
+    return sims[0][0].moving.dat
+
+
+@pytest.mark.parametrize('dtype', ['float32', 'uint8'])
+def test_cli_edt_precomputed_matches_computed(tmp_path, dtype):
+    lab = tubes([16] * 3, 1)
+    dist = scipy_edt(lab)
+    if dtype == 'uint8':   # loaded with dequantization noise in [x, x+1)
+        dist = np.round(dist).astype(dtype)
+    computed = built_edt_images(
+        tmp_path, write(tmp_path / 'mov.nii.gz', lab))
+    given = built_edt_images(
+        tmp_path, write(tmp_path / 'movd.nii.gz', dist), '-e')
+    assert given.shape == computed.shape == (2, 16, 16, 16)
+    assert torch.equal(given[0], computed[0])              # labels
+    if dtype == 'float32':
+        assert torch.allclose(given[1], computed[1], atol=1e-4)
+
+
+def test_cli_edt_precomputed_needs_zeros(tmp_path):
+    dist = scipy_edt(tubes([16] * 3)) + 1
+    with pytest.raises(ValueError, match='zero on the structures'):
+        built_edt_images(tmp_path, write(tmp_path / 'movd.nii.gz', dist), '-e')
+
+
+@pytest.mark.parametrize('args, match', [
+    (['@loss', 'mse', '@@fix', 'f.nii', '@@mov', 'm.nii', '-e'],
+     'only valid with `@loss edt`'),
+    (['@loss', 'edt', '@@fix', 'f.nii', '-e', '-l', '@@mov', 'm.nii'],
+     'exclusive'),
+])
+def test_cli_edt_flag_validated(args, match):
+    from nitorch.core.cli import ParseError
+    from nitorch.cli.registration.register.parser import parser
+    from nitorch.cli.registration.register.cli import check_options
+    with pytest.raises(ParseError, match=match):
+        check_options(parser.parse(args + ['@affine']))
+
+
+def test_cli_edt_precomputed_recovers_translation(tmp_path):
+    from nitorch.cli.registration.register.cli import _cli
+    from nitorch import io
+    fix = write(tmp_path / 'fix.nii.gz', tubes([16] * 3))
+    mov = write(tmp_path / 'movd.nii.gz', scipy_edt(tubes([16] * 3, 2)))
+    out = str(tmp_path / 'aff.lta')
+    _cli(['-v', '0', '@loss', 'edt', '-s', '@@fix', fix, '@@mov', mov, '-e',
+          '@affine', 'translation', '-p', 'mov', '-o', out])
+    trl = io.transforms.map(out).fdata().squeeze()[:3, -1]
+    ref = torch.as_tensor([2., -1., 1.], dtype=trl.dtype)
+    assert torch.allclose(trl, ref, atol=0.1)

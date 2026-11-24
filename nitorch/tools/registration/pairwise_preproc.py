@@ -150,6 +150,9 @@ def preproc_image(input, mask=None, label=False, missing=0,
             *fwhm, unit = fwhm
         else:
             unit = 'vox'
+    # FWHM = 0 (the CLI default) is not a no-op in `spatial.smooth`
+    # (it leaks ~1e-7 into neighbours): skip it
+    if fwhm and any(float(f) for f in fwhm):
         if unit == 'mm':
             voxel_size = spatial.voxel_size(affine0)
             fwhm = torch.as_tensor(fwhm, **utils.backend(voxel_size))
