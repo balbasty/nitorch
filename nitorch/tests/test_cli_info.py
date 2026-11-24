@@ -47,3 +47,12 @@ def test_info_center(volume, capsys):
     out = capsys.readouterr().out
     line = next(l for l in out.splitlines() if l.startswith('center'))
     assert '(3.0, 5.0, 7.0)' in line
+
+
+def test_info_voxel_size(volume, capsys):
+    # voxel size should print as plain floats, not numpy scalar reprs
+    info([volume])
+    out = capsys.readouterr().out
+    line = next(l for l in out.splitlines() if l.startswith('voxel_size '))
+    assert '(2.0, 2.0, 2.0)' in line
+    assert 'np.' not in out
