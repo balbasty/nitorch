@@ -302,6 +302,10 @@ def shoot(
           (at 64^3, push and newton take about 2.5x and 13x the time
           of the default shooting with `return_inverse=True`).
 
+        The numerical inversion is not differentiable: 'push' and
+        'newton' cannot be backpropagated through (use them without
+        grad, or under `torch.no_grad()`). 'default' is differentiable.
+
     Returns
     -------
     grid : ([batch], *spatial, dim) tensor

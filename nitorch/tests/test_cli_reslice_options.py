@@ -190,3 +190,46 @@ def test_voxel_size_output_shape(tmp_path, use_target, vx, expected):
     last = res.affine[:3, :3] @ (np.array(expected) - 1)
     in_last = AFFINE[:3, :3] @ (np.array([8, 8, 8]) - 1)
     assert np.all(last <= in_last + 1e-5)
+
+
+# ----------------------------------------------------------------------
+# minimal reslicing (no -t): all linear transforms are absorbed in the
+# output orientation matrix, wherever they sit in the chain
+# ----------------------------------------------------------------------
+def _rigid(shift, rot):
+    import torch
+    prm = torch.as_tensor([*shift, *rot], dtype=torch.double)
+    return spatial.affine_matrix_classic(prm, dim=3).numpy()
+
+
+@pytest.mark.parametrize('chunk', [[], ['-k', '6']])
+@pytest.mark.parametrize('chain', ['field-lin', 'lin-field-lin', 'ilin-field'])
+def test_minimal_reslice_keeps_all_linear(tmp_path, chain, chunk):
+    from nitorch import io
+    dat = np.random.RandomState(0).rand(12, 10, 8)
+    img = save(tmp_path / 'img.nii.gz', dat)
+    # zero displacement field (identity), on a grid that does not
+    # match the image
+    field_aff = np.diag([3., 3., 3., 1.])
+    field_aff[:3, -1] = [-5., 2., 1.]
+    field = save(tmp_path / 'disp.nii.gz', np.zeros([6, 6, 6, 3]), field_aff)
+    # large shifts: more than the field of view
+    lin1 = _rigid([40., -35., 50.], [0.1, -0.05, 0.08])
+    lin2 = _rigid([-20., 60., 15.], [-0.02, 0.07, 0.03])
+    io.transforms.savef(lin1.astype('float32'), str(tmp_path / 'lin1.lta'),
+                        type='ras')
+    io.transforms.savef(lin2.astype('float32'), str(tmp_path / 'lin2.lta'),
+                        type='ras')
+    l1, l2 = str(tmp_path / 'lin1.lta'), str(tmp_path / 'lin2.lta')
+    if chain == 'field-lin':
+        args, total = ['-d', field, '-l', l1], lin1
+    elif chain == 'lin-field-lin':
+        args, total = ['-l', l1, '-d', field, '-l', l2], lin1 @ lin2
+    else:
+        args, total = ['-il', l1, '-d', field], np.linalg.inv(lin1)
+
+    out = tmp_path / 'out.nii.gz'
+    reslice([img, *args, *chunk, '-o', str(out)])
+    np.testing.assert_allclose(nib.load(str(out)).affine,
+                               np.linalg.inv(total) @ AFFINE, atol=1e-3)
+    np.testing.assert_allclose(load(out), dat, atol=1e-3)

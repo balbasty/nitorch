@@ -284,13 +284,13 @@ def test_emmi_auto_bins_per_level():
 
 
 def test_emmi_auto_bins_coarse_level_ordering():
-    """On a coarse level (4^3 voxels), 256 fixed bins overfit: the value
-    at a wrong shift is lower than at the true shift. With auto bins,
-    the value is nearly flat (2 bins) with no spurious minimum."""
+    """On a coarse level (4^3 voxels), auto bins choose very few bins (2):
+    the value is nearly flat, with no spurious minimum. (With the pyramid
+    smoothed to 1 voxel of each level (#114), 256 fixed bins no longer
+    overfit there either: their values also increase with the shift.)"""
     shifts = [0, 2, 4, 8]
     J, v256 = emmi_at_level(3, 256, shifts)
     assert J == 256
-    assert v256[0] > min(v256[1:])
     J, vauto = emmi_at_level(3, ('auto', 256, 16), shifts)
     assert J == 2
     assert vauto[0] <= min(vauto[1:]) + 1e-6 and vauto[0] < vauto[-1]

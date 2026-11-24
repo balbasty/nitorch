@@ -288,7 +288,7 @@ class Entropy(HistBasedOptimizationLoss):
 
         """
         dim = kwargs.pop('dim', self.dim)
-        bins = self.bins or self.autobins(fixed, dim)
+        bins = kwargs.pop('bins', None) or self.bins or self.autobins(fixed, dim)
         if self.minmax is None:
             ll, *minmax = entropy(moving, fixed, grad=False, hess=False,
                                   bins=bins, order=self.spline,
@@ -321,7 +321,7 @@ class Entropy(HistBasedOptimizationLoss):
 
         """
         dim = kwargs.pop('dim', self.dim)
-        bins = self.bins or self.autobins(fixed, dim)
+        bins = kwargs.pop('bins', None) or self.bins or self.autobins(fixed, dim)
         if self.minmax is None:
             ll, g, *minmax = entropy(moving, fixed, grad=True, hess=False,
                                      bins=bins, order=self.spline,
@@ -357,7 +357,7 @@ class Entropy(HistBasedOptimizationLoss):
 
         """
         dim = kwargs.pop('dim', self.dim)
-        bins = self.bins or self.autobins(fixed, dim)
+        bins = kwargs.pop('bins', None) or self.bins or self.autobins(fixed, dim)
         if self.minmax is None:
             ll, g, h, *minmax = entropy(moving, fixed, grad=True, hess=True,
                                         bins=bins, order=self.spline,

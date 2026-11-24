@@ -203,10 +203,12 @@ def _main(options):
                 affine0 = losses[0].fixed.affine
             affine = make_affine_2d(options.affine.is2d, affine0,
                                     options.affine.name, options.affine.position,
-                                    penalty=affine_penalty, init=affine_init)
+                                    penalty=affine_penalty, init=affine_init,
+                                    samples=options.affine.samples)
         else:
             affine = make_affine(options.affine.name, options.affine.position,
-                                 penalty=affine_penalty, init=affine_init)
+                                 penalty=affine_penalty, init=affine_init,
+                                 samples=options.affine.samples)
 
     # ------------------------------------------------------------------
     #                           BUILD DENSE
@@ -220,15 +222,19 @@ def _main(options):
             bending=options.nonlin.bending,
             lame=options.nonlin.lame,
         )
+        nonlin_options = dict(options.nonlin)
+        if 'exact' in nonlin_options:
+            # `@nonlin shoot --exact` -> `ShootModel(fast=False)`
+            nonlin_options['fast'] = not nonlin_options.pop('exact')
         if options.nonlin.is2d is not False:
             if isinstance(losses[0], objects.SumSimilarity):
                 affine0 = losses[0][0].fixed.affine
             else:
                 affine0 = losses[0].fixed.affine
             nonlin = make_nonlin_2d(options.nonlin.is2d, affine0,
-                                    images, options.nonlin.name, **options.nonlin)
+                                    images, options.nonlin.name, **nonlin_options)
         else:
-            nonlin = make_nonlin(images, options.nonlin.name, **options.nonlin)
+            nonlin = make_nonlin(images, options.nonlin.name, **nonlin_options)
 
     if not affine and not nonlin:
         raise ValueError('At least one of @affine or @nonlin must be used.')

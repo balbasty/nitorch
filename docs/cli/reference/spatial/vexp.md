@@ -17,6 +17,8 @@ Exponentiate a stationary velocity field, by scaling and squaring, into a dense 
 
 A *stationary velocity field* $v(x)$ is a vector field that does not change with time. Following the flow of $v$ for one unit of time, that is, solving $\dot\phi_t = v(\phi_t)$ with $\phi_0 = \mathrm{id}$, yields a transformation $\phi_1 = \exp(v)$. Because it is the end point of a smooth flow, this transformation is invertible and has an invertible, smooth inverse (it is a *diffeomorphism*): $\exp(v)^{-1} = \exp(-v)$. This is why registration methods such as the one in [`register`](../registration/register.md) optimise a velocity field rather than a displacement field directly.
 
+`vexp` only exponentiates stationary velocity fields. The initial velocity written by `register @nonlin shoot` is integrated by geodesic shooting instead; use [`reslice`](reslice.md#velocity-fields) or [`compose`](compose.md) for it.
+
 `vexp` computes $\exp(v)$ with **scaling and squaring**. The velocity is first divided by $2^N$, which makes it small enough for $\exp(v/2^N) \approx \mathrm{id} + v/2^N$ to be accurate. The resulting transformation is then composed with itself $N$ times, each composition doubling the time that has been integrated, until the full unit of time is reached. $N$ is set with `-n` (default 8, so the flow is integrated in 256 small steps). More steps give a more accurate result and cost one more resampling of the field each.
 
 The velocity file must hold the three components of the vector in its last dimension (a volume of $X \times Y \times Z \times 3$ values), expressed in **voxels** of the lattice of the file itself. Each input file is processed independently; its orientation matrix is copied to the output.

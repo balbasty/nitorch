@@ -24,6 +24,12 @@ import torch
 class OptimizationLoss:
     """Base class for losses used in 'old school' optimisation-based stuff."""
 
+    # True if the loss depends on the spatial arrangement of the voxels
+    # (local windows, slices...). Otherwise, it only depends on the set
+    # of (weighted) voxel values, and can be evaluated on a subset of
+    # voxels laid out in any shape.
+    spatial = False
+
     def __init__(self):
         """Specify parameters"""
         pass
@@ -47,6 +53,12 @@ class OptimizationLoss:
         """
         raise NotImplementedError
 
+    def histogram_cells(self, moving, fixed, dim=None):
+        """Number of cells of the joint histogram that the loss estimates
+        from the voxels (None if it is pointwise). Used to choose the
+        number of voxel samples (`AffineModel(samples='auto')`)."""
+        return None
+
     def clear_state(self):
         """Clear persistant state"""
         pass
@@ -67,6 +79,15 @@ class HistBasedOptimizationLoss(OptimizationLoss):
         self.bins = bins
         self.spline = spline
         self.fwhm = fwhm
+
+    def resolved_bins(self, image, dim):
+        """Number of bins (fixed, moving), with `autobins` if unset"""
+        bins = self.bins or self.autobins(image, dim)
+        return list(py.ensure_list(bins, 2))
+
+    def histogram_cells(self, moving, fixed, dim=None):
+        bins = self.resolved_bins(fixed, dim)
+        return bins[0] * bins[1]
 
     def autobins(self, image, dim):
         dim = dim or (image.dim() - 1)
@@ -114,6 +135,8 @@ class AutoGradLoss(OptimizationLoss):
 
 
 class SliceWiseLoss(OptimizationLoss):
+
+    spatial = True
 
     def __init__(self, loss, axis=-1):
         super().__init__()

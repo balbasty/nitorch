@@ -9,6 +9,8 @@ usage:
     -p, --pred              Path to predicted image.
     -r, --ref               Path to reference image.
     -m, --metrics           Metrics to compute. See below.
+                            (Label metrics other than hausdorff only score
+                            labels present in the reference.)
     -s, --average           Compute mean metrics for multiple labels/images: {'micro', 'macro', 'weighted'}
                             ('weighted' = weighted by reference label volume;
                             label metrics only)
@@ -35,7 +37,7 @@ metrics for labels
     tnr         True Negative Rate              = TN / N
     plr         Positive Likelihood Ratio       = TPR / FPR
     nlr         Negative Likelihood Radio       = FNR / TNR
-    hausdorff   Hausdorff distance
+    hausdorff   Hausdorff distance (directed: prediction -> reference)
     hausdorff95 Hausdorff distance (95th percentile)
     labels      All of the above
 

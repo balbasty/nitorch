@@ -120,8 +120,18 @@ and the voxels of the whole image (all channels together) are counted:
 Let $P = TP + FN$ be the number of voxels of the reference with label $\ell$ and
 $N = TN + FP$ the number of the other voxels. Only labels present in the
 reference are scored; a label that appears only in the prediction is ignored.
+In particular, spurious labels in the prediction (false-positive labels) are
+never scored, so they do not lower the `macro` average. The `hausdorff`
+metrics behave differently, see [below](#hausdorff-distance).
 The labels listed with `-x` are never scored and never count as foreground
 (by default, label 0, which usually stands for the background).
+
+!!! warning "Excluding every label of the reference"
+    If `-x` removes all the labels of the reference, there is nothing left to
+    score. Without `-s`, each label metric is written as an empty object.
+    With `-s macro`, `micro` or `weighted`, the average would divide by zero:
+    `metrics` stops with `[ERROR] division by zero` and exit status 1, and
+    writes no file.
 
 | Metric        | Name                                | Definition                           |
 | ------------- | ----------------------------------- | ------------------------------------ |
@@ -144,8 +154,11 @@ The labels listed with `-x` are never scored and never count as foreground
 
 For a label $\ell$, `hausdorff` is the largest distance, over all voxels that the
 prediction assigns to $\ell$, to the closest voxel that the reference assigns to
-$\ell$. It is therefore a *directed* distance, from prediction to reference: a
-reference structure that the prediction misses entirely does not increase it.
+$\ell$. It is therefore a *directed* distance, from prediction to reference, and
+not the symmetric Hausdorff distance $\max(d(P, R), d(R, P))$: a part of the
+reference that the prediction misses does not increase it. To obtain the
+symmetric distance, run `metrics` a second time with `-p` and `-r` swapped and a
+different `-o`, and keep the larger of the two values for each label.
 `hausdorff95` replaces the maximum with the 95th percentile of these distances,
 which is much less sensitive to a few stray voxels. Distances are Euclidean and
 expressed in **voxels**; the voxel size is not applied.
@@ -155,7 +168,9 @@ and `hausdorff95` are computed for the union of the labels of the reference and
 of the prediction (minus `--exclude`). A label that is missing from either image
 has no defined distance and is reported as `inf` (`Infinity` in the JSON output).
 Such labels are left out of the `macro`, `weighted` and `micro` averages, with a
-warning that names them; if no label remains, the averages are `inf`.
+warning that names them (issued only when `-s` is given); if no label remains,
+the averages are `inf`. In particular, a channel whose reference lacks a label
+that its prediction has yields `inf` for that label.
 
 With several `-p`/`-r` pairs, or 4D files, distances are computed within each
 channel, and the value of a label pools the distances of all channels.

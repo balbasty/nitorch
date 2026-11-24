@@ -454,6 +454,8 @@ class LCC(OptimizationLoss):
 
     order = 2  # Hessian defined
 
+    spatial = True
+
     def __init__(self, dim=None, patch=20, stride=1, lam=1, kernel='g'):
         """
 

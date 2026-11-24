@@ -11,7 +11,7 @@ import pytest
 import torch
 from nitorch import spatial, io
 from nitorch.tools.registration import objects
-from nitorch.tools.registration.pairwise_makeobj import make_affine
+from nitorch.tools.registration.pairwise_makeobj import make_affine, make_nonlin
 from nitorch.tools.registration.pairwise_postproc import warp_images
 from nitorch.cli.registration.register.cli import _cli as register
 
@@ -207,3 +207,46 @@ def test_warp_images_resliced(tmp_path, position):
                    FIX_SHAPE, aff_f, true)
     check_resliced(out_fix, FIX_SHAPE, aff_f, fix_center.tolist(),
                    MOV_SHAPE, aff_m, spatial.affine_inv(true))
+
+
+# ----------------------------------------------------------------------
+#   warp_images: minimal reslice (-o) keeps the full affine in the
+#   output orientation matrix, whatever its position
+# ----------------------------------------------------------------------
+
+@pytest.mark.parametrize('with_nonlin', [False, True])
+@pytest.mark.parametrize('position', ['symmetric', 'moving', 'fixed'])
+def test_warp_images_minimal(tmp_path, position, with_nonlin):
+    aff_f, aff_m = make_affines()
+    # large shift (more than half the field of view) + small rotation
+    true = spatial.affine_matrix_classic(
+        torch.as_tensor([30., -25., 20., 0.1, -0.05, 0.08], dtype=torch.double),
+        dim=3)
+    fname_fix, fname_mov = write_images(tmp_path, aff_f, aff_m,
+                                        FIX_CENTER, MOV_CENTER)
+
+    affine = make_affine('rigid', position, init=true.float())
+    nonlin = None
+    if with_nonlin:
+        # zero velocity: the residual warp should be the identity
+        nonlin = make_nonlin(FIX_SHAPE, 'svf', affine=aff_f.float())
+
+    odir = str(tmp_path)
+    out_mov = os.path.join(odir, 'mov.moved.nii')
+    out_fix = os.path.join(odir, 'fix.moved.nii')
+    warp_images(dict(files=[fname_fix], output=out_fix),
+                dict(files=[fname_mov], output=out_mov),
+                affine=affine, nonlin=nonlin, dim=3, verbose=False)
+
+    for out, src, shape, trg_aff in (
+            (out_mov, fname_mov, MOV_SHAPE,
+             spatial.affine_lmdiv(true, aff_m)),
+            (out_fix, fname_fix, FIX_SHAPE,
+             spatial.affine_matmul(true, aff_f))):
+        dat = io.map(out)
+        assert list(dat.shape[:3]) == list(shape)
+        assert torch.allclose(dat.affine.double(), trg_aff, atol=1e-3)
+        dat = dat.fdata(dtype=torch.double).reshape(shape)
+        ref = io.map(src).fdata(dtype=torch.double).reshape(shape)
+        err = (dat - ref).abs().max()
+        assert err < 1e-2, err

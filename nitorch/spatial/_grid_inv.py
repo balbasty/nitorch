@@ -86,6 +86,11 @@ def grid_inv(grid, type='grid', bound='dft', extrapolate=True,
     (linear, same `bound`) interpolation of the Jacobian and one of the
     displacement, and one regularised solve.
 
+    The inversion is **not differentiable**: backpropagating through
+    it fails inside the multigrid solver (an in-place modification of
+    a view). Call it on tensors that do not require grad, or under
+    `torch.no_grad()`.
+
     Parameters
     ----------
     grid : (..., *spatial, dim) tensor

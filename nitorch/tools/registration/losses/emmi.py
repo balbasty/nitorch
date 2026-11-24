@@ -618,6 +618,16 @@ class EMMI(OptimizationLoss):
             self._prior = prior
         return ll, g, h
 
+    def histogram_cells(self, moving, fixed, dim=None):
+        # J fixed labels (or channels) x K moving channels
+        dim = dim or (moving.dim() - 1)
+        K = moving.shape[-dim-1]
+        if fixed.dtype.is_floating_point:
+            J = fixed.shape[-dim-1]
+        else:
+            J = int(fixed.max()) + 1
+        return J * K
+
     def _cached_prior(self, moving, fixed, dim):
         prior = getattr(self, '_prior', None) if self.cache else None
         if prior is None:
