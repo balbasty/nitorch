@@ -21,7 +21,7 @@ def prod(moving, fixed, dim=None, grad=True, hess=True, mask=None):
 
     if hess:
         if mask is not None:
-            h = mask.to(moving.dtype, copy=True).unsqueeze(-dim-1).div_(nvox)
+            h = mask.to(moving.dtype, copy=True).div_(nvox)
         else:
             h = moving.new_full([1]*(dim+1), 1/nvox)
         out.append(h)
@@ -47,16 +47,20 @@ def normprod(moving, fixed, dim=None, grad=True, hess=True, mask=None):
     out = [0.5 * ll.sum()]
 
     if grad or hess:
-        # g = (f - 2 * m * sum_mf / sum_mm) / sum_mm
-        # g = (f - ll) / sum_m
-        g = ll * (f / sum_mf - 1 / sum_m)
+        # ll = r^2, with r = sum(m*f) / sum(m) the mean of f over m
+        # g = d(r^2/2)/dm = r * (f - r) / sum(m)
+        # (written without dividing by sum(m*f), which is zero at a
+        # perfect fit)
+        r = sum_mf / sum_m
+        g = (f - r).mul_(r / sum_m)
         if mask is not None:
             g *= mask
         if grad:
             out.append(g)
 
         if hess:
-            h = ll * ((f * f) / (sum_mf * sum_mf) + 1 / (sum_m * sum_m))
+            # Upper bound of the Gauss-Newton diagonal (f - r)^2 / sum(m)^2
+            h = (f * f + r * r).div_(sum_m * sum_m)
             eps = h.max() * 1e-4
             h.add_(eps)
             if mask is not None:
@@ -86,7 +90,8 @@ def squeezed_prod(moving, fixed, lam=1, dim=None, grad=True, hess=True, mask=Non
         out.append(g)
 
     if hess:
-        h = (e*fixed).mul_(fixed).mul_((lam / 2)**2 * nvox)
+        # Absolute value of the (negative) true Hessian
+        h = (e*fixed).mul_(fixed).mul_((lam / 2)**2 / nvox)
         if mask is not None:
             h *= mask
         out.append(h)

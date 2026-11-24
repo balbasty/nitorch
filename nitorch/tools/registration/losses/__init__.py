@@ -8,6 +8,7 @@ from .emmi import *
 from .mse import *
 from .robust import *
 from .prod import *
+from .edt import *
 
 
 def make_loss(loss, dim=None):
@@ -43,6 +44,7 @@ def make_loss(loss, dim=None):
             ProdLoss(dim=dim) if loss == 'prod' else
             NormProdLoss(dim=dim) if loss == 'normprod' else
             SqueezedProdLoss(dim=dim) if loss in ('sqz', 'squeezed') else
+            EDTLoss(dim=dim) if loss == 'edt' else
             loss)
     if isinstance(loss, str):
         raise ValueError(f'Unknown loss {loss}')
