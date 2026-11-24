@@ -29,6 +29,7 @@ them. See the [overview of the group](images/index.md).
 | [`pool`](images/pool.md)                   | Pool a volume over sliding windows (mean, sum, minimum, maximum, ...). |
 | [`smooth`](images/smooth.md)               | Smooth a volume with a Gaussian, triangular or rectangular kernel.   |
 | [`inpaint`](images/inpaint.md)             | Fill in missing data.                                                |
+| [`distmap`](images/distmap.md)             | Compute the (signed) distance transform of a mask or label map.      |
 | [`metrics`](images/metrics.md)             | Compute overlap and similarity metrics between predicted and reference images. |
 
 ## Orientation and resampling

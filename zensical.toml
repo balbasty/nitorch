@@ -43,6 +43,7 @@ nav = [
         {"pool" = "cli/reference/images/pool.md"},
         {"smooth" = "cli/reference/images/smooth.md"},
         {"inpaint" = "cli/reference/images/inpaint.md"},
+        {"distmap" = "cli/reference/images/distmap.md"},
         {"metrics" = "cli/reference/images/metrics.md"},
       ]},
       {"Orientation & resampling" = [
