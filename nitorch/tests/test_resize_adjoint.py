@@ -3,8 +3,7 @@
 `restriction`, `resize_backward` and `restriction_backward` rely on the
 adjoint path of `resize` (do_adjoint=True) being the exact transpose of the
 pull (do_adjoint=False). The adjoint is implemented as a gather over output
-voxels; the legacy scatter implementation can be selected with the
-environment variable NI_RESIZE_ADJOINT_SCATTER=1 and is compared here too.
+voxels.
 """
 import math
 
@@ -17,8 +16,6 @@ if not hasattr(spatial, 'resize'):
 
 from nitorch._C.grid import bound_to_nitorch, inter_to_nitorch  # noqa: E402
 from nitorch._C.resize import align_to_nitorch  # noqa: E402
-
-SCATTER_ENV = 'NI_RESIZE_ADJOINT_SCATTER'
 
 # coarse shapes per dimensionality (odd/even mix, large enough so that a
 # 0.7 factor still yields >= 2 voxels, needed by 'center' alignment)
@@ -129,27 +126,6 @@ def test_resize_adjoint_anisotropic(dim, bound, interpolation, factor):
     Aty = push(y, coarse, factor, bound, interpolation, 'edge')
     lhs, rhs = _dot(Ax, y), _dot(x, Aty)
     assert abs(lhs - rhs) <= 1e-12 * (Ax.norm().item() * y.norm().item() + 1)
-
-
-@pytest.mark.parametrize('dim', [1, 2, 3])
-@pytest.mark.parametrize('interpolation', INTERPOLATIONS)
-@pytest.mark.parametrize('bound', BOUNDS + ['dst1', 'replicate'])
-@pytest.mark.parametrize('factor', FACTORS)
-@pytest.mark.parametrize('mode', MODES)
-@pytest.mark.parametrize('dtype', [torch.double, torch.float])
-@pytest.mark.parametrize('device', DEVICES)
-def test_gather_matches_scatter(monkeypatch, dim, interpolation, bound,
-                                factor, mode, dtype, device):
-    g = torch.Generator().manual_seed(42)
-    coarse = COARSE[dim]
-    fine = _fine_shape(coarse, factor)
-    y = torch.randn([2, 2, *fine], dtype=dtype, generator=g).to(device)
-    monkeypatch.delenv(SCATTER_ENV, raising=False)
-    gather = push(y, coarse, factor, bound, interpolation, mode)
-    monkeypatch.setenv(SCATTER_ENV, '1')
-    scatter = push(y, coarse, factor, bound, interpolation, mode)
-    tol = 1e-12 if dtype is torch.double else 1e-5
-    torch.testing.assert_close(gather, scatter, rtol=tol, atol=tol)
 
 
 def test_gather_large_kernel():

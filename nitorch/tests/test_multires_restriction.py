@@ -2,9 +2,7 @@
 
 The restriction kernel uses a fixed 4-tap (per dimension) stencil,
 specialised for the factor-2 restriction used by FMG (coarse size =
-ceil(fine size / 2), so that the fine/coarse scale is s <= 2). The legacy
-kernels compute the same operator and can be selected with the environment
-variable NI_MULTIRES_RESTRICT_LEGACY=1.
+ceil(fine size / 2), so that the fine/coarse scale is s <= 2).
 """
 import itertools
 
@@ -24,13 +22,12 @@ DEVICES = ['cpu', pytest.param('cuda', marks=CUDA)]
 
 def exact_tol(x):
     """Bitwise on CPU. On CUDA, nvcc may contract multiply-adds
-    differently in the two kernels."""
+    differently depending on memory layout."""
     if x.device.type == 'cpu':
         return dict(rtol=0, atol=0)
     tol = 1e-12 if x.dtype is torch.double else 1e-6
     return dict(rtol=tol, atol=tol)
 
-LEGACY_ENV = 'NI_MULTIRES_RESTRICT_LEGACY'
 BOUNDS = ['replicate', 'dct1', 'dct2', 'dst1', 'dst2', 'dft', 'zero']
 SHAPES = {
     1: [(12,), (13,), (1,), (2,), (3,)],
@@ -130,22 +127,6 @@ def _cases():
 
 
 @pytest.mark.parametrize('dim,shape,bound', list(_cases()))
-@pytest.mark.parametrize('dtype', [torch.double, torch.float])
-@pytest.mark.parametrize('device', DEVICES)
-def test_restriction_matches_legacy(monkeypatch, dim, shape, bound, dtype,
-                                    device):
-    """New kernel == legacy kernel (factor 2, even and odd sizes)."""
-    g = torch.Generator().manual_seed(0)
-    x = torch.randn([2, 3, *shape], generator=g).to(dtype).to(device)
-    monkeypatch.delenv(LEGACY_ENV, raising=False)
-    new = restrict(x, bound)
-    monkeypatch.setenv(LEGACY_ENV, '1')
-    old = restrict(x, bound)
-    # same operations in the same order: bitwise identical on CPU
-    torch.testing.assert_close(new, old, **exact_tol(x))
-
-
-@pytest.mark.parametrize('dim,shape,bound', list(_cases()))
 @pytest.mark.parametrize('device', DEVICES)
 def test_restriction_dense_reference(dim, shape, bound, device):
     """Kernel == independent dense implementation of the operator,
@@ -186,13 +167,8 @@ def test_restriction_preserves_constants():
 
 
 @pytest.mark.parametrize('dim', [1, 2, 3])
-@pytest.mark.parametrize('legacy', [False, True])
-def test_restriction_factor3_raises(monkeypatch, dim, legacy):
+def test_restriction_factor3_raises(dim):
     """The 4-tap stencil only covers factors <= 2: refuse larger ones."""
-    if legacy:
-        monkeypatch.setenv(LEGACY_ENV, '1')
-    else:
-        monkeypatch.delenv(LEGACY_ENV, raising=False)
     x = torch.randn([1, 1, *([12] * dim)], dtype=torch.double)
     with pytest.raises(RuntimeError, match='factor of'):
         restrict(x, 'dct2', [4] * dim)

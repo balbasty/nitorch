@@ -16,17 +16,14 @@ The support |x_j - i| < s <= 2 is therefore exactly covered by the four
 taps floor(x_j) - 1 .. floor(x_j) + 2, and the kernel `restrict2x<D>`
 uses a fixed, fully unrolled, 4^D-tap stencil. (With s > 2 the stencil
 would be truncated, so multires_impl refuses such restrictions.)
-
-The legacy kernels (restrict{1,2,3}d) compute the same operator and are
-kept for comparison; they can be selected by setting the environment
-variable `NI_MULTIRES_RESTRICT_LEGACY=1`.
+`restrict{1,2,3}d` are aliases for `restrict2x<{1,2,3}>`.
 */
 #include "common.h"                // write C++/CUDA compatible code
 #include "../defines.h"            // useful macros
 #include "bounds_common.h"         // boundary conditions + enum
 #include "interpolation_common.h"  // interpolation weights + enum
 #include "allocator.h"             // base class handling offset sizes
-#include "gather_common.h"         // NI_PRAGMA_UNROLL, gather_env_flag
+#include "gather_common.h"         // NI_PRAGMA_UNROLL
 #include <ATen/ATen.h>             // tensors
 #include <tuple>                   // needed by prepare_tensors
 
@@ -74,15 +71,9 @@ namespace { // anonymous namespace > everything inside has internal linkage
 const auto L = ni::InterpolationType::Linear;
 const auto Q = ni::InterpolationType::Quadratic;
 
-static NI_HOST bool multires_restrict_use_legacy()
-{
-  return gather_env_flag("NI_MULTIRES_RESTRICT_LEGACY");
-}
-
 // Taps of the (factor 2) restriction along one dimension, for output
 // voxel j: input offsets `o` (folded, times stride), weights `w` and
 // boundary signs `s` of input voxels floor(x)-1 .. floor(x)+2.
-// The expressions replicate the legacy kernels exactly.
 template <typename reduce_t, typename offset_t>
 static NI_INLINE NI_DEVICE void restrict2x_taps(
   offset_t j, reduce_t scale, BoundType bound, offset_t size, offset_t stride,
@@ -264,8 +255,7 @@ public:
     NAME##_ptr(static_cast<scalar_t*>(info.NAME##_ptr))
 
     INIT_ALLOC_INFO_5D(inp),
-    INIT_ALLOC_INFO_5D(out),
-    legacy_restrict(multires_restrict_use_legacy())
+    INIT_ALLOC_INFO_5D(out)
   {
 #ifndef __CUDACC__
       set_resize();
@@ -285,14 +275,11 @@ public:
       case 3:
         resize_ = &Self::resize3d; break;
       case 1+ADJ:
-        resize_ = legacy_restrict ? &Self::restrict1d
-                                  : &Self::template restrict2x<1>; break;
+        resize_ = &Self::restrict1d; break;
       case 2+ADJ:
-        resize_ = legacy_restrict ? &Self::restrict2d
-                                  : &Self::template restrict2x<2>; break;
+        resize_ = &Self::restrict2d; break;
       case 3+ADJ:
-        resize_ = legacy_restrict ? &Self::restrict3d
-                                  : &Self::template restrict2x<3>; break;
+        resize_ = &Self::restrict3d; break;
       default:
         resize_ = &Self::resize3d; break;
     }
@@ -330,14 +317,20 @@ private:
   DECLARE_RESIZE(resize2d)
   DECLARE_RESIZE(resize3d)
 
-  DECLARE_RESIZE(restrict1d)
-  DECLARE_RESIZE(restrict2d)
-  DECLARE_RESIZE(restrict3d)
-
   // Factor-2 restriction with a fixed 4^D-tap stencil (D = dim)
   template <int D>
   NI_DEVICE void restrict2x(
     offset_t w, offset_t h, offset_t d, offset_t n) const;
+
+  NI_DEVICE NI_INLINE void restrict1d(
+    offset_t w, offset_t h, offset_t d, offset_t n) const
+  { this->template restrict2x<1>(w, h, d, n); }
+  NI_DEVICE NI_INLINE void restrict2d(
+    offset_t w, offset_t h, offset_t d, offset_t n) const
+  { this->template restrict2x<2>(w, h, d, n); }
+  NI_DEVICE NI_INLINE void restrict3d(
+    offset_t w, offset_t h, offset_t d, offset_t n) const
+  { this->template restrict2x<3>(w, h, d, n); }
 
   // ~~~ OPTIONS ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
   int               dim;            // dimensionality (1 or 2 or 3)
@@ -368,8 +361,6 @@ private:
   offset_t C;
   DECLARE_STRIDE_INFO_5D(inp)
   DECLARE_STRIDE_INFO_5D(out)
-
-  bool              legacy_restrict; // use restrict{1,2,3}d (legacy)?
 };
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -391,14 +382,11 @@ void MultiResImpl<scalar_t,offset_t,reduce_t>::resize(
       case 3:
         return resize3d(x, y, z, n);
       case 1+ADJ:
-        return legacy_restrict ? restrict1d(x, y, z, n)
-                               : this->template restrict2x<1>(x, y, z, n);
+        return restrict1d(x, y, z, n);
       case 2+ADJ:
-        return legacy_restrict ? restrict2d(x, y, z, n)
-                               : this->template restrict2x<2>(x, y, z, n);
+        return restrict2d(x, y, z, n);
       case 3+ADJ:
-        return legacy_restrict ? restrict3d(x, y, z, n)
-                               : this->template restrict2x<3>(x, y, z, n);
+        return restrict3d(x, y, z, n);
       default:
         return resize3d(x, y, z, n);
     }
@@ -628,8 +616,7 @@ void MultiResImpl<scalar_t,offset_t,reduce_t>::resize1d(offset_t w, offset_t h, 
 //              LINEAR RESTRICTION (FACTOR 2, 4^D TAPS)
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-// Same operator and same order of operations as the legacy kernels
-// restrict{1,2,3}d below (unused dimensions use a single unit tap).
+// Unused dimensions (>= D) use a single unit tap.
 template <typename scalar_t, typename offset_t, typename reduce_t>
 template <int D>
 NI_DEVICE void MultiResImpl<scalar_t,offset_t,reduce_t>::restrict2x(
@@ -678,187 +665,6 @@ NI_DEVICE void MultiResImpl<scalar_t,offset_t,reduce_t>::restrict2x(
       acc += accz * wz[kz];
     }
     *out_ptr_NCXYZ = static_cast<scalar_t>(acc);
-  }
-}
-
-// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-//                LINEAR RESTRICTION 3D (LEGACY)
-// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
-void MultiResImpl<scalar_t,offset_t,reduce_t>::restrict3d(
-  offset_t w, offset_t h, offset_t d, offset_t n) const
-{
-  reduce_t x = (w + 0.5) * scale0 - 0.5;
-  reduce_t y = (h + 0.5) * scale1 - 0.5;
-  reduce_t z = (d + 0.5) * scale2 - 0.5;
-  offset_t ix1 = static_cast<offset_t>(std::floor(x));
-  offset_t iy1 = static_cast<offset_t>(std::floor(y));
-  offset_t iz1 = static_cast<offset_t>(std::floor(z));
-  reduce_t dx1 = interpolation::weight(L, (x - ix1) / scale0) / scale0;
-  reduce_t dy1 = interpolation::weight(L, (y - iy1) / scale1) / scale1;
-  reduce_t dz1 = interpolation::weight(L, (z - iz1) / scale2) / scale2;
-  reduce_t dx0 = interpolation::weight(L, (x - ix1 + 1) / scale0) / scale0;
-  reduce_t dy0 = interpolation::weight(L, (y - iy1 + 1) / scale1) / scale1;
-  reduce_t dz0 = interpolation::weight(L, (z - iz1 + 1) / scale2) / scale2;
-  reduce_t dx2 = interpolation::weight(L, (1 + ix1 - x) / scale0) / scale0;
-  reduce_t dy2 = interpolation::weight(L, (1 + iy1 - y) / scale1) / scale1;
-  reduce_t dz2 = interpolation::weight(L, (1 + iz1 - z) / scale2) / scale2;
-  reduce_t dx3 = interpolation::weight(L, (2 + ix1 - x) / scale0) / scale0;
-  reduce_t dy3 = interpolation::weight(L, (2 + iy1 - y) / scale1) / scale1;
-  reduce_t dz3 = interpolation::weight(L, (2 + iz1 - z) / scale2) / scale2;
-  int8_t  sx3 = bound::sign(bound0, ix1+2, inp_X);
-  int8_t  sy3 = bound::sign(bound1, iy1+2, inp_Y);
-  int8_t  sz3 = bound::sign(bound2, iz1+2, inp_Z);
-  int8_t  sx2 = bound::sign(bound0, ix1+1, inp_X);
-  int8_t  sy2 = bound::sign(bound1, iy1+1, inp_Y);
-  int8_t  sz2 = bound::sign(bound2, iz1+1, inp_Z);
-  int8_t  sx0 = bound::sign(bound0, ix1-1, inp_X);
-  int8_t  sy0 = bound::sign(bound1, iy1-1, inp_Y);
-  int8_t  sz0 = bound::sign(bound2, iz1-1, inp_Z);
-  int8_t  sx1 = bound::sign(bound0, ix1,   inp_X);
-  int8_t  sy1 = bound::sign(bound1, iy1,   inp_Y);
-  int8_t  sz1 = bound::sign(bound2, iz1,   inp_Z);
-  offset_t ix0, ix2, ix3, iy0, iy2, iy3, iz0, iz2, iz3;
-  ix3 = bound::index(bound0, ix1+2, inp_X) * inp_sX;
-  iy3 = bound::index(bound1, iy1+2, inp_Y) * inp_sY;
-  iz3 = bound::index(bound2, iz1+2, inp_Z) * inp_sZ;
-  ix2 = bound::index(bound0, ix1+1, inp_X) * inp_sX;
-  iy2 = bound::index(bound1, iy1+1, inp_Y) * inp_sY;
-  iz2 = bound::index(bound2, iz1+1, inp_Z) * inp_sZ;
-  ix0 = bound::index(bound0, ix1-1, inp_X) * inp_sX;
-  iy0 = bound::index(bound1, iy1-1, inp_Y) * inp_sY;
-  iz0 = bound::index(bound2, iz1-1, inp_Z) * inp_sZ;
-  ix1 = bound::index(bound0, ix1,   inp_X) * inp_sX;
-  iy1 = bound::index(bound1, iy1,   inp_Y) * inp_sY;
-  iz1 = bound::index(bound2, iz1,   inp_Z) * inp_sZ;
-
-  scalar_t *out_ptr_NCXYZ = out_ptr
-                          + n * out_sN + w * out_sX 
-                          + h * out_sY + d * out_sZ;
-  scalar_t *inp_ptr_NC = inp_ptr + n * inp_sN;
-
-
-  for (offset_t c = 0; c < C; ++c, out_ptr_NCXYZ += out_sC, 
-                                   inp_ptr_NC    += inp_sC) 
-  {
-
-    auto accum1d = [ix0, ix1, ix2, ix3, dx0, dx1, dx2, dx3, 
-                    sx0, sx1, sx2, sx3, inp_ptr_NC]
-                    (offset_t i, uint8_t s)
-    {
-      return static_cast<reduce_t>(bound::get(inp_ptr_NC, i + ix0, s * sx0)) * dx0
-           + static_cast<reduce_t>(bound::get(inp_ptr_NC, i + ix1, s * sx1)) * dx1
-           + static_cast<reduce_t>(bound::get(inp_ptr_NC, i + ix2, s * sx2)) * dx2
-           + static_cast<reduce_t>(bound::get(inp_ptr_NC, i + ix3, s * sx3)) * dx3;
-    };
-
-    auto accum2d = [iy0, iy1, iy2, iy3, dy0, dy1, dy2, dy3, 
-                    sy0, sy1, sy2, sy3, accum1d]
-                    (offset_t i, uint8_t s)
-    {
-      return accum1d(iy0 + i, sy0 * s) * dy0 
-           + accum1d(iy1 + i, sy1 * s) * dy1 
-           + accum1d(iy2 + i, sy2 * s) * dy2 
-           + accum1d(iy3 + i, sy3 * s) * dy3;
-    };
-
-    *out_ptr_NCXYZ  = static_cast<scalar_t>(accum2d(iz0, sz0) * dz0 
-                                          + accum2d(iz1, sz1) * dz1 
-                                          + accum2d(iz2, sz2) * dz2 
-                                          + accum2d(iz3, sz3) * dz3);
-  }
-}
-
-template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
-void MultiResImpl<scalar_t,offset_t,reduce_t>::restrict2d(offset_t w, offset_t h, offset_t d, offset_t n) const 
-{
-  reduce_t x = (w + 0.5) * scale0 - 0.5;
-  reduce_t y = (h + 0.5) * scale1 - 0.5;
-  offset_t ix1 = static_cast<offset_t>(std::floor(x));
-  offset_t iy1 = static_cast<offset_t>(std::floor(y));
-  reduce_t dx1 = interpolation::weight(L, (x - ix1) / scale0) / scale0;
-  reduce_t dy1 = interpolation::weight(L, (y - iy1) / scale1) / scale1;
-  reduce_t dx0 = interpolation::weight(L, (x - ix1 + 1) / scale0) / scale0;
-  reduce_t dy0 = interpolation::weight(L, (y - iy1 + 1) / scale1) / scale1;
-  reduce_t dx2 = interpolation::weight(L, (1 + ix1 - x) / scale0) / scale0;
-  reduce_t dy2 = interpolation::weight(L, (1 + iy1 - y) / scale1) / scale1;
-  reduce_t dx3 = interpolation::weight(L, (2 + ix1 - x) / scale0) / scale0;
-  reduce_t dy3 = interpolation::weight(L, (2 + iy1 - y) / scale1) / scale1;
-  int8_t  sx3 = bound::sign(bound0, ix1+2, inp_X);
-  int8_t  sy3 = bound::sign(bound1, iy1+2, inp_Y);
-  int8_t  sx2 = bound::sign(bound0, ix1+1, inp_X);
-  int8_t  sy2 = bound::sign(bound1, iy1+1, inp_Y);
-  int8_t  sx0 = bound::sign(bound0, ix1-1, inp_X);
-  int8_t  sy0 = bound::sign(bound1, iy1-1, inp_Y);
-  int8_t  sx1 = bound::sign(bound0, ix1,   inp_X);
-  int8_t  sy1 = bound::sign(bound1, iy1,   inp_Y);
-  offset_t ix0, ix2, ix3, iy0, iy2, iy3;
-  ix3 = bound::index(bound0, ix1+2, inp_X) * inp_sX;
-  iy3 = bound::index(bound1, iy1+2, inp_Y) * inp_sY;
-  ix2 = bound::index(bound0, ix1+1, inp_X) * inp_sX;
-  iy2 = bound::index(bound1, iy1+1, inp_Y) * inp_sY;
-  ix0 = bound::index(bound0, ix1-1, inp_X) * inp_sX;
-  iy0 = bound::index(bound1, iy1-1, inp_Y) * inp_sY;
-  ix1 = bound::index(bound0, ix1,   inp_X) * inp_sX;
-  iy1 = bound::index(bound1, iy1,   inp_Y) * inp_sY;
-
-  scalar_t *out_ptr_NCXYZ = out_ptr + n * out_sN + w * out_sX + h * out_sY;
-  scalar_t *inp_ptr_NC = inp_ptr + n * inp_sN;
-
-
-  for (offset_t c = 0; c < C; ++c, out_ptr_NCXYZ += out_sC, 
-                                   inp_ptr_NC    += inp_sC) 
-  {
-
-    auto accum1d = [ix0, ix1, ix2, ix3, dx0, dx1, dx2, dx3, 
-                    sx0, sx1, sx2, sx3, inp_ptr_NC]
-                    (offset_t i, uint8_t s)
-    {
-      return static_cast<reduce_t>(bound::get(inp_ptr_NC, i + ix0, s * sx0)) * dx0
-           + static_cast<reduce_t>(bound::get(inp_ptr_NC, i + ix1, s * sx1)) * dx1
-           + static_cast<reduce_t>(bound::get(inp_ptr_NC, i + ix2, s * sx2)) * dx2
-           + static_cast<reduce_t>(bound::get(inp_ptr_NC, i + ix3, s * sx3)) * dx3;
-    };
-
-    *out_ptr_NCXYZ  = static_cast<scalar_t>(accum1d(iy0, sy0) * dy0 
-                                          + accum1d(iy1, sy1) * dy1 
-                                          + accum1d(iy2, sy2) * dy2 
-                                          + accum1d(iy3, sy3) * dy3);
-  }
-}
-
-template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
-void MultiResImpl<scalar_t,offset_t,reduce_t>::restrict1d(offset_t w, offset_t h, offset_t d, offset_t n) const 
-{
-  reduce_t x = (w + 0.5) * scale0 - 0.5;
-  offset_t ix1 = static_cast<offset_t>(std::floor(x));
-  reduce_t dx1 = interpolation::weight(L, (x - ix1) / scale0) / scale0;
-  reduce_t dx0 = interpolation::weight(L, (x - ix1 + 1) / scale0) / scale0;
-  reduce_t dx2 = interpolation::weight(L, (1 + ix1 - x) / scale0) / scale0;
-  reduce_t dx3 = interpolation::weight(L, (2 + ix1 - x) / scale0) / scale0;
-  int8_t  sx3 = bound::sign(bound0, ix1+2, inp_X);
-  int8_t  sx2 = bound::sign(bound0, ix1+1, inp_X);
-  int8_t  sx0 = bound::sign(bound0, ix1-1, inp_X);
-  int8_t  sx1 = bound::sign(bound0, ix1,   inp_X);
-  offset_t ix0, ix2, ix3;
-  ix3 = bound::index(bound0, ix1+2, inp_X) * inp_sX;
-  ix2 = bound::index(bound0, ix1+1, inp_X) * inp_sX;
-  ix0 = bound::index(bound0, ix1-1, inp_X) * inp_sX;
-  ix1 = bound::index(bound0, ix1,   inp_X) * inp_sX;
-
-  scalar_t *out_ptr_NCXYZ = out_ptr + n * out_sN + w * out_sX;
-  scalar_t *inp_ptr_NC = inp_ptr + n * inp_sN;
-
-
-  for (offset_t c = 0; c < C; ++c, out_ptr_NCXYZ += out_sC, 
-                                   inp_ptr_NC    += inp_sC) 
-  {
-    *out_ptr_NCXYZ  = static_cast<scalar_t>(
-        static_cast<reduce_t>(bound::get(inp_ptr_NC, ix0, sx0)) * dx0
-      + static_cast<reduce_t>(bound::get(inp_ptr_NC, ix1, sx1)) * dx1
-      + static_cast<reduce_t>(bound::get(inp_ptr_NC, ix2, sx2)) * dx2
-      + static_cast<reduce_t>(bound::get(inp_ptr_NC, ix3, sx3)) * dx3);
   }
 }
 

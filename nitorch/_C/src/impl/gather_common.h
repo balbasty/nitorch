@@ -21,8 +21,8 @@
 //
 // Used by resize_common.cpp (adjoint of resize, i.e., "restrict").
 // multires_common.cpp (FMG restriction, always a factor of two) uses a
-// fixed 4-tap stencil instead and only borrows NI_PRAGMA_UNROLL and
-// gather_env_flag from this file.
+// fixed 4-tap stencil instead and only borrows NI_PRAGMA_UNROLL from
+// this file.
 
 #include "common.h"
 #include "bounds_common.h"
@@ -30,7 +30,6 @@
 #include <vector>
 #include <utility>
 #include <algorithm>
-#include <cstdlib>
 #include <cstring>
 #include <type_traits>
 #include <limits>
@@ -64,14 +63,6 @@ namespace {           // internal linkage
 // (float for float/half, double for double)
 template <typename scalar_t> struct gather_weight { typedef float type; };
 template <> struct gather_weight<double> { typedef double type; };
-
-// True if the environment variable `name` is set to a non-empty value
-// other than "0".
-static NI_HOST NI_INLINE bool gather_env_flag(const char * name)
-{
-  const char * env = std::getenv(name);
-  return env && *env && std::strcmp(env, "0") != 0;
-}
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 //                           HOST SIDE
