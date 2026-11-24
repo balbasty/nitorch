@@ -1,8 +1,29 @@
+/*
+FMG RESTRICTION
+
+The restriction (do_adjoint == true) maps a fine image to a coarse image
+with a gather over output (coarse) voxels (no atomics), separably in each
+dimension:
+
+  out[j] = sum_i  (1/s) * Lin((x_j - i) / s) * sign(i) * inp[fold(i)],
+  x_j    = (j + 0.5) * s - 0.5,     s = fine size / coarse size,
+
+where Lin is the linear B-spline (hat) and fold/sign implement the
+boundary condition on the fine grid. FMG always restricts by a factor of
+two (coarse size = ceil(fine size / 2), see fmg_common.cpp), so that
+s = 2 (even sizes), s = (2m-1)/m < 2 (odd sizes) or s = 1 (size 1).
+The support |x_j - i| < s <= 2 is therefore exactly covered by the four
+taps floor(x_j) - 1 .. floor(x_j) + 2, and the kernel `restrict2x<D>`
+uses a fixed, fully unrolled, 4^D-tap stencil. (With s > 2 the stencil
+would be truncated, so multires_impl refuses such restrictions.)
+`restrict{1,2,3}d` are aliases for `restrict2x<{1,2,3}>`.
+*/
 #include "common.h"                // write C++/CUDA compatible code
 #include "../defines.h"            // useful macros
 #include "bounds_common.h"         // boundary conditions + enum
 #include "interpolation_common.h"  // interpolation weights + enum
 #include "allocator.h"             // base class handling offset sizes
+#include "gather_common.h"         // NI_PRAGMA_UNROLL
 #include <ATen/ATen.h>             // tensors
 #include <tuple>                   // needed by prepare_tensors
 
@@ -49,6 +70,28 @@ namespace { // anonymous namespace > everything inside has internal linkage
 
 const auto L = ni::InterpolationType::Linear;
 const auto Q = ni::InterpolationType::Quadratic;
+
+// Taps of the (factor 2) restriction along one dimension, for output
+// voxel j: input offsets `o` (folded, times stride), weights `w` and
+// boundary signs `s` of input voxels floor(x)-1 .. floor(x)+2.
+template <typename reduce_t, typename offset_t>
+static NI_INLINE NI_DEVICE void restrict2x_taps(
+  offset_t j, reduce_t scale, BoundType bound, offset_t size, offset_t stride,
+  offset_t o[4], reduce_t w[4], int8_t s[4])
+{
+  reduce_t x  = (j + 0.5) * scale - 0.5;
+  offset_t i1 = static_cast<offset_t>(std::floor(x));
+  w[0] = interpolation::weight(L, (x - i1 + 1) / scale) / scale;
+  w[1] = interpolation::weight(L, (x - i1)     / scale) / scale;
+  w[2] = interpolation::weight(L, (1 + i1 - x) / scale) / scale;
+  w[3] = interpolation::weight(L, (2 + i1 - x) / scale) / scale;
+  NI_PRAGMA_UNROLL
+  for (int k = 0; k < 4; ++k) {
+    offset_t i = i1 - 1 + k;
+    s[k] = bound::sign(bound, i, size);
+    o[k] = bound::index(bound, i, size) * stride;
+  }
+}
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 //                        INDEXING UTILS
@@ -232,7 +275,7 @@ public:
       case 3:
         resize_ = &Self::resize3d; break;
       case 1+ADJ:
-        resize_ = &Self::restrict1d; break; 
+        resize_ = &Self::restrict1d; break;
       case 2+ADJ:
         resize_ = &Self::restrict2d; break;
       case 3+ADJ:
@@ -274,9 +317,20 @@ private:
   DECLARE_RESIZE(resize2d)
   DECLARE_RESIZE(resize3d)
 
-  DECLARE_RESIZE(restrict1d)
-  DECLARE_RESIZE(restrict2d)
-  DECLARE_RESIZE(restrict3d)
+  // Factor-2 restriction with a fixed 4^D-tap stencil (D = dim)
+  template <int D>
+  NI_DEVICE void restrict2x(
+    offset_t w, offset_t h, offset_t d, offset_t n) const;
+
+  NI_DEVICE NI_INLINE void restrict1d(
+    offset_t w, offset_t h, offset_t d, offset_t n) const
+  { this->template restrict2x<1>(w, h, d, n); }
+  NI_DEVICE NI_INLINE void restrict2d(
+    offset_t w, offset_t h, offset_t d, offset_t n) const
+  { this->template restrict2x<2>(w, h, d, n); }
+  NI_DEVICE NI_INLINE void restrict3d(
+    offset_t w, offset_t h, offset_t d, offset_t n) const
+  { this->template restrict2x<3>(w, h, d, n); }
 
   // ~~~ OPTIONS ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
   int               dim;            // dimensionality (1 or 2 or 3)
@@ -328,7 +382,7 @@ void MultiResImpl<scalar_t,offset_t,reduce_t>::resize(
       case 3:
         return resize3d(x, y, z, n);
       case 1+ADJ:
-        return restrict1d(x, y, z, n); 
+        return restrict1d(x, y, z, n);
       case 2+ADJ:
         return restrict2d(x, y, z, n);
       case 3+ADJ:
@@ -377,30 +431,9 @@ void MultiResImpl<scalar_t,offset_t,reduce_t>::loop(
 template <typename scalar_t, typename offset_t, typename reduce_t> NI_HOST
 void MultiResImpl<scalar_t,offset_t,reduce_t>::loop() const
 {
-  if (!has_atomic_add<scalar_t>::value && (do_adjoint))
-  {
-    // I do not have access to atomic operations so I cannot
-    // parallelize across voxels.
-    at::parallel_for(0, N, 0, [&](offset_t start, offset_t end) {
-      for (offset_t n = start; n < end; ++n) {
-        if (dim == 1) {
-          for (offset_t w=0; w<out_X; ++w)
-            resize(w, 0, 0, n);
-        } else if (dim == 2) {
-          for (offset_t h=0; h<out_Y; ++h)
-          for (offset_t w=0; w<out_X; ++w)
-            resize(w, h, 0, n);
-        } else {
-          for (offset_t d=0; d<out_Z; ++d)
-          for (offset_t h=0; h<out_Y; ++h)
-          for (offset_t w=0; w<out_X; ++w)
-            resize(w, h, d, n);
-        }
-      }
-    });
-    return;
-  }
-
+  // Both prolongation and restriction gather (each output voxel is
+  // written by a single thread, no atomics), so we can always
+  // parallelize across output voxels, even without atomic operations.
   // Parallelize across voxels   
   offset_t out_YZ   =   out_Z * out_Y;
   offset_t out_XYZ  =  out_YZ * out_X;
@@ -580,183 +613,58 @@ void MultiResImpl<scalar_t,offset_t,reduce_t>::resize1d(offset_t w, offset_t h, 
 }
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-//                     LINEAR RESTRICTION 3D
+//              LINEAR RESTRICTION (FACTOR 2, 4^D TAPS)
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
-void MultiResImpl<scalar_t,offset_t,reduce_t>::restrict3d(
+// Unused dimensions (>= D) use a single unit tap.
+template <typename scalar_t, typename offset_t, typename reduce_t>
+template <int D>
+NI_DEVICE void MultiResImpl<scalar_t,offset_t,reduce_t>::restrict2x(
   offset_t w, offset_t h, offset_t d, offset_t n) const
 {
-  reduce_t x = (w + 0.5) * scale0 - 0.5;
-  reduce_t y = (h + 0.5) * scale1 - 0.5;
-  reduce_t z = (d + 0.5) * scale2 - 0.5;
-  offset_t ix1 = static_cast<offset_t>(std::floor(x));
-  offset_t iy1 = static_cast<offset_t>(std::floor(y));
-  offset_t iz1 = static_cast<offset_t>(std::floor(z));
-  reduce_t dx1 = interpolation::weight(L, (x - ix1) / scale0) / scale0;
-  reduce_t dy1 = interpolation::weight(L, (y - iy1) / scale1) / scale1;
-  reduce_t dz1 = interpolation::weight(L, (z - iz1) / scale2) / scale2;
-  reduce_t dx0 = interpolation::weight(L, (x - ix1 + 1) / scale0) / scale0;
-  reduce_t dy0 = interpolation::weight(L, (y - iy1 + 1) / scale1) / scale1;
-  reduce_t dz0 = interpolation::weight(L, (z - iz1 + 1) / scale2) / scale2;
-  reduce_t dx2 = interpolation::weight(L, (1 + ix1 - x) / scale0) / scale0;
-  reduce_t dy2 = interpolation::weight(L, (1 + iy1 - y) / scale1) / scale1;
-  reduce_t dz2 = interpolation::weight(L, (1 + iz1 - z) / scale2) / scale2;
-  reduce_t dx3 = interpolation::weight(L, (2 + ix1 - x) / scale0) / scale0;
-  reduce_t dy3 = interpolation::weight(L, (2 + iy1 - y) / scale1) / scale1;
-  reduce_t dz3 = interpolation::weight(L, (2 + iz1 - z) / scale2) / scale2;
-  int8_t  sx3 = bound::sign(bound0, ix1+2, inp_X);
-  int8_t  sy3 = bound::sign(bound1, iy1+2, inp_Y);
-  int8_t  sz3 = bound::sign(bound2, iz1+2, inp_Z);
-  int8_t  sx2 = bound::sign(bound0, ix1+1, inp_X);
-  int8_t  sy2 = bound::sign(bound1, iy1+1, inp_Y);
-  int8_t  sz2 = bound::sign(bound2, iz1+1, inp_Z);
-  int8_t  sx0 = bound::sign(bound0, ix1-1, inp_X);
-  int8_t  sy0 = bound::sign(bound1, iy1-1, inp_Y);
-  int8_t  sz0 = bound::sign(bound2, iz1-1, inp_Z);
-  int8_t  sx1 = bound::sign(bound0, ix1,   inp_X);
-  int8_t  sy1 = bound::sign(bound1, iy1,   inp_Y);
-  int8_t  sz1 = bound::sign(bound2, iz1,   inp_Z);
-  offset_t ix0, ix2, ix3, iy0, iy2, iy3, iz0, iz2, iz3;
-  ix3 = bound::index(bound0, ix1+2, inp_X) * inp_sX;
-  iy3 = bound::index(bound1, iy1+2, inp_Y) * inp_sY;
-  iz3 = bound::index(bound2, iz1+2, inp_Z) * inp_sZ;
-  ix2 = bound::index(bound0, ix1+1, inp_X) * inp_sX;
-  iy2 = bound::index(bound1, iy1+1, inp_Y) * inp_sY;
-  iz2 = bound::index(bound2, iz1+1, inp_Z) * inp_sZ;
-  ix0 = bound::index(bound0, ix1-1, inp_X) * inp_sX;
-  iy0 = bound::index(bound1, iy1-1, inp_Y) * inp_sY;
-  iz0 = bound::index(bound2, iz1-1, inp_Z) * inp_sZ;
-  ix1 = bound::index(bound0, ix1,   inp_X) * inp_sX;
-  iy1 = bound::index(bound1, iy1,   inp_Y) * inp_sY;
-  iz1 = bound::index(bound2, iz1,   inp_Z) * inp_sZ;
-
-  scalar_t *out_ptr_NCXYZ = out_ptr
-                          + n * out_sN + w * out_sX 
-                          + h * out_sY + d * out_sZ;
-  scalar_t *inp_ptr_NC = inp_ptr + n * inp_sN;
-
-
-  for (offset_t c = 0; c < C; ++c, out_ptr_NCXYZ += out_sC, 
-                                   inp_ptr_NC    += inp_sC) 
-  {
-
-    auto accum1d = [ix0, ix1, ix2, ix3, dx0, dx1, dx2, dx3, 
-                    sx0, sx1, sx2, sx3, inp_ptr_NC]
-                    (offset_t i, uint8_t s)
-    {
-      return static_cast<reduce_t>(bound::get(inp_ptr_NC, i + ix0, s * sx0)) * dx0
-           + static_cast<reduce_t>(bound::get(inp_ptr_NC, i + ix1, s * sx1)) * dx1
-           + static_cast<reduce_t>(bound::get(inp_ptr_NC, i + ix2, s * sx2)) * dx2
-           + static_cast<reduce_t>(bound::get(inp_ptr_NC, i + ix3, s * sx3)) * dx3;
-    };
-
-    auto accum2d = [iy0, iy1, iy2, iy3, dy0, dy1, dy2, dy3, 
-                    sy0, sy1, sy2, sy3, accum1d]
-                    (offset_t i, uint8_t s)
-    {
-      return accum1d(iy0 + i, sy0 * s) * dy0 
-           + accum1d(iy1 + i, sy1 * s) * dy1 
-           + accum1d(iy2 + i, sy2 * s) * dy2 
-           + accum1d(iy3 + i, sy3 * s) * dy3;
-    };
-
-    *out_ptr_NCXYZ  = static_cast<scalar_t>(accum2d(iz0, sz0) * dz0 
-                                          + accum2d(iz1, sz1) * dz1 
-                                          + accum2d(iz2, sz2) * dz2 
-                                          + accum2d(iz3, sz3) * dz3);
+  constexpr int KY = D > 1 ? 4 : 1;
+  constexpr int KZ = D > 2 ? 4 : 1;
+  offset_t ox[4], oy[4], oz[4];
+  reduce_t wx[4], wy[4], wz[4];
+  int8_t   sx[4], sy[4], sz[4];
+  restrict2x_taps(w, scale0, bound0, inp_X, inp_sX, ox, wx, sx);
+  if (D > 1) {
+    restrict2x_taps(h, scale1, bound1, inp_Y, inp_sY, oy, wy, sy);
+  } else {
+    oy[0] = 0; wy[0] = static_cast<reduce_t>(1); sy[0] = 1;
   }
-}
-
-template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
-void MultiResImpl<scalar_t,offset_t,reduce_t>::restrict2d(offset_t w, offset_t h, offset_t d, offset_t n) const 
-{
-  reduce_t x = (w + 0.5) * scale0 - 0.5;
-  reduce_t y = (h + 0.5) * scale1 - 0.5;
-  offset_t ix1 = static_cast<offset_t>(std::floor(x));
-  offset_t iy1 = static_cast<offset_t>(std::floor(y));
-  reduce_t dx1 = interpolation::weight(L, (x - ix1) / scale0) / scale0;
-  reduce_t dy1 = interpolation::weight(L, (y - iy1) / scale1) / scale1;
-  reduce_t dx0 = interpolation::weight(L, (x - ix1 + 1) / scale0) / scale0;
-  reduce_t dy0 = interpolation::weight(L, (y - iy1 + 1) / scale1) / scale1;
-  reduce_t dx2 = interpolation::weight(L, (1 + ix1 - x) / scale0) / scale0;
-  reduce_t dy2 = interpolation::weight(L, (1 + iy1 - y) / scale1) / scale1;
-  reduce_t dx3 = interpolation::weight(L, (2 + ix1 - x) / scale0) / scale0;
-  reduce_t dy3 = interpolation::weight(L, (2 + iy1 - y) / scale1) / scale1;
-  int8_t  sx3 = bound::sign(bound0, ix1+2, inp_X);
-  int8_t  sy3 = bound::sign(bound1, iy1+2, inp_Y);
-  int8_t  sx2 = bound::sign(bound0, ix1+1, inp_X);
-  int8_t  sy2 = bound::sign(bound1, iy1+1, inp_Y);
-  int8_t  sx0 = bound::sign(bound0, ix1-1, inp_X);
-  int8_t  sy0 = bound::sign(bound1, iy1-1, inp_Y);
-  int8_t  sx1 = bound::sign(bound0, ix1,   inp_X);
-  int8_t  sy1 = bound::sign(bound1, iy1,   inp_Y);
-  offset_t ix0, ix2, ix3, iy0, iy2, iy3;
-  ix3 = bound::index(bound0, ix1+2, inp_X) * inp_sX;
-  iy3 = bound::index(bound1, iy1+2, inp_Y) * inp_sY;
-  ix2 = bound::index(bound0, ix1+1, inp_X) * inp_sX;
-  iy2 = bound::index(bound1, iy1+1, inp_Y) * inp_sY;
-  ix0 = bound::index(bound0, ix1-1, inp_X) * inp_sX;
-  iy0 = bound::index(bound1, iy1-1, inp_Y) * inp_sY;
-  ix1 = bound::index(bound0, ix1,   inp_X) * inp_sX;
-  iy1 = bound::index(bound1, iy1,   inp_Y) * inp_sY;
-
-  scalar_t *out_ptr_NCXYZ = out_ptr + n * out_sN + w * out_sX + h * out_sY;
-  scalar_t *inp_ptr_NC = inp_ptr + n * inp_sN;
-
-
-  for (offset_t c = 0; c < C; ++c, out_ptr_NCXYZ += out_sC, 
-                                   inp_ptr_NC    += inp_sC) 
-  {
-
-    auto accum1d = [ix0, ix1, ix2, ix3, dx0, dx1, dx2, dx3, 
-                    sx0, sx1, sx2, sx3, inp_ptr_NC]
-                    (offset_t i, uint8_t s)
-    {
-      return static_cast<reduce_t>(bound::get(inp_ptr_NC, i + ix0, s * sx0)) * dx0
-           + static_cast<reduce_t>(bound::get(inp_ptr_NC, i + ix1, s * sx1)) * dx1
-           + static_cast<reduce_t>(bound::get(inp_ptr_NC, i + ix2, s * sx2)) * dx2
-           + static_cast<reduce_t>(bound::get(inp_ptr_NC, i + ix3, s * sx3)) * dx3;
-    };
-
-    *out_ptr_NCXYZ  = static_cast<scalar_t>(accum1d(iy0, sy0) * dy0 
-                                          + accum1d(iy1, sy1) * dy1 
-                                          + accum1d(iy2, sy2) * dy2 
-                                          + accum1d(iy3, sy3) * dy3);
+  if (D > 2) {
+    restrict2x_taps(d, scale2, bound2, inp_Z, inp_sZ, oz, wz, sz);
+  } else {
+    oz[0] = 0; wz[0] = static_cast<reduce_t>(1); sz[0] = 1;
   }
-}
 
-template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
-void MultiResImpl<scalar_t,offset_t,reduce_t>::restrict1d(offset_t w, offset_t h, offset_t d, offset_t n) const 
-{
-  reduce_t x = (w + 0.5) * scale0 - 0.5;
-  offset_t ix1 = static_cast<offset_t>(std::floor(x));
-  reduce_t dx1 = interpolation::weight(L, (x - ix1) / scale0) / scale0;
-  reduce_t dx0 = interpolation::weight(L, (x - ix1 + 1) / scale0) / scale0;
-  reduce_t dx2 = interpolation::weight(L, (1 + ix1 - x) / scale0) / scale0;
-  reduce_t dx3 = interpolation::weight(L, (2 + ix1 - x) / scale0) / scale0;
-  int8_t  sx3 = bound::sign(bound0, ix1+2, inp_X);
-  int8_t  sx2 = bound::sign(bound0, ix1+1, inp_X);
-  int8_t  sx0 = bound::sign(bound0, ix1-1, inp_X);
-  int8_t  sx1 = bound::sign(bound0, ix1,   inp_X);
-  offset_t ix0, ix2, ix3;
-  ix3 = bound::index(bound0, ix1+2, inp_X) * inp_sX;
-  ix2 = bound::index(bound0, ix1+1, inp_X) * inp_sX;
-  ix0 = bound::index(bound0, ix1-1, inp_X) * inp_sX;
-  ix1 = bound::index(bound0, ix1,   inp_X) * inp_sX;
+  scalar_t *out_ptr_NCXYZ = out_ptr + n * out_sN + w * out_sX
+                                    + h * out_sY + d * out_sZ;
+  const scalar_t *inp_ptr_NC = inp_ptr + n * inp_sN;
 
-  scalar_t *out_ptr_NCXYZ = out_ptr + n * out_sN + w * out_sX;
-  scalar_t *inp_ptr_NC = inp_ptr + n * inp_sN;
-
-
-  for (offset_t c = 0; c < C; ++c, out_ptr_NCXYZ += out_sC, 
-                                   inp_ptr_NC    += inp_sC) 
+  for (offset_t c = 0; c < C; ++c, out_ptr_NCXYZ += out_sC,
+                                   inp_ptr_NC    += inp_sC)
   {
-    *out_ptr_NCXYZ  = static_cast<scalar_t>(
-        static_cast<reduce_t>(bound::get(inp_ptr_NC, ix0, sx0)) * dx0
-      + static_cast<reduce_t>(bound::get(inp_ptr_NC, ix1, sx1)) * dx1
-      + static_cast<reduce_t>(bound::get(inp_ptr_NC, ix2, sx2)) * dx2
-      + static_cast<reduce_t>(bound::get(inp_ptr_NC, ix3, sx3)) * dx3);
+    reduce_t acc = static_cast<reduce_t>(0);
+    NI_PRAGMA_UNROLL
+    for (int kz = 0; kz < KZ; ++kz) {
+      reduce_t accz = static_cast<reduce_t>(0);
+      NI_PRAGMA_UNROLL
+      for (int ky = 0; ky < KY; ++ky) {
+        const offset_t oyz = oz[kz] + oy[ky];
+        const int8_t   syz = static_cast<int8_t>(sz[kz] * sy[ky]);
+        reduce_t accy = static_cast<reduce_t>(0);
+        NI_PRAGMA_UNROLL
+        for (int kx = 0; kx < 4; ++kx)
+          accy += static_cast<reduce_t>(bound::get(
+                    inp_ptr_NC, oyz + ox[kx],
+                    static_cast<int8_t>(syz * sx[kx]))) * wx[kx];
+        accz += accy * wy[ky];
+      }
+      acc += accz * wz[kz];
+    }
+    *out_ptr_NCXYZ = static_cast<scalar_t>(acc);
   }
 }
 
@@ -854,6 +762,19 @@ prepare_scales(Tensor input, Tensor output, bool do_adjoint)
                               static_cast<double>(Zi) / static_cast<double>(Zo)});
 }
 
+// The restriction kernel has a fixed 4-tap stencil per dimension, which
+// covers the support of the stretched kernel only if fine/coarse <= 2.
+NI_HOST NI_INLINE void
+check_restrict_scales(const std::vector<double> & scales, int64_t dim)
+{
+  for (int64_t d = 0; d < dim; ++d)
+    TORCH_CHECK(scales[d] <= 2. + 1e-6,
+                "fmg_restriction only supports downsampling by a factor of "
+                "(at most) 2, but the input/output size ratio along spatial "
+                "dimension ", d, " is ", scales[d], ". Use an output of "
+                "size ceil(input size / 2).");
+}
+
 } // namespace
 
 #ifdef __CUDACC__
@@ -867,6 +788,8 @@ Tensor multires_impl(
 {
   output = prepare_tensor(input, output, factor, do_adjoint);
   auto scales = prepare_scales(input, output, do_adjoint);
+  if (do_adjoint)
+    check_restrict_scales(scales, input.dim() - 2);
 
   MultiResAllocator info(input.dim()-2, bound, scales, do_adjoint);
   info.ioset(input, output);
@@ -913,6 +836,8 @@ Tensor multires_impl(
 {
   output = prepare_tensor(input, output, factor, do_adjoint);
   auto scales = prepare_scales(input, output, do_adjoint);
+  if (do_adjoint)
+    check_restrict_scales(scales, input.dim() - 2);
 
   MultiResAllocator info(input.dim()-2, bound, scales, do_adjoint);
   info.ioset(input, output);

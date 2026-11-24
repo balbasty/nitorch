@@ -55,39 +55,39 @@ namespace _interpolation {
   // --- order 0 -------------------------------------------------------
 
   template <typename scalar_t>
-  static NI_INLINE NI_DEVICE scalar_t weight0(scalar_t x) {
+  static NI_INLINE NI_HOST_DEVICE scalar_t weight0(scalar_t x) {
     x = std::fabs(x);
     return x < 0.5 ? static_cast<scalar_t>(1) : static_cast<scalar_t>(0);
   }
 
   template <typename scalar_t>
-  static NI_INLINE NI_DEVICE scalar_t fastweight0(scalar_t x) {
+  static NI_INLINE NI_HOST_DEVICE scalar_t fastweight0(scalar_t x) {
     x = std::fabs(x);
     return static_cast<scalar_t>(1);
   }
 
   template <typename scalar_t>
-  static NI_INLINE NI_DEVICE scalar_t grad0(scalar_t x) {
+  static NI_INLINE NI_HOST_DEVICE scalar_t grad0(scalar_t x) {
     return static_cast<scalar_t>(0);
   }
 
   template <typename scalar_t>
-  static NI_INLINE NI_DEVICE scalar_t fastgrad0(scalar_t x) {
+  static NI_INLINE NI_HOST_DEVICE scalar_t fastgrad0(scalar_t x) {
     return static_cast<scalar_t>(0);
   }
 
   template <typename scalar_t>
-  static NI_INLINE NI_DEVICE scalar_t hess0(scalar_t x) {
+  static NI_INLINE NI_HOST_DEVICE scalar_t hess0(scalar_t x) {
     return static_cast<scalar_t>(0);
   }
 
   template <typename scalar_t>
-  static NI_INLINE NI_DEVICE scalar_t fasthess0(scalar_t x) {
+  static NI_INLINE NI_HOST_DEVICE scalar_t fasthess0(scalar_t x) {
     return static_cast<scalar_t>(0);
   }
 
   template <typename scalar_t, typename offset_t>
-  static NI_INLINE NI_DEVICE void bounds0(scalar_t x, offset_t & low, offset_t & upp) {
+  static NI_INLINE NI_HOST_DEVICE void bounds0(scalar_t x, offset_t & low, offset_t & upp) {
     low = static_cast<offset_t>(std::round(x));
     upp = low;
   }
@@ -95,40 +95,40 @@ namespace _interpolation {
   // --- order 1 -------------------------------------------------------
 
   template <typename scalar_t>
-  static NI_INLINE NI_DEVICE scalar_t weight1(scalar_t x) {
+  static NI_INLINE NI_HOST_DEVICE scalar_t weight1(scalar_t x) {
     x = std::fabs(x);
     return x < 1 ? static_cast<scalar_t>(1) - x : static_cast<scalar_t>(0);
   }
 
   template <typename scalar_t>
-  static NI_INLINE NI_DEVICE scalar_t fastweight1(scalar_t x) {
+  static NI_INLINE NI_HOST_DEVICE scalar_t fastweight1(scalar_t x) {
     return static_cast<scalar_t>(1) - std::fabs(x);
   }
 
   template <typename scalar_t>
-  static NI_INLINE NI_DEVICE scalar_t grad1(scalar_t x) {
+  static NI_INLINE NI_HOST_DEVICE scalar_t grad1(scalar_t x) {
     if (std::fabs(x) >= 1) return static_cast<scalar_t>(0);
     return fastgrad1(x);
   }
 
   template <typename scalar_t>
-  static NI_INLINE NI_DEVICE scalar_t fastgrad1(scalar_t x) {
+  static NI_INLINE NI_HOST_DEVICE scalar_t fastgrad1(scalar_t x) {
     return x < static_cast<scalar_t>(0) ? static_cast<scalar_t>(1) 
                                         : static_cast<scalar_t>(-1);
   }
 
   template <typename scalar_t>
-  static NI_INLINE NI_DEVICE scalar_t hess1(scalar_t x) {
+  static NI_INLINE NI_HOST_DEVICE scalar_t hess1(scalar_t x) {
     return static_cast<scalar_t>(0);
   }
 
   template <typename scalar_t>
-  static NI_INLINE NI_DEVICE scalar_t fasthess1(scalar_t x) {
+  static NI_INLINE NI_HOST_DEVICE scalar_t fasthess1(scalar_t x) {
     return static_cast<scalar_t>(0);
   }
 
   template <typename scalar_t, typename offset_t>
-  static NI_INLINE NI_DEVICE void bounds1(scalar_t x, offset_t & low, offset_t & upp) {
+  static NI_INLINE NI_HOST_DEVICE void bounds1(scalar_t x, offset_t & low, offset_t & upp) {
     low = static_cast<offset_t>(std::floor(x));
     upp = low + 1;
   }
@@ -136,7 +136,7 @@ namespace _interpolation {
   // --- order 2 -------------------------------------------------------
 
   template <typename scalar_t>
-  static NI_INLINE NI_DEVICE scalar_t weight2(scalar_t x) {
+  static NI_INLINE NI_HOST_DEVICE scalar_t weight2(scalar_t x) {
     x = std::fabs(x);
     if ( x < 0.5 ) 
     {
@@ -154,7 +154,7 @@ namespace _interpolation {
   }
 
   template <typename scalar_t>
-  static NI_INLINE NI_DEVICE scalar_t fastweight2(scalar_t x) {
+  static NI_INLINE NI_HOST_DEVICE scalar_t fastweight2(scalar_t x) {
     x = std::fabs(x);
     if ( x < 0.5 ) 
     {
@@ -168,7 +168,7 @@ namespace _interpolation {
   }
 
   template <typename scalar_t>
-  static NI_INLINE NI_DEVICE scalar_t grad2(scalar_t x) {
+  static NI_INLINE NI_HOST_DEVICE scalar_t grad2(scalar_t x) {
     bool neg = x < 0;
     if ( x < 0.5 ) 
     {
@@ -187,7 +187,7 @@ namespace _interpolation {
   }
 
   template <typename scalar_t>
-  static NI_INLINE NI_DEVICE scalar_t fastgrad2(scalar_t x) {
+  static NI_INLINE NI_HOST_DEVICE scalar_t fastgrad2(scalar_t x) {
     bool neg = x < 0;
     if (neg) x = -x;
     if ( x < 0.5 ) 
@@ -203,7 +203,7 @@ namespace _interpolation {
   }
 
   template <typename scalar_t>
-  static NI_INLINE NI_DEVICE scalar_t hess2(scalar_t x) {
+  static NI_INLINE NI_HOST_DEVICE scalar_t hess2(scalar_t x) {
     x = std::fabs(x);
     if ( x < 0.5 ) 
     {
@@ -220,7 +220,7 @@ namespace _interpolation {
   }
 
   template <typename scalar_t>
-  static NI_INLINE NI_DEVICE scalar_t fasthess2(scalar_t x) {
+  static NI_INLINE NI_HOST_DEVICE scalar_t fasthess2(scalar_t x) {
     x = std::fabs(x);
     if ( x < 0.5 ) 
     {
@@ -233,7 +233,7 @@ namespace _interpolation {
   }
 
   template <typename scalar_t, typename offset_t>
-  static NI_INLINE NI_DEVICE void bounds2(scalar_t x, offset_t & low, offset_t & upp) {
+  static NI_INLINE NI_HOST_DEVICE void bounds2(scalar_t x, offset_t & low, offset_t & upp) {
     low = static_cast<offset_t>(std::floor(x-.5));
     upp = low + 2;
   }
@@ -241,7 +241,7 @@ namespace _interpolation {
   // --- order 3 -------------------------------------------------------
 
   template <typename scalar_t>
-  static NI_INLINE NI_DEVICE scalar_t weight3(scalar_t x) {
+  static NI_INLINE NI_HOST_DEVICE scalar_t weight3(scalar_t x) {
     x = std::fabs(x);
     if ( x < 1. ) 
     {
@@ -259,7 +259,7 @@ namespace _interpolation {
   }
 
   template <typename scalar_t>
-  static NI_INLINE NI_DEVICE scalar_t fastweight3(scalar_t x) {
+  static NI_INLINE NI_HOST_DEVICE scalar_t fastweight3(scalar_t x) {
     x = std::fabs(x);
     if ( x < 1. ) 
     {
@@ -273,7 +273,7 @@ namespace _interpolation {
   }
 
   template <typename scalar_t>
-  static NI_INLINE NI_DEVICE scalar_t grad3(scalar_t x) {
+  static NI_INLINE NI_HOST_DEVICE scalar_t grad3(scalar_t x) {
     bool neg = x < 0;
     if (neg) x = -x;
     if ( x < 1. ) 
@@ -294,7 +294,7 @@ namespace _interpolation {
   }
 
   template <typename scalar_t>
-  static NI_INLINE NI_DEVICE scalar_t fastgrad3(scalar_t x) {
+  static NI_INLINE NI_HOST_DEVICE scalar_t fastgrad3(scalar_t x) {
     bool neg = x < 0;
     if (neg) x = -x;
     if ( x < 1. ) 
@@ -311,7 +311,7 @@ namespace _interpolation {
   }
 
   template <typename scalar_t>
-  static NI_INLINE NI_DEVICE scalar_t hess3(scalar_t x) {
+  static NI_INLINE NI_HOST_DEVICE scalar_t hess3(scalar_t x) {
     x = std::fabs(x);
     if ( x < 1. ) 
     {
@@ -328,7 +328,7 @@ namespace _interpolation {
   }
 
   template <typename scalar_t>
-  static NI_INLINE NI_DEVICE scalar_t fasthess3(scalar_t x) {
+  static NI_INLINE NI_HOST_DEVICE scalar_t fasthess3(scalar_t x) {
     x = std::fabs(x);
     if ( x < 1. ) 
     {
@@ -342,7 +342,7 @@ namespace _interpolation {
 
 
   template <typename scalar_t, typename offset_t>
-  static NI_INLINE NI_DEVICE void bounds3(scalar_t x, offset_t & low, offset_t & upp) {
+  static NI_INLINE NI_HOST_DEVICE void bounds3(scalar_t x, offset_t & low, offset_t & upp) {
     low = static_cast<offset_t>(std::floor(x-1.));
     upp = low + 3;
   }
@@ -350,7 +350,7 @@ namespace _interpolation {
   // --- order 4 -------------------------------------------------------
 
   template <typename scalar_t>
-  static NI_INLINE NI_DEVICE scalar_t weight4(scalar_t x) {
+  static NI_INLINE NI_HOST_DEVICE scalar_t weight4(scalar_t x) {
     x = std::fabs(x);
     if ( x < 0.5 ) 
     {
@@ -374,7 +374,7 @@ namespace _interpolation {
   }
 
   template <typename scalar_t>
-  static NI_INLINE NI_DEVICE scalar_t fastweight4(scalar_t x) {
+  static NI_INLINE NI_HOST_DEVICE scalar_t fastweight4(scalar_t x) {
     x = std::fabs(x);
     if ( x < 0.5 ) 
     {
@@ -394,7 +394,7 @@ namespace _interpolation {
   }
 
   template <typename scalar_t>
-  static NI_INLINE NI_DEVICE scalar_t grad4(scalar_t x) {
+  static NI_INLINE NI_HOST_DEVICE scalar_t grad4(scalar_t x) {
     bool neg = x < 0;
     if (neg) x = -x;
     if ( x < 0.5 ) 
@@ -419,7 +419,7 @@ namespace _interpolation {
   }
 
   template <typename scalar_t>
-  static NI_INLINE NI_DEVICE scalar_t fastgrad4(scalar_t x) {
+  static NI_INLINE NI_HOST_DEVICE scalar_t fastgrad4(scalar_t x) {
     bool neg = x < 0;
     if (neg) x = -x;
     if ( x < 0.5 ) 
@@ -440,7 +440,7 @@ namespace _interpolation {
   }
 
   template <typename scalar_t>
-  static NI_INLINE NI_DEVICE scalar_t hess4(scalar_t x) {
+  static NI_INLINE NI_HOST_DEVICE scalar_t hess4(scalar_t x) {
     x = std::fabs(x);
     if ( x < 0.5 ) 
     {
@@ -462,7 +462,7 @@ namespace _interpolation {
   }
 
   template <typename scalar_t>
-  static NI_INLINE NI_DEVICE scalar_t fasthess4(scalar_t x) {
+  static NI_INLINE NI_HOST_DEVICE scalar_t fasthess4(scalar_t x) {
     x = std::fabs(x);
     if ( x < 0.5 ) 
     {
@@ -480,7 +480,7 @@ namespace _interpolation {
   }
 
   template <typename scalar_t, typename offset_t>
-  static NI_INLINE NI_DEVICE void bounds4(scalar_t x, offset_t & low, offset_t & upp) {
+  static NI_INLINE NI_HOST_DEVICE void bounds4(scalar_t x, offset_t & low, offset_t & upp) {
     low = static_cast<offset_t>(std::floor(x-1.5));
     upp = low + 4;
   }
@@ -488,7 +488,7 @@ namespace _interpolation {
   // --- order 5 -------------------------------------------------------
 
   template <typename scalar_t>
-  static NI_INLINE NI_DEVICE scalar_t weight5(scalar_t x) {
+  static NI_INLINE NI_HOST_DEVICE scalar_t weight5(scalar_t x) {
     x = std::fabs(x);
     if ( x < 1. )
     {
@@ -511,7 +511,7 @@ namespace _interpolation {
   }
 
   template <typename scalar_t>
-  static NI_INLINE NI_DEVICE scalar_t fastweight5(scalar_t x) {
+  static NI_INLINE NI_HOST_DEVICE scalar_t fastweight5(scalar_t x) {
     x = std::fabs(x);
     if ( x < 1. )
     {
@@ -532,7 +532,7 @@ namespace _interpolation {
   }
 
   template <typename scalar_t>
-  static NI_INLINE NI_DEVICE scalar_t grad5(scalar_t x) {
+  static NI_INLINE NI_HOST_DEVICE scalar_t grad5(scalar_t x) {
     bool neg = x < 0;
     if (neg) x = -x;
     if ( x < 1. ) 
@@ -558,7 +558,7 @@ namespace _interpolation {
   }
 
   template <typename scalar_t>
-  static NI_INLINE NI_DEVICE scalar_t fastgrad5(scalar_t x) {
+  static NI_INLINE NI_HOST_DEVICE scalar_t fastgrad5(scalar_t x) {
     bool neg = x < 0;
     if (neg) x = -x;
     if ( x < 1. ) 
@@ -580,7 +580,7 @@ namespace _interpolation {
   }
 
   template <typename scalar_t, typename offset_t>
-  static NI_INLINE NI_DEVICE void bounds5(scalar_t x, offset_t & low, offset_t & upp) {
+  static NI_INLINE NI_HOST_DEVICE void bounds5(scalar_t x, offset_t & low, offset_t & upp) {
     low = static_cast<offset_t>(std::floor(x-2.));
     upp = low + 5;
   }
@@ -588,7 +588,7 @@ namespace _interpolation {
   // --- order 6 -------------------------------------------------------
 
   template <typename scalar_t>
-  static NI_INLINE NI_DEVICE scalar_t weight6(scalar_t x) {
+  static NI_INLINE NI_HOST_DEVICE scalar_t weight6(scalar_t x) {
     x = std::fabs(x);
     if ( x < 0.5 )
     {
@@ -619,7 +619,7 @@ namespace _interpolation {
   }
 
   template <typename scalar_t>
-  static NI_INLINE NI_DEVICE scalar_t fastweight6(scalar_t x) {
+  static NI_INLINE NI_HOST_DEVICE scalar_t fastweight6(scalar_t x) {
     x = std::fabs(x);
     if ( x < 0.5 )
     {
@@ -648,7 +648,7 @@ namespace _interpolation {
   }
 
   template <typename scalar_t>
-  static NI_INLINE NI_DEVICE scalar_t grad6(scalar_t x) {
+  static NI_INLINE NI_HOST_DEVICE scalar_t grad6(scalar_t x) {
     bool neg = x < 0;
     if (neg) x = -x;
     if ( x < .5 ) 
@@ -682,7 +682,7 @@ namespace _interpolation {
   }
 
   template <typename scalar_t>
-  static NI_INLINE NI_DEVICE scalar_t fastgrad6(scalar_t x) {
+  static NI_INLINE NI_HOST_DEVICE scalar_t fastgrad6(scalar_t x) {
     bool neg = x < 0;
     if (neg) x = -x;
     if ( x < .5 ) 
@@ -712,7 +712,7 @@ namespace _interpolation {
   }
 
   template <typename scalar_t, typename offset_t>
-  static NI_INLINE NI_DEVICE void bounds6(scalar_t x, offset_t & low, offset_t & upp) {
+  static NI_INLINE NI_HOST_DEVICE void bounds6(scalar_t x, offset_t & low, offset_t & upp) {
     low = static_cast<offset_t>(std::floor(x-2.5));
     upp = low + 6;
   }
@@ -720,7 +720,7 @@ namespace _interpolation {
   // --- order 7 -------------------------------------------------------
 
   template <typename scalar_t>
-  static NI_INLINE NI_DEVICE scalar_t weight7(scalar_t x) {
+  static NI_INLINE NI_HOST_DEVICE scalar_t weight7(scalar_t x) {
     x = std::fabs(x);
     if ( x < 1. )
     {
@@ -751,7 +751,7 @@ namespace _interpolation {
   }
 
   template <typename scalar_t>
-  static NI_INLINE NI_DEVICE scalar_t fastweight7(scalar_t x) {
+  static NI_INLINE NI_HOST_DEVICE scalar_t fastweight7(scalar_t x) {
     x = std::fabs(x);
     if ( x < 1. )
     {
@@ -780,7 +780,7 @@ namespace _interpolation {
   }
 
   template <typename scalar_t>
-  static NI_INLINE NI_DEVICE scalar_t grad7(scalar_t x) {
+  static NI_INLINE NI_HOST_DEVICE scalar_t grad7(scalar_t x) {
     bool neg = x < 0;
     if (neg) x = -x;
     if ( x < 1. ) 
@@ -815,7 +815,7 @@ namespace _interpolation {
   }
 
   template <typename scalar_t>
-  static NI_INLINE NI_DEVICE scalar_t fastgrad7(scalar_t x) {
+  static NI_INLINE NI_HOST_DEVICE scalar_t fastgrad7(scalar_t x) {
     bool neg = x < 0;
     if (neg) x = -x;
     if ( x < 1. ) 
@@ -846,7 +846,7 @@ namespace _interpolation {
   }
 
   template <typename scalar_t, typename offset_t>
-  static NI_INLINE NI_DEVICE void bounds7(scalar_t x, offset_t & low, offset_t & upp) {
+  static NI_INLINE NI_HOST_DEVICE void bounds7(scalar_t x, offset_t & low, offset_t & upp) {
     low = static_cast<offset_t>(std::floor(x-3.));
     upp = low + 7;
   }
@@ -857,7 +857,7 @@ namespace _interpolation {
 namespace interpolation {
 
 template <typename scalar_t>
-static NI_INLINE NI_DEVICE scalar_t 
+static NI_INLINE NI_HOST_DEVICE scalar_t 
 weight(InterpolationType interpolation_type, scalar_t x) {
   switch (interpolation_type) {
     case InterpolationType::Nearest:      return _interpolation::weight0(x);
@@ -873,7 +873,7 @@ weight(InterpolationType interpolation_type, scalar_t x) {
 }
 
 template <typename scalar_t>
-static NI_INLINE NI_DEVICE scalar_t 
+static NI_INLINE NI_HOST_DEVICE scalar_t 
 fastweight(InterpolationType interpolation_type, scalar_t x) {
   switch (interpolation_type) {
     case InterpolationType::Nearest:      return _interpolation::fastweight0(x);
@@ -889,7 +889,7 @@ fastweight(InterpolationType interpolation_type, scalar_t x) {
 }
 
 template <typename scalar_t>
-static NI_INLINE NI_DEVICE scalar_t 
+static NI_INLINE NI_HOST_DEVICE scalar_t 
 grad(InterpolationType interpolation_type, scalar_t x) {
   switch (interpolation_type) {
     case InterpolationType::Nearest:      return _interpolation::grad0(x);
@@ -905,7 +905,7 @@ grad(InterpolationType interpolation_type, scalar_t x) {
 }
 
 template <typename scalar_t>
-static NI_INLINE NI_DEVICE scalar_t 
+static NI_INLINE NI_HOST_DEVICE scalar_t 
 fastgrad(InterpolationType interpolation_type, scalar_t x) {
   switch (interpolation_type) {
     case InterpolationType::Nearest:      return _interpolation::fastgrad0(x);
@@ -921,7 +921,7 @@ fastgrad(InterpolationType interpolation_type, scalar_t x) {
 }
 
 template <typename scalar_t>
-static NI_INLINE NI_DEVICE scalar_t 
+static NI_INLINE NI_HOST_DEVICE scalar_t 
 hess(InterpolationType interpolation_type, scalar_t x) {
   switch (interpolation_type) {
     case InterpolationType::Nearest:      return _interpolation::hess0(x);
@@ -937,7 +937,7 @@ hess(InterpolationType interpolation_type, scalar_t x) {
 }
 
 template <typename scalar_t>
-static NI_INLINE NI_DEVICE scalar_t 
+static NI_INLINE NI_HOST_DEVICE scalar_t 
 fasthess(InterpolationType interpolation_type, scalar_t x) {
   switch (interpolation_type) {
     case InterpolationType::Nearest:      return _interpolation::fasthess0(x);
@@ -953,7 +953,7 @@ fasthess(InterpolationType interpolation_type, scalar_t x) {
 }
 
 template <typename scalar_t, typename offset_t>
-static NI_INLINE NI_DEVICE void 
+static NI_INLINE NI_HOST_DEVICE void 
 bounds(InterpolationType interpolation_type, scalar_t x, offset_t & low, offset_t & upp) {
   switch (interpolation_type) {
     case InterpolationType::Nearest:      return _interpolation::bounds0(x, low, upp);

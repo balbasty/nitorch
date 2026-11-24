@@ -30,6 +30,7 @@
 #  define NI_NOINLINE __noinline__
 #  define NI_DEVICE __device__
 #  define NI_HOST   __host__
+#  define NI_HOST_DEVICE __host__ __device__
 #  define NI_DEVICE_NAME cuda
 #  define NI_NAMESPACE_DEVICE namespace cuda
 // --- ATOMIC ADD ------------------------------------------------------
@@ -81,6 +82,7 @@ T * alloc_and_copy_to_device(const T * obj, Stream stream)
 #  define NI_NOINLINE
 #  define NI_DEVICE
 #  define NI_HOST
+#  define NI_HOST_DEVICE
 #  define NI_DEVICE_NAME cpu
 #  define NI_NAMESPACE_DEVICE namespace cpu
 // --- ATOMIC ADD ------------------------------------------------------
