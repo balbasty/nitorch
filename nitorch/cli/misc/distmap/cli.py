@@ -65,13 +65,13 @@ def get_mask(dat, labels=None, threshold=0):
 
 
 def distmap(mask, dim, vx=1, metric='l2', signed=False, invert=False):
-    """Distance map of a (..., *spatial) mask"""
+    """Distance map of a (..., *spatial) mask.
+
+    With `invert`, object and background are swapped (which, for a signed
+    map, also swaps the signs)."""
     if invert:
         mask = ~mask
-    dist = transforms[(metric, signed)](mask, dim=dim, vx=vx)
-    if invert and signed:
-        dist = dist.neg_()
-    return dist
+    return transforms[(metric, signed)](mask, dim=dim, vx=vx)
 
 
 def _cli(args):

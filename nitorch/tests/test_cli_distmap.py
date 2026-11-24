@@ -47,8 +47,9 @@ def test_parser_defaults():
     assert opt.unit == 'vox'
 
 
-def test_registered():
-    assert nitorch_cli(['help', 'distmap']) is None
+def test_registered(capsys):
+    assert not nitorch_cli(['help', 'distmap'])
+    assert 'nitorch distmap' in capsys.readouterr().out
 
 
 def test_euclidean_mm(tmp_path, labels):
