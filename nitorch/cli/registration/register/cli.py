@@ -5,6 +5,7 @@ from .parser import (
     parser, help, default_momentum, default_affine_momentum
 )
 from nitorch.tools.registration import objects
+from nitorch.tools.registration.losses import stack_distance
 from nitorch.tools.registration.pairwise_preproc import (
     map_image, load_image, preproc_image
 )
@@ -21,7 +22,7 @@ from nitorch.tools.registration.pairwise_makeobj import (
 )
 from nitorch.tools.registration.pairwise_run import run
 from nitorch import io, spatial
-from nitorch.core import py
+from nitorch.core import py, dtypes
 import torch
 import sys
 import os
@@ -403,12 +404,27 @@ def get_spaces(fnames):
     return vxs, shapes
 
 
+def _stack_distance(dat, mask, affine, files, label=False):
+    """Binarize label maps (unless loaded with `-l`) and stack them
+    with their distance maps, for the edt loss."""
+    if label is False:
+        integer = not any(dtypes.dtype(io.map(f).dtype).is_floating_point
+                          for f in py.make_list(files))
+        # integer files are loaded with dequantization noise in [x, x+1):
+        # thresholding at 1 recovers the nonzero labels.
+        # floating point files are (hard or soft) labels in [0, 1].
+        dat = (dat >= 1 if integer else dat > 0.5).to(dat.dtype)
+    vx = spatial.voxel_size(affine).tolist()
+    dat = stack_distance(dat, dim=dat.dim() - 1, vx=vx)
+    return dat, mask, affine
+
+
 def build_losses(options, pyramids, device):
     dim = 3
 
     losskeys = ('kernel', 'patch', 'bins', 'norm', 'fwhm', 'order',
                 'spline', 'weight', 'weighted', 'max_iter', 'slicewise',
-                'joint', 'stride')
+                'joint', 'stride', 'sigma')
     loadkeys = ('label', 'missing', 'world', 'affine', 'rescale',
                 'pad', 'bound', 'fwhm', 'mask', 'channels')
     imagekeys = ('pyramid', 'pyramid_method', 'discretize',
@@ -429,6 +445,18 @@ def build_losses(options, pyramids, device):
         if loss.name in ('cat', 'dice'):
             loss.fix.rescale = (0, 0)
             loss.mov.rescale = (0, 0)
+        if loss.name == 'edt':
+            # Label maps: zero is the background, not a missing value,
+            # and intensities must not be rescaled.
+            # Only override the defaults, not explicit user values.
+            # Distance maps must be extrapolated: zero out of the field
+            # of view would be a perfect (and trivial) match.
+            for img in (loss.fix, loss.mov):
+                img.extrapolate = True
+                if tuple(img.rescale) == (0, 95):
+                    img.rescale = (0, 0)
+                if list(img.missing) == [0]:
+                    img.missing = []
         if loss.name == 'emmi':
             loss.mov.rescale = (0, 0)
             loss.fix.discretize = loss.fix.discretize or 256
@@ -444,10 +472,14 @@ def build_losses(options, pyramids, device):
         loss.mov.pyramid = pyramid['mov']
         loss.fix.pyramid_method = options.pyramid.name
         loss.mov.pyramid_method = options.pyramid.name
-        fix = make_image(*preproc_image(loss.fix.files, **include(loss.fix, loadkeys), dim=dim, device=device),
-                         **include(loss.fix, imagekeys))
-        mov = make_image(*preproc_image(loss.mov.files, **include(loss.mov, loadkeys), dim=dim, device=device),
-                         **include(loss.mov, imagekeys))
+        fix = preproc_image(loss.fix.files, **include(loss.fix, loadkeys), dim=dim, device=device)
+        mov = preproc_image(loss.mov.files, **include(loss.mov, loadkeys), dim=dim, device=device)
+        if loss.name == 'edt':
+            # stack the label maps with their distance maps (in mm)
+            fix, mov = [_stack_distance(*img, opt.files, label=opt.label)
+                        for img, opt in ((fix, loss.fix), (mov, loss.mov))]
+        fix = make_image(*fix, **include(loss.fix, imagekeys))
+        mov = make_image(*mov, **include(loss.mov, imagekeys))
         image_dict[loss.fix.name or loss.fix.files[0]] = fix
         image_dict[loss.mov.name or loss.mov.files[0]] = mov
 

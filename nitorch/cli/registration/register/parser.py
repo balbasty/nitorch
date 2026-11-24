@@ -45,6 +45,7 @@ usage:
         dot, prod                       Dot product
         ndot                            Normalized dot product
         sqz, squeezed                   Squeezed product (can be weighted)
+        edt                             Distance-map loss between sparse labels (e.g., vessels)
 
 @affine options:
     NAME can take values:
@@ -139,6 +140,13 @@ usage:
         ndot                            Normalized dot product
         sqz, squeezed                   Squeezed product (can be weighted)
             -w, --weight VAL                Weight [1]
+        edt                             Distance-map loss between sparse labels (e.g., vessels)
+                                        Inputs are label maps (binarized at 0.5, or one
+                                        channel per label with -l); their distance maps
+                                        (in mm) are computed internally. Mean squared
+                                        distance of the static labels to the warped
+                                        structures; use -s for the symmetric version.
+            -r, --robust SIGMA              Robust (Cauchy) scale, in distance units [quadratic]
     FACTOR must be a scalar value [1]
     Common options:
         -s, --symmetric                 Make loss symmetric [False]
@@ -424,7 +432,7 @@ loss_aliases = {'nmi': 'mi', 'l1': 'mad', 'l2': 'mse', 'tukey': 'tuk',
                 'ncc': 'cc', 'lncc': 'lcc', 'cce': 'cat', 'f1': 'dice',
                 'squeezed': 'sqz', 'prod': 'dot',
                 'gmm': 'gmmi', 'lgmm': 'lgmmi'}
-loss_choices = list(loss_aliases.values()) + ['emmi', 'ndot', 'extra']
+loss_choices = list(loss_aliases.values()) + ['emmi', 'ndot', 'edt', 'extra']
 loss_choices = cli.Positional('name', nargs='?', default='mi',
                               validation=cli.Validations.choice(loss_choices),
                               convert=lambda x: loss_aliases.get(x, x),
@@ -530,6 +538,9 @@ loss.add_suboption('sqz', 'weight', ('-w', '--weight'), nargs='1',
                    default=None,
                    convert=lambda x: 'auto' if x.lower() == 'auto' else float(x),
                    help='Weight of the loss (no automatic weighting)')
+loss.add_suboption('edt', 'sigma', ('-r', '--robust'), nargs='1',
+                   default=None, convert=float,
+                   help='Scale of the robust (Cauchy) penalty [quadratic]')
 loss.add_suboption('mad', joint_option)
 loss.add_suboption('tuk', joint_option)
 loss.add_suboption('dice', 'weight', ('-w', '--weight'), nargs='*', default=False,
