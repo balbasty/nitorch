@@ -111,3 +111,47 @@ def test_ogm_from_cli_options():
     ogm = make_affine_optim('ogm', lr=0.5, momentum=0, relax=0, restart=True,
                             output='', name='ogm', fmg=2)
     assert isinstance(ogm, optim.OGM) and ogm.lr == 0.5
+
+
+def test_affine_model_without_data_is_identity():
+    """An affine model whose parameters were never allocated (no
+    initial transform, no optimiser run) stands for the identity."""
+    eye = torch.eye(4)
+    for position in ('symmetric', 'moving', 'fixed'):
+        model = objects.AffineModel('rigid', position=position)
+        assert torch.allclose(model.exp(), eye)
+        assert torch.allclose(model.iexp(), eye)
+        assert all(torch.allclose(a, eye) for a in model.exp2())
+        assert model.dat is None  # nothing allocated behind our back
+
+
+def test_register_affine_optim_none(tmp_path):
+    """`@@optim none` keeps the affine at its initial value and writes
+    it: identity without init, the centre-of-mass shift with `-i com`."""
+    f, _ = make_pair(tmp_path, shift=SHIFT)
+    moved = str(tmp_path / 'moved.nii.gz')
+    # `-s 0 100`: no percentile clipping, which would change the COM
+    files = ['@@fix', f['fix'], '-o', 'false', '-s', '0', '100',
+             '@@mov', f['mov'], '-o', moved, '-s', '0', '100']
+    opt = ['@@optim', 'none', '@pyramid', '--levels', '0']
+
+    register(['@loss', 'mse', *files, '@affine', 'rigid', '-o', f['out'], *opt])
+    aff = io.transforms.loadf(f['out']).squeeze().double()
+    assert torch.allclose(aff, torch.eye(4, dtype=torch.double)), aff
+    assert torch.allclose(io.map(moved).affine.double(),
+                          io.map(f['mov']).affine.double(), atol=1e-6)
+
+    register(['@loss', 'mse', *files,
+              '@affine', 'rigid', '-o', f['out'], '-i', 'com', *opt])
+    image = lambda p: objects.Image(io.loadf(p)[None], affine=io.map(p).affine)
+    shift = (image(f['mov']).get_center_of_mass()
+             - image(f['fix']).get_center_of_mass()).double()
+    expected = torch.eye(4, dtype=torch.double)
+    expected[:3, -1] = shift
+    aff = io.transforms.loadf(f['out']).squeeze().double()
+    assert shift.abs().max() > 0.4  # a non-trivial initialisation
+    assert torch.allclose(aff, expected, atol=1e-4), (aff, expected)
+    # minimal reslicing: the moved image's header carries the transform
+    assert torch.allclose(io.map(moved).affine.double(),
+                          expected.inverse() @ io.map(f['mov']).affine.double(),
+                          atol=1e-4)
