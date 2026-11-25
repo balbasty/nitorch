@@ -2551,14 +2551,28 @@ class AffineModel(TransformationModel):
         if self.dat is not None:
             self.dat.clear_cache()
 
+    def _logaffine(self):
+        """Log-affine parameters, or zeros (identity) if not allocated.
+
+        Parameters are only allocated when an optimiser runs (or when an
+        initial transform is provided). A model whose optimiser is
+        disabled therefore has no data, and stands for the identity.
+        """
+        if self.dat is not None:
+            return self.dat
+        return copy.copy(self).set_dat().dat
+
     def exp(self, q=None, grad=False, cache_result=False, recompute=True):
-        return self.dat.exp(q, grad, cache_result, recompute, sqrt=self.position[0] == 's')
+        return self._logaffine().exp(q, grad, cache_result, recompute,
+                                     sqrt=self.position[0] == 's')
 
     def iexp(self, q=None, grad=False, cache_result=False, recompute=True):
-        return self.dat.iexp(q, grad, cache_result, recompute, sqrt=self.position[0] == 's')
+        return self._logaffine().iexp(q, grad, cache_result, recompute,
+                                      sqrt=self.position[0] == 's')
 
     def exp2(self, q=None, grad=False, cache_result=False, recompute=True):
-        return self.dat.exp2(q, grad, cache_result, recompute, sqrt=self.position[0] == 's')
+        return self._logaffine().exp2(q, grad, cache_result, recompute,
+                                      sqrt=self.position[0] == 's')
 
     def __repr__(self):
         s = []
