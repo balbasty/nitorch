@@ -683,8 +683,15 @@ def mind(x, radius=0, fwhm=1, dim=None, bound='dct2', robust=3, norm='max'):
     return utils.movedim(mnd, 0, -1)
 
 
-def rmind(x, radius=2, fwhm=1, dim=None, bound='dct2', robust=3, norm='max'):
+def rmind(x, radius=2, fwhm=1, dim=None, bound='dct2', robust=3, norm='max',
+          reduction='mean', normalize='ring1'):
     """Rotationally-Invariant Modality-Independent Neighborhood Descriptor
+
+    Patch distances D(n) = G * (x(. + n) - x)^2 (G: Gaussian smoothing)
+    are computed for all offsets n with |n| <= radius, and grouped into
+    rings of offsets that have the same norm. Each ring is reduced to a
+    rotation-invariant statistic, which is normalized by a local variance
+    estimate V and exponentiated: m_k = exp(-statistic_k / normalizer).
 
     Parameters
     ----------
@@ -702,11 +709,34 @@ def rmind(x, radius=2, fwhm=1, dim=None, bound='dct2', robust=3, norm='max'):
         Power of robustness threshold (smaller = more robust, 0 = disabled)
     norm : {'max', 'mean', None}
         Normalization across features
+    reduction : {'mean', 'var'}, default='mean'
+        Statistic computed over the offsets of each ring:
+        * 'mean': average patch distance, normalized by V
+        * 'var':  (angular) variance of the patch distances,
+                  normalized by V**2 (so that it does not depend on
+                  the image contrast)
+    normalize : {'ring1', 'all'}, default='ring1'
+        Offsets used to compute the local variance estimate V
+        (average patch distance):
+        * 'ring1': first ring only (= 2*dim nearest neighbours, as in MIND).
+                   With `reduction='mean'`, the first ring is then
+                   only used for normalization and is not returned.
+        * 'all':   all offsets within the radius (as in MIND-SSC)
 
     Returns
     -------
     m : (..., *shape, K) tensor
         MIND feature maps
+
+    Notes
+    -----
+    Where the image is locally linear (x(y) ~ x + g.(y - x)), the patch
+    distance is D(n) ~ (g.n)^2. Its ring average is |g|^2 |n|^2 / dim,
+    whatever the direction of g, so that with `reduction='mean'` the
+    leading-order term is a constant (|n|^2 / |n1|^2 with 'ring1') and
+    the features only carry higher-order (curvature, noise)
+    information. The same holds for any rotation-invariant reduction
+    (with `reduction='var'`, the ratio is again a function of |n| only).
 
     References
     ----------
@@ -715,6 +745,10 @@ def rmind(x, radius=2, fwhm=1, dim=None, bound='dct2', robust=3, norm='max'):
     M.P. Heinrich et al.
     Medical Image Analysis (2012)
     """
+    if reduction not in ('mean', 'var'):
+        raise ValueError(f'Unknown reduction {reduction}')
+    if normalize not in ('ring1', 'all'):
+        raise ValueError(f'Unknown normalize {normalize}')
     dim = dim or x.dim()
     fwhm = make_list(fwhm, dim)
 
@@ -733,33 +767,59 @@ def rmind(x, radius=2, fwhm=1, dim=None, bound='dct2', robust=3, norm='max'):
     indices = filter(lambda x: 0 < sqnorm(x) <= radius*radius, indices)
 
     nb_feat = len(sqdist)
-    if nb_feat < 2:
+    drop_first = reduction == 'mean' and normalize == 'ring1'
+    if drop_first and nb_feat < 2:
         # the first ring is only used to normalize the other ones
         raise ValueError(f'rmind requires at least two rings of neighbours '
                          f'(radius >= sqrt(2)) but got radius={radius}')
+    if nb_feat < 1:
+        raise ValueError(f'rmind requires at least one ring of neighbours '
+                         f'(radius >= 1) but got radius={radius}')
     mnd = x.new_zeros([nb_feat, *x.shape])
+    if reduction == 'var':
+        mnd2 = x.new_zeros([nb_feat, *x.shape])
 
     # compute differences
     count = [0] * len(sqdist)
     for index in indices:
         sqd1 = sqnorm(index)
         diff = square_(utils.roll(x, index, range(-dim, 0), bound=bound).sub_(x))
+        if reduction == 'var':
+            # the variance is not linear: smooth each patch distance
+            diff = smooth(diff, fwhm=fwhm, dim=dim, bound=bound)
+            mnd2[sqdist.index(sqd1)] += diff.square()
         mnd[sqdist.index(sqd1)] += diff
         count[sqdist.index(sqd1)] += 1
+    # local variance estimate (= average patch distance), before
+    # per-ring normalization
+    if normalize == 'all':
+        var = mnd.sum(0) / sum(count)
     # normalize
     for k, c in enumerate(count):
         mnd[k] /= c
+        if reduction == 'var':
+            mnd2[k] /= c
     # smooth
-    mnd = smooth(mnd, fwhm=fwhm, dim=dim, bound=bound)
+    if reduction == 'mean':
+        mnd = smooth(mnd, fwhm=fwhm, dim=dim, bound=bound)
+        if normalize == 'all':
+            var = smooth(var, fwhm=fwhm, dim=dim, bound=bound)
 
     # compute variance in first-ring neighborhood
-    var = mnd[0]
+    if normalize == 'ring1':
+        var = mnd[0]
     if robust:
         meanvar = var.mean(list(range(-dim, 0)), keepdim=True)
         mn = 10 ** (-robust) * meanvar
         mx = 10 ** robust * meanvar
         var = torch.min(torch.max(var, mn), mx)
-    mnd = mnd[1:]
+
+    if reduction == 'var':
+        # angular variance within each ring, normalized by V^2
+        mnd = mnd2.sub_(mnd.square()).clamp_min_(0)
+        var = var.square()
+    elif drop_first:
+        mnd = mnd[1:]
 
     # exponentiation
     mnd = exp_(div_(mnd, var).neg_())
