@@ -90,7 +90,7 @@ def preproc_image(input, mask=None, label=False, missing=0,
     # load user-defined mask
     if mask is not None:
         mask1 = mask0
-        mask0, _, _ = load_image(mask, dim=dim, device=device, missing=None)
+        mask0, _, _ = load_image(mask, dim=dim, device=device, missing=None, rand=False)
         if mask0.shape[-dim:] != dat.shape[-dim:]:
             raise ValueError('Mask should have the same shape as the image. '
                              f'Got {mask0.shape[-dim:]} and {dat.shape[-dim:]}')
@@ -285,7 +285,7 @@ def map_image(fnames, dim=None, channels=None):
 
 
 def load_image(input, dim=None, device=None, label=False, missing=0,
-               channels=None):
+               channels=None, rand=True):
     """
     Load a N-D image from disk
 
@@ -350,7 +350,7 @@ def load_image(input, dim=None, device=None, label=False, missing=0,
                 mask = utils.isin(dat, make_list(missing))
                 dat = dat.to(torch.float32).masked_fill(mask, float('nan'))
         else:
-            dat = dat.fdata(device=device, rand=True, missing=missing)
+            dat = dat.fdata(device=device, rand=rand, missing=missing)
         mask = torch.isfinite(dat)
         mask = mask.all(dim=0)
         dat.masked_fill_(~mask, 0)
