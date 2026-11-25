@@ -63,3 +63,23 @@ def test_register_affine_penalty_factors(args, factor, groups):
 def test_register_affine_samples_option(args, expected):
     options = parser.parse(['@loss', 'mse'] + IMAGES + ['@affine'] + args)
     assert options.affine.samples == expected
+
+
+@pytest.mark.parametrize('args, mind, mind_type', [
+    ([], [], 'rmind'),
+    (['--mind'], [1], 'rmind'),
+    (['--mind', '2', '3'], [2., 3.], 'rmind'),
+    (['--mind', '--mind-type', 'mind'], [1], 'mind'),
+    (['--mind', '--mind-type', 'rmind-var'], [1], 'rmind-var'),
+])
+def test_register_mind_options(args, mind, mind_type):
+    options = parser.parse(['@loss', 'mse', '@@fix', 'fix.nii'] + args +
+                           ['@@mov', 'mov.nii'])
+    assert list(options.loss[0].fix.mind) == mind
+    assert options.loss[0].fix.mind_type == mind_type
+
+
+def test_register_mind_type_rejects_unknown():
+    with pytest.raises(Exception):
+        parser.parse(['@loss', 'mse', '@@fix', 'fix.nii', '--mind-type', 'foo',
+                      '@@mov', 'mov.nii'])

@@ -177,7 +177,13 @@ usage:
         --name NAME                 A name to use with `@nonlin --fov`
     -x, --missing *VAL              Values that should be considered missing [0]
         --no-missing                No value should be considered missing
-        --mind  [FWHM=1 [RADIUS=2]] Compute MIND features
+        --mind  [FWHM=1 [RADIUS]]   Compute MIND features (RADIUS: [2] for rmind types,
+                                    [0] = six-neighbourhood for `mind`)
+        --mind-type NAME            Type of MIND features: [rmind], rmind-var, mind
+                                    rmind: rotation-invariant, ring averages
+                                    rmind-var: rotation-invariant, ring (angular) variances
+                                    mind: directional MIND (not rotation invariant: features
+                                          of the moving image are warped, not reoriented)
     -c, --channels *C               Channels to load. Can be a range start:stop:step [:]
 
 @affine options:
@@ -615,7 +621,10 @@ file.add_option('missing', ('-x', '--missing'), nargs='+', convert=float,
 file.add_option('missing', '--no-missing', nargs=0,
                 action=cli.Actions.store_value([]), help='No missing values')
 file.add_option('mind', '--mind', nargs='*2', default=[], convert=float,
-                action=cli.Actions.store_value([1, 2]))
+                action=cli.Actions.store_value([1]))
+file.add_option('mind_type', '--mind-type', nargs=1, default='rmind',
+                validation=cli.Validations.choice(['rmind', 'rmind-var', 'mind']),
+                help='Type of MIND features')
 file.add_option('channels', ('-c', '--channels'), nargs='1*', convert=parse_range, default=[slice(None)])
 fix = cli.Group('fix', '@@fix', n=1)
 fix.copy_from(file)

@@ -1,3 +1,4 @@
+import pytest
 import torch
 from nitorch.core import bounds
 from nitorch.tools.registration.pairwise_makeobj import make_image
@@ -42,3 +43,20 @@ def test_make_image_mind_true_other_bound_unaffected():
     before = make_image(dat.clone(), mind=True, bound='dct2')
     after = make_image(dat.clone(), mind=True, bound='dct2')
     assert torch.equal(before[0].dat, after[0].dat)
+
+
+@pytest.mark.parametrize('mind_type, nb_feat', [
+    ('rmind', 3),       # rings |n|^2 = 2, 3, 4 (ring 1 normalizes)
+    ('rmind-var', 4),   # rings |n|^2 = 1, 2, 3, 4
+    ('mind', 6),        # six-neighbourhood (default radius 0)
+])
+def test_make_image_mind_type(mind_type, nb_feat):
+    dat = torch.rand(1, 16, 16, 16)
+    image = make_image(dat, mind=True, mind_type=mind_type)
+    assert image[0].dat.shape == (nb_feat, 16, 16, 16)
+    assert torch.equal(image[0].preview, dat)
+
+
+def test_make_image_mind_type_unknown():
+    with pytest.raises(ValueError):
+        make_image(torch.rand(1, 8, 8, 8), mind=True, mind_type='foo')

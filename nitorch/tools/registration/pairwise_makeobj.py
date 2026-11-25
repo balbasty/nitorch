@@ -12,7 +12,7 @@ from .pairwise_preproc import soft_quantize_image, discretize_image, preproc_ima
 
 def make_image(dat, mask=None, affine=None,
                pyramid=0, pyramid_method='gaussian',
-               discretize=False, soft=False, mind=None,
+               discretize=False, soft=False, mind=None, mind_type='rmind',
                bound='zero', extrapolate=False, **kwargs):
     """Create an image pyramid (eventually with a single level)
 
@@ -36,10 +36,22 @@ def make_image(dat, mask=None, affine=None,
         with default max_bins=256 and nclasses=16.
     soft : bool, default=False
         Use soft discretization instead of hard discretization
-    mind : pair(float, int), optional
+    mind : pair(float, float), optional
         Compute MIND features at each pyramid level.
         First parameter is the FWHM (default = 1)
-        Second parameter is the radius (default = 0 = first-ring neighbors)
+        Second parameter is the radius (default: 2 for the rotation-invariant
+        types, 0 = six-neighbourhood for 'mind')
+    mind_type : {'rmind', 'rmind-var', 'mind'}, default='rmind'
+        Type of MIND features:
+        * 'rmind': rotation-invariant MIND (`spatial.rmind`), average
+          patch distance in each ring of neighbours, normalized by the
+          first ring.
+        * 'rmind-var': rotation-invariant MIND, (angular) variance of the
+          patch distances in each ring of neighbours, normalized by the
+          squared average patch distance over all neighbours.
+        * 'mind': (directional) MIND (`spatial.mind`). Not rotation
+          invariant: the features of the moving image are computed in
+          its own voxel space and are not reoriented when warped.
     bound : [sequence of] str
         Boundary conditions
     extrapolate : bool, default=True
@@ -76,15 +88,30 @@ def make_image(dat, mask=None, affine=None,
         method=pyramid_method
     )
 
-    mind = [] if mind is False else [1, 2] if mind is True else mind
+    mind = [] if mind is False else [1] if mind is True else mind
     mind = make_list(mind or [])
     if mind:
-        fwhm, radius = make_list(mind, 2, default=2)
+        mind_type = (mind_type or 'rmind').lower()
+        if mind_type not in ('rmind', 'rmind-var', 'mind'):
+            raise ValueError(f'Unknown MIND type: {mind_type}')
+        fwhm, radius = make_list(mind, 2, default=None)
+        if fwhm is None:
+            fwhm = 1
+        if radius is None:
+            radius = 0 if mind_type == 'mind' else 2
         for level in image:
             level.preview = level.dat
-            level.dat = spatial.rmind(level.dat, dim=dim,
-                                     radius=int(radius), fwhm=fwhm,
-                                     bound=level.bound)
+            if mind_type == 'mind':
+                level.dat = spatial.mind(level.dat, dim=dim,
+                                         radius=int(radius), fwhm=fwhm,
+                                         bound=level.bound)
+            else:
+                options = {}
+                if mind_type == 'rmind-var':
+                    options = dict(reduction='var', normalize='all')
+                level.dat = spatial.rmind(level.dat, dim=dim,
+                                          radius=float(radius), fwhm=fwhm,
+                                          bound=level.bound, **options)
             level.dat = utils.movedim(level.dat, -1, 0)
             level.dat = level.dat.reshape([-1, *level.shape])
 
