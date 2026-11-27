@@ -147,7 +147,12 @@ usage:
                                         is already a distance map (@@fix/@@mov -e). Mean squared
                                         distance of the static labels to the warped
                                         structures; use -s for the symmetric version.
-            -r, --robust SIGMA              Robust (Cauchy) scale, in distance units [quadratic]
+            -w, --weight VAL|vx|auto        Precision of the distances, in mm^-2 [vx]
+                                            vx:   1/voxel_size^2 (distances in voxels)
+                                            auto: estimated from the current distances
+                                                  (each term of -s gets its own, which
+                                                  can unbalance them)
+            -r, --robust SIGMA              Robust (Cauchy) scale, in mm [quadratic]
     FACTOR must be a scalar value [1]
     Common options:
         -s, --symmetric                 Make loss symmetric [False]
@@ -542,6 +547,20 @@ loss.add_suboption('sqz', 'weight', ('-w', '--weight'), nargs='1',
                    default=None,
                    convert=lambda x: 'auto' if x.lower() == 'auto' else float(x),
                    help='Weight of the loss (no automatic weighting)')
+def _edt_weight(x):
+    """'auto' -> None (estimated), 'vx' -> 'vx', else float"""
+    x = str(x)
+    if x.lower() == 'auto':
+        return None
+    if x.lower() in ('vx', 'vox', 'voxel'):
+        return 'vx'
+    return float(x)
+
+
+loss.add_suboption('edt', 'weight', ('-w', '--weight'), nargs='1',
+                   default='vx', convert=_edt_weight,
+                   help='Precision of the distances, in mm^-2 '
+                        '(`auto`: estimated; `vx`: 1/voxel_size^2)')
 loss.add_suboption('edt', 'sigma', ('-r', '--robust'), nargs='1',
                    default=None, convert=float,
                    help='Scale of the robust (Cauchy) penalty [quadratic]')

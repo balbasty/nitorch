@@ -257,3 +257,108 @@ def test_cli_edt_precomputed_recovers_translation(tmp_path):
     trl = io.transforms.map(out).fdata().squeeze()[:3, -1]
     ref = torch.as_tensor([2., -1., 1.], dtype=trl.dtype)
     assert torch.allclose(trl, ref, atol=0.1)
+
+
+# ----------------------------------------------------------------------
+#   Normalization and precision
+# ----------------------------------------------------------------------
+
+@pytest.mark.parametrize('fn', [prod, squeezed_prod])
+def test_prod_is_a_weighted_mean(fn):
+    # mean over the (weighted) voxels: invariant to a constant mask
+    moving, fixed = random_images()
+    ref = fn(moving, fixed, dim=3)
+    out = fn(moving, fixed, dim=3, mask=torch.full_like(moving, 0.25))
+    for a, b in zip(ref, out):
+        assert torch.allclose(torch.as_tensor(a), torch.as_tensor(b))
+
+
+def edt_images(nlab=(3, 30), seed=0):
+    """Two channels with very different numbers of labels"""
+    g = torch.Generator().manual_seed(seed)
+    shape = (6, 5, 4)
+    labels = torch.zeros([2, *shape], dtype=dt)
+    for k, n in enumerate(nlab):
+        labels[k].view(-1)[torch.randperm(labels[k].numel(), generator=g)[:n]] = 1
+    dist = 3 * torch.rand([2, *shape], dtype=dt, generator=g)
+    moving = torch.cat([torch.rand_like(labels), dist])
+    fixed = torch.cat([labels, torch.rand_like(dist)])
+    return moving, fixed, labels, dist
+
+
+def test_edt_mean_per_channel():
+    moving, fixed, labels, dist = edt_images()
+    ll = edt(moving, fixed, dim=3, grad=False, hess=False)
+    ref = sum(0.5 * dist[k][labels[k] > 0].square().mean() for k in range(2))
+    assert torch.allclose(ll, ref)
+    # precision: scales the loss (per channel)
+    lam = torch.as_tensor([2., 5.], dtype=dt)
+    ll = edt(moving, fixed, dim=3, lam=lam, grad=False, hess=False)
+    ref = sum(0.5 * lam[k] * dist[k][labels[k] > 0].square().mean()
+              for k in range(2))
+    assert torch.allclose(ll, ref)
+
+
+def test_edt_lam_vx():
+    from nitorch.tools.registration.losses import EDTLoss
+    moving, fixed, *_ = edt_images()
+    ref = edt(moving, fixed, dim=3, lam=1/0.25, grad=False, hess=False)
+    ll = EDTLoss(lam='vx', voxel_size=0.5).loss(moving, fixed, dim=3)
+    assert torch.allclose(ll, ref)
+
+
+@pytest.mark.parametrize('sigma', [None, 1.5])
+def test_edt_lam_auto(sigma):
+    from nitorch.tools.registration.losses import EDTLoss
+    moving, fixed, labels, dist = edt_images()
+    loss = EDTLoss(lam=None, sigma=sigma, voxel_size=0.5)
+    lam, _ = loss.compute_lam(moving, fixed, None, 3, sigma)
+    # MAP estimate under the Gamma prior
+    rsq = dist.square()
+    if sigma:
+        rsq = rsq / (1 + rsq / sigma ** 2)
+    for k in range(2):
+        n = labels[k].sum()
+        ssq = rsq[k][labels[k] > 0].sum()
+        s0 = (loss.prior_std * 0.5) ** 2
+        assert torch.allclose(lam[k], (loss.prior_dof + n) /
+                              (ssq + loss.prior_dof * s0))
+    # identical label maps: finite precision
+    zero = torch.cat([moving[:2], torch.zeros_like(dist)])
+    lam0, _ = loss.compute_lam(zero, fixed, None, 3, sigma)
+    assert torch.isfinite(lam0).all()
+
+
+def test_edt_lam_auto_gradient():
+    # Without prior, lam is the ML estimate: the gradient at fixed lam
+    # is the full gradient of the (lam-profiled) objective
+    from nitorch.tools.registration.losses import EDTLoss
+    moving, fixed, *_ = edt_images()
+    loss = EDTLoss(lam=None, prior_dof=0)
+    _, g, _ = loss.loss_grad_hess(moving, fixed, dim=3)
+    x = moving.clone().requires_grad_()
+    ga, = torch.autograd.grad(loss.loss(x, fixed, dim=3), x)
+    assert torch.allclose(g, ga)
+
+
+def test_cli_edt_weight(tmp_path):
+    from nitorch.cli.registration.register.parser import parser
+    from nitorch.cli.registration.register.cli import build_losses
+    from nitorch.tools.registration.pairwise_pyramid import pyramid_levels
+    fix = tmp_path / 'fix.nii.gz'
+    nib.save(nib.Nifti1Image(tubes([16] * 3), np.diag([.5, .5, 2., 1.])), str(fix))
+    mov = write(tmp_path / 'mov.nii.gz', tubes([16] * 3, 1))
+    for arg, lam in [([], 'vx'), (['-w', 'auto'], None),
+                     (['-w', 'vx'], 'vx'), (['-w', '3'], 3.)]:
+        options = parser.parse(['@loss', 'edt', '-s', *arg,
+                                '@@fix', str(fix), '@@mov', mov,
+                                '@affine', '@pyramid', '-l', '0'])
+        levels = list(pyramid_levels([[1.] * 3] * 2, [[16] * 3] * 2,
+                                     **options.pyramid))
+        sims, _ = build_losses(options, [{'fix': levels[0], 'mov': levels[1]}],
+                               torch.device('cpu'))
+        fwd, bwd = sims[0]
+        assert fwd.loss.lam == lam and bwd.loss.lam == lam
+        # static image of each term: geometric mean of its voxel size
+        assert fwd.loss.voxel_size == pytest.approx(0.5 ** (2/3) * 2 ** (1/3))
+        assert bwd.loss.voxel_size == pytest.approx(1.)

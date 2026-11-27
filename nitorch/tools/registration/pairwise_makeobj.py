@@ -681,7 +681,8 @@ def make_loss(loss, slicewise=False, **kwargs):
             kwargs['lam'] = weight
         lossobj = losses.SqueezedProdLoss(**kwargs)
     elif loss == 'edt':
-        lossobj = losses.EDTLoss(sigma=kwargs.pop('sigma', None))
+        lossobj = losses.EDTLoss(lam=kwargs.pop('weight', 'vx'),
+                                 sigma=kwargs.pop('sigma', None))
     elif loss == 'emmi':
         lossobj = losses.EMMI(**kwargs)
     elif loss == 'extra':

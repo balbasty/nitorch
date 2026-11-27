@@ -436,6 +436,12 @@ def _stack_distance(dat, mask, affine, files, label=False, edt=False):
     return dat, mask, affine
 
 
+def _iso_voxel_size(affine):
+    """Isotropic-equivalent voxel size (geometric mean)"""
+    vx = spatial.voxel_size(affine)
+    return vx.log().mean().exp().item()
+
+
 def build_losses(options, pyramids, device):
     dim = 3
 
@@ -501,6 +507,10 @@ def build_losses(options, pyramids, device):
         image_dict[loss.fix.name or loss.fix.files[0]] = fix
         image_dict[loss.mov.name or loss.mov.files[0]] = mov
 
+        if loss.name == 'edt':
+            # voxel size of the static image (`-w vx` and the prior)
+            lossobj.voxel_size = _iso_voxel_size(fix.affine)
+
         # Forward loss
         loss.factor = py.ensure_list(loss.factor, len(pyramid))[::-1]
         factor = loss.factor[-1] / (2 if loss.symmetric else 1)
@@ -524,6 +534,8 @@ def build_losses(options, pyramids, device):
                                      **include(optfix, imagekeys))
                 bwd_mov = make_image(*preproc_image(optmov.files, **include(optmov, loadkeys), dim=dim, device=device),
                                      **include(optmov, imagekeys))
+            if loss.name == 'edt':
+                lossobj.voxel_size = _iso_voxel_size(bwd_fix.affine)
             sumloss = sumloss + factor * objects.Similarity(lossobj, bwd_mov, bwd_fix, backward=True)
             owners.append(n)
 

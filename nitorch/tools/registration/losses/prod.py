@@ -1,16 +1,18 @@
 from nitorch.core import utils, py, linalg
 from .base import OptimizationLoss
+from .mse import sumweights
 
 
 def prod(moving, fixed, dim=None, grad=True, hess=True, mask=None):
 
     dim = dim or (fixed.dim() - 1)
-    nvox = py.prod(fixed.shape[-dim:])
+    # mean over the (weighted) voxels of each channel, as in `mse`
+    nvox = sumweights(mask, fixed.shape[-dim:])
 
     ll = moving * fixed
     if mask is not None:
-        ll *= mask
-    ll = ll.sum() / nvox
+        ll = ll * mask
+    ll = (ll / nvox).sum()
     out = [ll]
 
     if grad:
@@ -21,7 +23,7 @@ def prod(moving, fixed, dim=None, grad=True, hess=True, mask=None):
 
     if hess:
         if mask is not None:
-            h = mask.to(moving.dtype, copy=True).div_(nvox)
+            h = mask.to(moving.dtype) / nvox
         else:
             h = moving.new_full([1]*(dim+1), 1/nvox)
         out.append(h)
@@ -73,25 +75,26 @@ def normprod(moving, fixed, dim=None, grad=True, hess=True, mask=None):
 def squeezed_prod(moving, fixed, lam=1, dim=None, grad=True, hess=True, mask=None):
 
     dim = dim or (fixed.dim() - 1)
-    nvox = py.prod(fixed.shape[-dim:])
+    # mean over the (weighted) voxels of each channel, as in `mse`
+    nvox = sumweights(mask, fixed.shape[-dim:])
 
     e = (moving * fixed).mul_(-lam/2).exp_()
 
     ll = 1 - e
     if mask is not None:
-        ll *= mask
-    ll = ll.sum() / nvox
+        ll = ll * mask
+    ll = (ll / nvox).sum()
     out = [ll]
 
     if grad:
-        g = (e*fixed).mul_(lam / (2*nvox))
+        g = (e*fixed).mul_(lam / 2).div_(nvox)
         if mask is not None:
             g *= mask
         out.append(g)
 
     if hess:
         # Absolute value of the (negative) true Hessian
-        h = (e*fixed).mul_(fixed).mul_((lam / 2)**2 / nvox)
+        h = (e*fixed).mul_(fixed).mul_((lam / 2)**2).div_(nvox)
         if mask is not None:
             h *= mask
         out.append(h)
